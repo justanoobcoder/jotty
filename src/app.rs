@@ -53,13 +53,14 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 use crate::config::Config;
 use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
-use crate::input::{self, Action, KeyModes};
+use crate::input::{self, Action, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme};
 use crate::selection::{Point, Selection};
-use crate::terminal::Terminal;
+use crate::terminal::{MouseMode, Terminal};
 
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
@@ -107,6 +108,10 @@ pub struct App {
     pointer: Option<ThemedPointer>,
     pointer_pos: (f64, f64),
     scroll_accum: f64,
+    /// Button held down while reporting to the program, if any.
+    mouse_button: Option<MouseButton>,
+    /// Cell of the last reported pointer event, to report motion once per cell.
+    mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
     selecting: bool,
     data_device: Option<DataDevice>,
@@ -256,6 +261,8 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         pointer: None,
         pointer_pos: (0.0, 0.0),
         scroll_accum: 0.0,
+        mouse_button: None,
+        mouse_cell: None,
         selection: None,
         selecting: false,
         data_device: None,
@@ -475,7 +482,8 @@ impl App {
     }
 
     /// The grid cell under a surface-local position.
-    fn point_at(&self, (x, y): (f64, f64)) -> Point {
+    /// The visible cell under a surface-local position, as (column, row).
+    fn cell_at(&self, (x, y): (f64, f64)) -> (usize, usize) {
         let scale = f64::from(self.scale);
         let pad = f64::from(self.padding());
         let cell = self.renderer.cell();
@@ -484,24 +492,88 @@ impl App {
         let row = ((y * scale - pad) / f64::from(cell.height))
             .floor()
             .max(0.0) as usize;
+        (col.min(screen.cols() - 1), row.min(screen.rows() - 1))
+    }
+
+    /// The grid cell under a surface-local position, in selection coordinates.
+    fn point_at(&self, pos: (f64, f64)) -> Point {
+        let (col, row) = self.cell_at(pos);
         Point {
-            line: row.min(screen.rows() - 1) as isize - screen.display_offset() as isize,
-            col: col.min(screen.cols() - 1),
+            line: row as isize - self.term.screen().display_offset() as isize,
+            col,
+        }
+    }
+
+    /// Whether pointer events go to the program: it asked for them, and
+    /// Shift isn't held (Shift keeps selecting and scrolling in jotty).
+    fn reporting_mouse(&self) -> bool {
+        self.term.screen().modes.mouse != MouseMode::Off && !self.modifiers.shift
+    }
+
+    /// Sends a pointer event to the program, if its mode includes it.
+    fn report_mouse(&mut self, action: MouseAction, pos: (f64, f64)) {
+        let (col, row) = self.cell_at(pos);
+        if matches!(action, MouseAction::Motion(_)) && self.mouse_cell == Some((col, row)) {
+            return;
+        }
+        self.mouse_cell = Some((col, row));
+        let modes = self.term.screen().modes;
+        let event = MouseEvent {
+            action,
+            col,
+            row,
+            mods: self.modifiers,
+        };
+        if let Some(bytes) = input::encode_mouse(event, modes.mouse, modes.mouse_sgr) {
+            self.send(&bytes);
+        }
+    }
+
+    /// Converts a scroll event into whole steps, `per_notch` per wheel notch
+    /// (touchpads scroll by pixels: one step per cell height).
+    fn scroll_steps(
+        &mut self,
+        axis: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        per_notch: f64,
+    ) -> isize {
+        let cell_height = f64::from(self.renderer.cell().height) / f64::from(self.scale);
+        self.scroll_accum += if axis.value120 != 0 {
+            f64::from(axis.value120) / 120.0 * per_notch
+        } else if axis.discrete != 0 {
+            f64::from(axis.discrete) * per_notch
+        } else {
+            axis.absolute / cell_height
+        };
+        let steps = self.scroll_accum.trunc();
+        self.scroll_accum -= steps;
+        steps as isize
+    }
+
+    /// Reports wheel movement as button 64–67 presses, one per notch.
+    fn report_wheel(
+        &mut self,
+        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        pos: (f64, f64),
+    ) {
+        for (axis, back, forward) in [
+            (vertical, MouseButton::WheelUp, MouseButton::WheelDown),
+            (horizontal, MouseButton::WheelLeft, MouseButton::WheelRight),
+        ] {
+            if axis.is_none() {
+                continue;
+            }
+            let steps = self.scroll_steps(axis, 1.0);
+            let button = if steps < 0 { back } else { forward };
+            for _ in 0..steps.unsigned_abs() {
+                self.mouse_cell = None;
+                self.report_mouse(MouseAction::Press(button), pos);
+            }
         }
     }
 
     fn scroll(&mut self, axis: &smithay_client_toolkit::seat::pointer::AxisScroll) {
-        let cell_height = f64::from(self.renderer.cell().height) / f64::from(self.scale);
-        self.scroll_accum += if axis.value120 != 0 {
-            f64::from(axis.value120) / 120.0 * 3.0
-        } else if axis.discrete != 0 {
-            f64::from(axis.discrete) * 3.0
-        } else {
-            axis.absolute / cell_height
-        };
-        let lines = self.scroll_accum.trunc();
-        self.scroll_accum -= lines;
-        let lines = lines as isize;
+        let lines = self.scroll_steps(axis, 3.0);
         if lines == 0 {
             return;
         }
@@ -965,12 +1037,44 @@ impl PointerHandler for App {
                         log::debug!("cannot set cursor: {e}");
                     }
                 }
+                PointerEventKind::Motion { .. } if self.reporting_mouse() => {
+                    self.report_mouse(MouseAction::Motion(self.mouse_button), event.position);
+                }
                 PointerEventKind::Motion { .. } if self.selecting => {
                     let point = self.point_at(event.position);
                     if let Some(selection) = &mut self.selection {
                         selection.update(point);
                         self.request_redraw();
                     }
+                }
+                PointerEventKind::Press { button, serial, .. }
+                    if self.reporting_mouse() && mouse_button(*button).is_some() =>
+                {
+                    self.last_serial = *serial;
+                    let button = mouse_button(*button).unwrap();
+                    self.mouse_button = Some(button);
+                    self.mouse_cell = None;
+                    self.report_mouse(MouseAction::Press(button), event.position);
+                }
+                // A release always follows a reported press, even if Shift
+                // went down in between.
+                PointerEventKind::Release { button, .. }
+                    if self.mouse_button.is_some()
+                        && self.mouse_button == mouse_button(*button) =>
+                {
+                    self.mouse_button = None;
+                    self.mouse_cell = None;
+                    self.report_mouse(
+                        MouseAction::Release(mouse_button(*button).unwrap()),
+                        event.position,
+                    );
+                }
+                PointerEventKind::Axis {
+                    vertical,
+                    horizontal,
+                    ..
+                } if self.reporting_mouse() => {
+                    self.report_wheel(vertical, horizontal, event.position)
                 }
                 PointerEventKind::Press {
                     button: BTN_LEFT,
@@ -1051,6 +1155,16 @@ impl BackgroundEffectHandler for App {
             }
             Err(e) => log::warn!("cannot enable blur: {e}"),
         }
+    }
+}
+
+/// The reportable button for a Linux input button code.
+fn mouse_button(code: u32) -> Option<MouseButton> {
+    match code {
+        BTN_LEFT => Some(MouseButton::Left),
+        BTN_MIDDLE => Some(MouseButton::Middle),
+        BTN_RIGHT => Some(MouseButton::Right),
+        _ => None,
     }
 }
 
