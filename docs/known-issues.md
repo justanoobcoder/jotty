@@ -42,10 +42,7 @@ nothing surprises you.
   there. Install the entry (see
   [configuration](configuration.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
-- Double click selects a word (or command output); there is no
-  triple-click line selection, and dragging after a double click doesn't
-  extend the selection word by word. The word delimiters can't be
-  configured.
+- The word delimiters for double-click selection can't be configured.
 - If a command's last line has no newline and the next prompt starts on
   it, that line isn't part of the selected output. Output marks are kept
   per row, so they are lost when the shell redraws the screen without

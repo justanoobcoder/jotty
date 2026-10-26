@@ -56,6 +56,7 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Ctrl+Shift+V, Shift+Insert, middle click | Paste the clipboard        |
 | Left drag              | Select text (Shift+drag in programs that use the mouse) |
 | Double click           | Select a word, or a command's whole output (opt-in, needs [shell integration](docs/configuration.md#shell-integration)) |
+| Triple click           | Select a line (drag after a double or triple click to extend by words or lines) |
 | Shift+PageUp/PageDown  | Scroll the history by a page                  |
 | Shift+Home/End         | Jump to the top or bottom of the history      |
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |

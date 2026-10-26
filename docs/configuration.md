@@ -225,7 +225,12 @@ changed.
 **Double click** selects the word under the pointer. A word is a run of
 characters other than whitespace and `` "'`()[]{}<>|,; ``, so paths, URLs
 and options such as `--color=auto` are selected whole. Words continue
-across soft-wrapped lines.
+across soft-wrapped lines. **Triple click** selects the whole line,
+including the rows a long line wraps onto.
+
+Keep the button down after a double or triple click and drag to extend the
+selection by whole words or whole lines. The clicked word or line always
+stays selected.
 
 **Selecting a command's output.** With
 `terminal.double_click_selects_output = true`, double-clicking anywhere in
