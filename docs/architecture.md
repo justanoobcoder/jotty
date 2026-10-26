@@ -36,7 +36,7 @@ on the CPU.
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
 | `selection.rs` | Text selection in history-aware coordinates; words, lines, following output | no |
 | `text.rs` | The text of a logical line with the cell of each character | no |
-| `links.rs` | Hyperlinks (OSC 8) and URL/regex detection under the pointer | no |
+| `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |

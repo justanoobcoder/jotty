@@ -68,7 +68,7 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
 | Ctrl+Shift+F           | Search the scrollback                         |
-| Ctrl+click             | Open a link or URL (Ctrl+hover underlines it) |
+| Ctrl+click             | Open a link, URL, image or video file (Ctrl+hover underlines it) |
 
 These are the defaults; key bindings can be changed in the
 [`[keybinds]`](docs/configuration.md#keybinds) section.

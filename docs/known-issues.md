@@ -97,6 +97,10 @@ nothing surprises you.
   history.
 - While a program has mouse reporting on, Ctrl+click goes to the program;
   hold Shift as well to open a link.
+- Relative file paths are resolved in the directory the foreground program
+  is in now, not where the path was printed. After a `cd`, or over SSH,
+  older output may point to the wrong place (or nowhere, and then isn't a
+  link).
 - No `idle-inhibit`. Drag-and-drop is not accepted.
 
 ## Rendering and performance

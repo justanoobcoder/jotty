@@ -299,8 +299,9 @@ following its text as it scrolls into the history.
 
 **Links.** Hold Ctrl over a link to underline it, and Ctrl+click to open
 it with `url.launcher`. Links are hyperlinks that programs set (OSC 8, as
-`ls --hyperlink`, `gcc` and `delta` emit) and URLs in the text, which may
-wrap across rows; see [`[url]`](#url) to add more kinds.
+`ls --hyperlink`, `gcc` and `delta` emit), URLs in the text, which may
+wrap across rows, and paths of image and video files; see
+[`[url]`](#url) to change or add kinds.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
@@ -316,11 +317,27 @@ text scrolls back to the bottom.
 | --- | --- | --- | --- |
 | `launcher` | list of strings | `["xdg-open"]` | Command that opens a link; the link is added as the last argument. |
 | `regex` | list of strings | `[]` | Regular expressions for more kinds of links, besides URLs. |
+| `file_extensions` | list of strings | images and videos | Paths of existing files with these extensions are links too. `[]` turns this off. |
 
 URLs are recognized by their scheme (`https://`, `file://`, `ssh://`,
 `git://`, `mailto:`, ...). Trailing punctuation and unmatched closing
 brackets are not part of them, so `(see https://x.org/a).` opens
 `https://x.org/a`.
+
+**Files.** Paths ending in one of `file_extensions` open too, so
+Ctrl+clicking `cat.png` in `ls` output shows the image, and `clip.mp4`
+plays the video, in whatever `xdg-open` picks. A path can be absolute,
+start with `~/`, or be relative to the current directory of the program
+running in the terminal (usually the shell). Names that `ls` quotes
+because of spaces (`'my clip.mp4'`) work too. Only files that exist are
+links. The default extensions are png, jpg, jpeg, gif, webp, avif, jxl,
+heic, heif, bmp, tif, tiff, svg and ico for images, and mp4, mkv, webm,
+mov, avi, m4v, wmv, flv, mpg, mpeg, ogv and 3gp for videos. To add PDFs:
+
+```toml
+[url]
+file_extensions = ["png", "jpg", "gif", "webp", "svg", "mp4", "mkv", "webm", "pdf"]
+```
 
 `regex` patterns use [Rust regex syntax](https://docs.rs/regex) and are
 matched against the line under the pointer; the matched text goes to the
