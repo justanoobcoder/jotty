@@ -78,6 +78,7 @@ jobs:
           # jotty finds the entry next to its binary (../share/terminfo).
           install -Dm644 target/terminfo/j/jotty "dist/$name/share/terminfo/j/jotty"
           install -Dm644 extra/jotty.desktop "dist/$name/share/applications/jotty.desktop"
+          install -Dm644 extra/jotty.svg "dist/$name/share/icons/hicolor/scalable/apps/jotty.svg"
           install -m644 README.md LICENSE docs/*.md docs/config.example.toml "dist/$name/share/doc/jotty/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"

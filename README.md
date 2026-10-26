@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="extra/jotty.svg" alt="jotty logo" width="128">
+</p>
+
 # jotty
 
 A minimal terminal emulator for Wayland, written in Rust.
@@ -34,7 +38,7 @@ packages for x86_64 and aarch64 (the Arch package is x86_64 only):
 | Other (glibc 2.35+) | `jotty-*-linux.tar.gz` | unpack anywhere and run `bin/jotty` |
 
 `SHA256SUMS` lists their checksums. The packages install the terminfo
-entry and a desktop entry, so app launchers list jotty.
+entry, a desktop entry and the icon, so app launchers list jotty.
 
 With Nix flakes, from a checkout:
 
