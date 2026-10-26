@@ -280,6 +280,7 @@ impl Renderer {
     /// whether another frame is needed because the glyph atlas overflowed.
     pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
         let metrics = self.fonts.metrics;
+        let theme = self.theme.effective(frame.screen);
         let gl = &self.gl;
         let texture = self.texture;
         let upload = |x: u32, y: u32, glyph: &Glyph| unsafe {
@@ -298,14 +299,14 @@ impl Renderer {
         };
         let batch: Batch = super::build(
             frame,
-            &self.theme,
+            &theme,
             metrics,
             &mut self.atlas.cache(&mut self.fonts, upload),
         );
 
         let (w, h) = self.size;
-        let [r, g, b] = self.theme.background.to_f32();
-        let a = self.theme.opacity;
+        let [r, g, b] = theme.background.to_f32();
+        let a = theme.opacity;
         unsafe {
             gl.viewport(0, 0, w as i32, h as i32);
             gl.clear_color(r * a, g * a, b * a, a);

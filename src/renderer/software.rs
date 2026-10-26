@@ -71,6 +71,7 @@ impl Renderer {
     /// whether another frame is needed because the glyph atlas overflowed.
     pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
         let metrics = self.fonts.metrics;
+        let theme = self.theme.effective(frame.screen);
         let pixels = &mut self.atlas_pixels;
         let store = |x: u32, y: u32, glyph: &Glyph| {
             let w = glyph.width as usize;
@@ -81,7 +82,7 @@ impl Renderer {
         };
         let batch = super::build(
             frame,
-            &self.theme,
+            &theme,
             metrics,
             &mut self.atlas.cache(&mut self.fonts, store),
         );
@@ -106,7 +107,7 @@ impl Renderer {
         let canvas = buffer
             .canvas(&mut self.pool)
             .ok_or("wl_shm buffer is busy")?;
-        let background = premultiply(self.theme.background.to_f32(), self.theme.opacity);
+        let background = premultiply(theme.background.to_f32(), theme.opacity);
         paint(&batch, &self.atlas_pixels, canvas, (w, h), background);
         buffer
             .attach_to(&self.surface)

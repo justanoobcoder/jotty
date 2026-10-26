@@ -587,7 +587,10 @@ fn osc_12_sets_and_resets_cursor_color() {
 #[test]
 fn osc_12_query_reports_current_color() {
     let mut t = term(10, 1);
-    t.screen_mut().set_default_cursor_color((0x12, 0x34, 0x56));
+    t.screen_mut().set_default_colors(DefaultColors {
+        cursor: (0x12, 0x34, 0x56),
+        ..DefaultColors::default()
+    });
     t.feed(b"\x1b]12;?\x07");
     assert_eq!(
         t.screen_mut().take_responses(),
@@ -603,13 +606,70 @@ fn osc_12_query_reports_current_color() {
 #[test]
 fn full_reset_restores_cursor_color() {
     let mut t = term(10, 1);
-    t.screen_mut().set_default_cursor_color((1, 2, 3));
+    t.screen_mut().set_default_colors(DefaultColors {
+        cursor: (1, 2, 3),
+        ..DefaultColors::default()
+    });
     t.feed(b"\x1b]12;#ffffff\x07\x1bc\x1b]12;?\x07");
     assert_eq!(t.screen().cursor_color(), None);
     assert_eq!(
         t.screen_mut().take_responses(),
         b"\x1b]12;rgb:0101/0202/0303\x07"
     );
+}
+
+fn colors() -> DefaultColors {
+    let mut palette = [(0, 0, 0); 256];
+    palette[1] = (0xaa, 0, 0);
+    DefaultColors {
+        foreground: (0xdc, 0xdc, 0xdc),
+        background: (0x18, 0x18, 0x18),
+        cursor: (0xff, 0xff, 0xff),
+        palette,
+    }
+}
+
+#[test]
+fn osc_10_11_query_and_set() {
+    let mut t = term(10, 1);
+    t.screen_mut().set_default_colors(colors());
+    t.feed(b"\x1b]11;?\x1b\\\x1b]10;?\x07");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]11;rgb:1818/1818/1818\x1b\\\x1b]10;rgb:dcdc/dcdc/dcdc\x07"
+    );
+    // OSC 10 with two colors also sets the background.
+    t.feed(b"\x1b]10;#ffffff;#000000\x07");
+    let o = t.screen().color_overrides();
+    assert_eq!(o.foreground, Some((255, 255, 255)));
+    assert_eq!(o.background, Some((0, 0, 0)));
+    t.feed(b"\x1b]11;?\x07");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]11;rgb:0000/0000/0000\x07"
+    );
+    t.feed(b"\x1b]110\x07\x1b]111\x07");
+    assert!(t.screen().color_overrides().is_empty());
+}
+
+#[test]
+fn osc_4_palette_query_set_and_reset() {
+    let mut t = term(10, 1);
+    t.screen_mut().set_default_colors(colors());
+    t.feed(b"\x1b]4;1;?\x07");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]4;1;rgb:aaaa/0000/0000\x07"
+    );
+    t.feed(b"\x1b]4;1;#00ff00;200;#0000ff\x07");
+    let o = t.screen().color_overrides();
+    assert_eq!(o.palette[1], Some((0, 255, 0)));
+    assert_eq!(o.palette[200], Some((0, 0, 255)));
+    t.feed(b"\x1b]104;1\x07");
+    assert_eq!(t.screen().color_overrides().palette[1], None);
+    assert_eq!(t.screen().color_overrides().palette[200], Some((0, 0, 255)));
+    t.feed(b"\x1b]104\x07");
+    assert!(t.screen().color_overrides().is_empty());
 }
 
 #[test]

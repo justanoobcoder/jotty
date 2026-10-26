@@ -186,6 +186,10 @@ pub struct Screen {
     cursor_color: Option<(u8, u8, u8)>,
     /// The configured cursor color, reported by OSC 12 queries.
     default_cursor_color: (u8, u8, u8),
+    /// Colors set by the program with OSC 4, 10 and 11.
+    colors: ColorOverrides,
+    /// The configured colors, reported by OSC 4, 10 and 11 queries.
+    default_colors: DefaultColors,
     /// Where the last character was printed, if nothing else happened
     /// since; a following variation selector applies to it.
     last_printed: Option<(usize, usize)>,
@@ -200,6 +204,54 @@ pub struct Screen {
     display_offset: usize,
     /// Where the shell's prompt ended (OSC 133;B), as (row, column).
     prompt_end: Option<(usize, usize)>,
+}
+
+pub type Rgb = (u8, u8, u8);
+
+/// Colors a program changed with OSC 4 (palette), 10 (foreground) and 11
+/// (background), until it resets them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColorOverrides {
+    pub foreground: Option<Rgb>,
+    pub background: Option<Rgb>,
+    pub palette: [Option<Rgb>; 256],
+}
+
+impl Default for ColorOverrides {
+    fn default() -> Self {
+        ColorOverrides {
+            foreground: None,
+            background: None,
+            palette: [None; 256],
+        }
+    }
+}
+
+impl ColorOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == ColorOverrides::default()
+    }
+}
+
+/// The configured colors, which color queries report while the program
+/// hasn't changed them.
+#[derive(Debug, Clone)]
+pub struct DefaultColors {
+    pub foreground: Rgb,
+    pub background: Rgb,
+    pub cursor: Rgb,
+    pub palette: [Rgb; 256],
+}
+
+impl Default for DefaultColors {
+    fn default() -> Self {
+        DefaultColors {
+            foreground: (255, 255, 255),
+            background: (0, 0, 0),
+            cursor: (255, 255, 255),
+            palette: [(0, 0, 0); 256],
+        }
+    }
 }
 
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
@@ -229,6 +281,8 @@ impl Screen {
             last_char: None,
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
+            colors: ColorOverrides::default(),
+            default_colors: DefaultColors::default(),
             last_printed: None,
             title: None,
             title_changed: false,
@@ -393,10 +447,16 @@ impl Screen {
         self.cursor_color
     }
 
-    /// The configured cursor color, which OSC 12 queries report while the
-    /// program hasn't set one.
-    pub fn set_default_cursor_color(&mut self, rgb: (u8, u8, u8)) {
-        self.default_cursor_color = rgb;
+    /// Colors the program set with OSC 4, 10 and 11.
+    pub fn color_overrides(&self) -> &ColorOverrides {
+        &self.colors
+    }
+
+    /// The configured colors, which color queries report while the program
+    /// hasn't changed them.
+    pub fn set_default_colors(&mut self, colors: DefaultColors) {
+        self.default_cursor_color = colors.cursor;
+        self.default_colors = colors;
     }
 
     /// The column where user input starts on the cursor row: after the
@@ -870,6 +930,44 @@ impl Screen {
         })
     }
 
+    /// Replies to a color query with the request's terminator, as xterm
+    /// does. `code` is the OSC number with any index, such as `"4;1"`.
+    fn report_color(&mut self, code: &str, (r, g, b): Rgb, bell_terminated: bool) {
+        let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+        let reply = format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}");
+        self.responses.extend_from_slice(reply.as_bytes());
+    }
+
+    /// OSC 10, 11 and 12 (`which` 0, 1, 2): sets or queries the foreground,
+    /// background or cursor color.
+    fn dynamic_color(&mut self, which: usize, spec: &[u8], bell_terminated: bool) {
+        let current = match which {
+            0 => self
+                .colors
+                .foreground
+                .unwrap_or(self.default_colors.foreground),
+            1 => self
+                .colors
+                .background
+                .unwrap_or(self.default_colors.background),
+            _ => self.cursor_color.unwrap_or(self.default_cursor_color),
+        };
+        if spec == b"?" {
+            self.report_color(&(10 + which).to_string(), current, bell_terminated);
+            return;
+        }
+        let Some(rgb) = parse_color(spec) else {
+            log::debug!("bad color {:?}", String::from_utf8_lossy(spec));
+            return;
+        };
+        match which {
+            0 => self.colors.foreground = Some(rgb),
+            1 => self.colors.background = Some(rgb),
+            _ => self.cursor_color = Some(rgb),
+        }
+        self.dirty = true;
+    }
+
     /// Answers DECRQM (`CSI ? Ps $ p` or `CSI Ps $ p`).
     fn report_mode(&mut self, mode: u16, private: bool) {
         let state = if private {
@@ -898,9 +996,9 @@ impl Screen {
 
     fn reset(&mut self) {
         let scrollback = self.primary.max_history;
-        let default_cursor_color = self.default_cursor_color;
+        let default_colors = self.default_colors.clone();
         *self = Screen::new(self.cols, self.rows, scrollback);
-        self.default_cursor_color = default_cursor_color;
+        self.set_default_colors(default_colors);
     }
 
     /// The current attributes as SGR parameters, for DECRQSS replies.
@@ -1323,23 +1421,57 @@ impl Perform for Screen {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         match params {
-            [b"12", b"?", ..] => {
-                let (r, g, b) = self.cursor_color.unwrap_or(self.default_cursor_color);
-                // Reply with the request's terminator, as xterm does.
-                let end = if bell_terminated { "\x07" } else { "\x1b\\" };
-                let reply =
-                    format!("\x1b]12;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}");
-                self.responses.extend_from_slice(reply.as_bytes());
-            }
-            [b"12", spec, ..] => match parse_color(spec) {
-                Some(rgb) => {
-                    self.cursor_color = Some(rgb);
-                    self.dirty = true;
+            // Each further argument applies to the next color, as in xterm:
+            // `OSC 10 ; fg ; bg` also sets the background.
+            [code @ (b"10" | b"11" | b"12"), specs @ ..] => {
+                let first = (code[1] - b'0') as usize;
+                for (i, spec) in specs.iter().enumerate().take(3 - first) {
+                    self.dynamic_color(first + i, spec, bell_terminated);
                 }
-                None => log::debug!("bad cursor color {:?}", String::from_utf8_lossy(spec)),
-            },
+            }
+            [b"110", ..] => {
+                self.colors.foreground = None;
+                self.dirty = true;
+            }
+            [b"111", ..] => {
+                self.colors.background = None;
+                self.dirty = true;
+            }
             [b"112", ..] => {
                 self.cursor_color = None;
+                self.dirty = true;
+            }
+            [b"4", pairs @ ..] => {
+                for [index, spec] in pairs.as_chunks::<2>().0 {
+                    let Some(index) = std::str::from_utf8(index)
+                        .ok()
+                        .and_then(|s| s.parse::<u8>().ok())
+                    else {
+                        continue;
+                    };
+                    let i = usize::from(index);
+                    if *spec == b"?" {
+                        let rgb = self.colors.palette[i].unwrap_or(self.default_colors.palette[i]);
+                        self.report_color(&format!("4;{index}"), rgb, bell_terminated);
+                    } else if let Some(rgb) = parse_color(spec) {
+                        self.colors.palette[i] = Some(rgb);
+                        self.dirty = true;
+                    }
+                }
+            }
+            [b"104"] | [b"104", b""] => {
+                self.colors.palette = [None; 256];
+                self.dirty = true;
+            }
+            [b"104", indexes @ ..] => {
+                for index in indexes {
+                    if let Some(i) = std::str::from_utf8(index)
+                        .ok()
+                        .and_then(|s| s.parse::<u8>().ok())
+                    {
+                        self.colors.palette[usize::from(i)] = None;
+                    }
+                }
                 self.dirty = true;
             }
             [b"0" | b"2", rest @ ..] => {

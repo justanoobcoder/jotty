@@ -9,6 +9,8 @@ pub mod atlas;
 pub mod gl;
 pub mod software;
 
+use std::borrow::Cow;
+
 use unicode_width::UnicodeWidthChar;
 
 use crate::config::{Config, Rgb};
@@ -71,6 +73,8 @@ pub struct Theme {
     pub opacity: f32,
     /// Also apply `opacity` to cells with an explicit background color.
     pub transparent_cells: bool,
+    /// 256-color entries the program changed with OSC 4.
+    pub overrides: [Option<Rgb>; 256],
 }
 
 impl Theme {
@@ -86,11 +90,33 @@ impl Theme {
             bold_is_bright: config.terminal.bold_is_bright,
             opacity: config.window.opacity,
             transparent_cells: config.window.transparent_cell_backgrounds,
+            overrides: [None; 256],
         }
+    }
+
+    /// The theme with the colors the program changed (OSC 4, 10, 11).
+    pub fn effective(&self, screen: &Screen) -> Cow<'_, Theme> {
+        let colors = screen.color_overrides();
+        if colors.is_empty() {
+            return Cow::Borrowed(self);
+        }
+        let rgb = |(r, g, b): (u8, u8, u8)| Rgb(r, g, b);
+        let mut theme = self.clone();
+        if let Some(c) = colors.foreground {
+            theme.foreground = rgb(c);
+        }
+        if let Some(c) = colors.background {
+            theme.background = rgb(c);
+        }
+        theme.overrides = colors.palette.map(|c| c.map(rgb));
+        Cow::Owned(theme)
     }
 
     /// Resolves a 256-color index.
     pub fn indexed(&self, i: u8) -> Rgb {
+        if let Some(c) = self.overrides[usize::from(i)] {
+            return c;
+        }
         match i {
             0..=15 => self.palette[i as usize],
             16..=231 => {
@@ -461,6 +487,20 @@ mod tests {
 
     fn theme() -> Theme {
         Theme::from_config(&Config::default())
+    }
+
+    #[test]
+    fn effective_theme_applies_program_colors() {
+        let base = theme();
+        let mut t = Terminal::new(10, 1, 0);
+        assert!(matches!(base.effective(t.screen()), Cow::Borrowed(_)));
+        t.feed(b"\x1b]11;#010203\x07\x1b]4;1;#00ff00\x07\x1b]4;100;#0000ff\x07");
+        let theme = base.effective(t.screen());
+        assert_eq!(theme.background, Rgb(1, 2, 3));
+        assert_eq!(theme.foreground, base.foreground);
+        assert_eq!(theme.indexed(1), Rgb(0, 255, 0));
+        assert_eq!(theme.indexed(100), Rgb(0, 0, 255));
+        assert_eq!(theme.indexed(2), base.indexed(2));
     }
 
     fn frame(screen: &Screen) -> Frame<'_> {

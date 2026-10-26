@@ -62,7 +62,7 @@ use crate::keybinds::Action;
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{MouseMode, Terminal};
+use crate::terminal::{DefaultColors, MouseMode, Terminal};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -269,9 +269,14 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         .map_err(|e| format!("cannot watch the pty: {e}"))?;
 
     let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
-    let cursor = config.colors.cursor();
-    term.screen_mut()
-        .set_default_cursor_color((cursor.0, cursor.1, cursor.2));
+    let defaults = Theme::from_config(&config);
+    let rgb = |c: crate::config::Rgb| (c.0, c.1, c.2);
+    term.screen_mut().set_default_colors(DefaultColors {
+        foreground: rgb(defaults.foreground),
+        background: rgb(defaults.background),
+        cursor: rgb(defaults.cursor),
+        palette: std::array::from_fn(|i| rgb(defaults.indexed(i as u8))),
+    });
     let font_points = config.font.size;
     let mut app = App {
         qh: qh.clone(),
