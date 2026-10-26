@@ -9,16 +9,15 @@ nothing surprises you.
   are dropped: combining accents (`e` + U+0301), ZWJ emoji sequences, and
   variation selectors other than VS16. VS16 (U+FE0F, emoji presentation)
   widens the preceding character to two cells when it has an emoji form,
-  so prompts such as starship's stay aligned. Precomposed text, including all Vietnamese letters as
-  input methods produce them, displays correctly.
+  so prompts such as starship's stay aligned. Precomposed text, including
+  all Vietnamese letters as input methods produce them, displays correctly.
 - **No shaping or ligatures.** Each character is drawn on its own, so Arabic,
   Indic scripts and programming ligatures don't render properly.
 - **No color emoji.** Bitmap and color fonts (CBDT/COLR, such as Noto Color
   Emoji) aren't supported and are skipped during fallback. Emoji-presentation
   characters are drawn with a monochrome glyph, enlarged to fill their two
-  cells. Emoji appear as
-  monochrome glyphs if a font like Noto Emoji or Symbola is installed;
-  otherwise they are missing.
+  cells. Emoji appear as monochrome glyphs if a font like Noto Emoji or
+  Symbola is installed; otherwise they are missing.
 - **Variable fonts** only get their `wght` axis set (400, or 700 for bold).
   Other axes keep their defaults, and italic is not synthesized.
 - **No synthetic bold or italic.** If the family has no bold or italic face,
@@ -83,8 +82,8 @@ nothing surprises you.
   and the compositor scales it down, which looks slightly soft.
 - **No primary selection.** Middle click pastes the regular clipboard, and
   selecting text doesn't copy it automatically.
-- Selection is cell-linear only: no double-click words, triple-click lines or
-  block selection. It is cleared whenever new output arrives.
+- No block (rectangular) selection. The selection is cleared whenever new
+  output arrives.
 - No `xdg-activation` (urgency) or `idle-inhibit`.
 - Pointer: only the text cursor shape. Drag-and-drop is not accepted.
 
@@ -97,15 +96,15 @@ nothing surprises you.
 - With transparency, the input-method preedit is drawn over a translucent
   background, so text under it on the same row can show through faintly.
 - Opacity can't be changed at runtime.
-
-- Every frame rebuilds and uploads the vertex buffer for the whole screen
-  (no damage tracking). This is cheap for normal sizes, but a huge window
-  with a tiny font does more work than necessary.
-- Requires OpenGL ES 3.0 through EGL; there is no software fallback inside
-  jotty (Mesa's llvmpipe works).
-- When the 2048×2048 glyph atlas fills up, it is cleared and the frame is
-  redrawn, which can cause a brief hitch with very large fonts or many
-  scripts on screen.
+- No damage tracking: every frame rebuilds the whole screen. With the GPU
+  renderer that means one vertex upload, which is cheap. The CPU renderer
+  repaints and damages the whole window, so on a large high-DPI window,
+  fast-scrolling output costs noticeable CPU time.
+- The GPU renderer needs OpenGL ES 3.0 through EGL. Without it, jotty falls
+  back to the CPU renderer.
+- When the glyph atlas (2048×2048 on the GPU, 1024×1024 on the CPU) fills
+  up, it is cleared and the frame is redrawn, which can cause a brief hitch
+  with very large fonts or many scripts on screen.
 
 ## Platform
 
