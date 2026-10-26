@@ -286,6 +286,8 @@ pub struct Frame<'a> {
     pub origin: (u32, u32),
     /// First and last cell of a link to underline (Ctrl is held over it).
     pub link: Option<(Point, Point)>,
+    /// A cell marked by Shift+click, drawn like the selection.
+    pub mark: Option<Point>,
     /// The search bar's text, drawn over the bottom row while searching.
     pub search: Option<&'a str>,
 }
@@ -329,7 +331,8 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             };
             let selected = frame
                 .selection
-                .is_some_and(|s| s.contains(Point { line, col: x }));
+                .is_some_and(|s| s.contains(Point { line, col: x }))
+                || frame.mark == Some(Point { line, col: x });
             let is_cursor = block_cursor && y == cursor_row && x == cursor_col;
             let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
@@ -575,6 +578,24 @@ mod tests {
         assert_eq!(drawn, ['e', '🇻', 'x']);
     }
 
+    #[test]
+    fn marked_cell_is_drawn_selected() {
+        let mut t = Terminal::new(4, 1, 0);
+        t.feed(b"ab\x1b[?25l");
+        let theme = theme();
+        let mut f = frame(t.screen());
+        f.mark = Some(Point { line: 0, col: 1 });
+        let batch = build(&f, &theme, METRICS, &mut FakeGlyphs::default());
+        // One background quad: the marked cell, in the text color.
+        let backgrounds: Vec<_> = batch
+            .vertices
+            .chunks(6 * VERTEX_FLOATS)
+            .filter(|q| q[8] == 0.0)
+            .map(|q| (q[0], [q[4], q[5], q[6]]))
+            .collect();
+        assert_eq!(backgrounds, [(10.0, theme.foreground.to_f32())]);
+    }
+
     fn theme() -> Theme {
         Theme::from_config(&Config::default())
     }
@@ -601,6 +622,7 @@ mod tests {
             focused: true,
             origin: (0, 0),
             link: None,
+            mark: None,
             search: None,
         }
     }

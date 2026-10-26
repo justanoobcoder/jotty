@@ -194,6 +194,11 @@ pub struct App {
     hovered_link: Option<Link>,
     pointer_inside: bool,
     conn: Connection,
+    /// A cell marked by Shift+click; the next Shift+click selects from it.
+    shift_mark: Option<Point>,
+    /// The current left press was a Shift+click (it marks a cell unless
+    /// it becomes a drag).
+    shift_press: bool,
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
@@ -434,6 +439,8 @@ pub fn run(
         pointer_inside: false,
         conn: conn.clone(),
         last_click: None,
+        shift_mark: None,
+        shift_press: false,
         data_device: None,
         copy_source: None,
         primary_device: None,
@@ -514,6 +521,7 @@ impl App {
             log::warn!("cannot resize pty: {e}");
         }
         self.selection = None;
+        self.shift_mark = None;
         self.request_redraw();
     }
 
@@ -526,14 +534,11 @@ impl App {
 
     fn read_pty(&mut self) {
         // What the selection covers, to keep it while output goes elsewhere.
-        let selected = self.selection.map(|s| {
+        let (scrolled_before, alt_before) = {
             let screen = self.term.screen();
-            (
-                s.live_rows(screen),
-                screen.grid().scrolled,
-                screen.is_alt_screen(),
-            )
-        });
+            (screen.grid().scrolled, screen.is_alt_screen())
+        };
+        let selected = self.selection.map(|s| s.live_rows(self.term.screen()));
         let mut buf = [0u8; 1 << 16];
         let mut total = 0;
         while total < READ_BUDGET {
@@ -579,16 +584,21 @@ impl App {
                 self.update_hovered_link();
             }
             let screen = self.term.screen();
-            if let (Some(selection), Some((rows, scrolled, alt))) = (&mut self.selection, selected)
-            {
-                let delta = screen.grid().scrolled.wrapping_sub(scrolled) as isize;
-                // Another buffer means other text; history and alternate
-                // screens never share lines.
-                let keep =
-                    alt == screen.is_alt_screen() && selection.follow_output(screen, &rows, delta);
+            let delta = screen.grid().scrolled.wrapping_sub(scrolled_before) as isize;
+            // Another buffer means other text; history and alternate
+            // screens never share lines.
+            let same_buffer = alt_before == screen.is_alt_screen();
+            if let (Some(selection), Some(rows)) = (&mut self.selection, selected) {
+                let keep = same_buffer && selection.follow_output(screen, &rows, delta);
                 if !keep {
                     self.selection = None;
                     self.selecting = false;
+                }
+            }
+            if let Some(mark) = &mut self.shift_mark {
+                mark.line -= delta;
+                if !same_buffer || screen.row_at(mark.line).is_none() {
+                    self.shift_mark = None;
                 }
             }
             self.request_redraw();
@@ -667,6 +677,7 @@ impl App {
             focused: self.focused,
             origin: (pad, pad),
             link: self.hovered_link.as_ref().map(|l| (l.start, l.end)),
+            mark: self.shift_mark,
             search: search_bar.as_deref(),
         };
         match self.renderer.draw(&frame) {
@@ -693,6 +704,10 @@ impl App {
     fn handle_key(&mut self, event: KeyEvent) {
         if self.search.is_some() {
             return self.search_key(&event);
+        }
+        if self.shift_mark.is_some() && event.keysym == Keysym::Escape {
+            self.shift_mark = None;
+            return self.request_redraw();
         }
         let base = self.base_keysym(event.raw_code);
         if let Some(action) = self
@@ -846,6 +861,21 @@ impl App {
             .floor()
             .max(0.0) as usize;
         (col.min(screen.cols() - 1), row.min(screen.rows() - 1))
+    }
+
+    /// The first cell of the character at `p`: the second half of a wide
+    /// character counts as the first.
+    fn cell_start(&self, p: Point) -> Point {
+        let spacer = self
+            .term
+            .screen()
+            .row_at(p.line)
+            .and_then(|r| r.cells.get(p.col))
+            .is_some_and(|c| c.flags.contains(crate::terminal::Flags::WIDE_SPACER));
+        Point {
+            col: if spacer { p.col - 1 } else { p.col },
+            ..p
+        }
     }
 
     /// The grid cell under a surface-local position, in selection coordinates.
@@ -1663,12 +1693,34 @@ impl PointerHandler for App {
                         self.open_link(link);
                     }
                 }
+                // The second Shift+click: select from the marked cell.
+                PointerEventKind::Press {
+                    button: BTN_LEFT,
+                    serial,
+                    ..
+                } if self.modifiers.shift && self.shift_mark.is_some() => {
+                    self.last_serial = *serial;
+                    let mark = self.shift_mark.take().unwrap();
+                    let point = self.cell_start(self.point_at(event.position));
+                    let (start, end) = (mark.min(point), mark.max(point));
+                    self.selection = Some(Selection::span(start, end, Unit::Word));
+                    self.selecting = false;
+                    self.shift_press = false;
+                    self.last_click = None;
+                    self.request_redraw();
+                }
                 PointerEventKind::Press {
                     button: BTN_LEFT,
                     serial,
                     time,
                 } => {
                     self.last_serial = *serial;
+                    // A plain click cancels a Shift+click mark; a Shift+click
+                    // that isn't dragged sets one (on release).
+                    self.shift_press = self.modifiers.shift;
+                    if !self.modifiers.shift {
+                        self.shift_mark = None;
+                    }
                     let point = self.point_at(event.position);
                     // A fourth click starts over as a single click.
                     let clicks = match self.last_click {
@@ -1696,8 +1748,11 @@ impl PointerHandler for App {
                     button: BTN_LEFT, ..
                 } => {
                     self.selecting = false;
-                    if self.selection.is_some_and(|s| s.is_empty()) {
+                    if let Some(selection) = self.selection.filter(|s| s.is_empty()) {
                         self.selection = None;
+                        if std::mem::take(&mut self.shift_press) {
+                            self.shift_mark = Some(self.cell_start(selection.range().0));
+                        }
                     }
                     self.set_primary();
                     self.request_redraw();
