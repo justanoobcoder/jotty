@@ -145,6 +145,7 @@ impl Batch {
         self.quad(x + glyph.left as f32, y + glyph.top as f32, w, h, glyph.uv, color, 1.0, 1.0);
     }
 
+    #[cfg(test)]
     pub fn quads(&self) -> usize {
         self.vertices.len() / (6 * VERTEX_FLOATS)
     }

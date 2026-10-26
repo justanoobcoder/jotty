@@ -308,10 +308,6 @@ impl Screen {
         std::mem::take(&mut self.dirty)
     }
 
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
     /// The column where user input starts on the cursor row: after the
     /// prompt if the shell marked it with OSC 133, otherwise 0.
     pub fn input_start(&self) -> usize {

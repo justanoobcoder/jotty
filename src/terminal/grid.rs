@@ -109,6 +109,7 @@ impl Row {
     }
 
     /// The row's text without wide-character spacers and trailing blanks.
+    #[cfg(test)]
     pub fn text(&self) -> String {
         let mut s: String = self
             .cells
@@ -140,10 +141,7 @@ impl Grid {
         }
     }
 
-    pub fn cols(&self) -> usize {
-        self.cols
-    }
-
+    #[cfg(test)]
     pub fn num_rows(&self) -> usize {
         self.rows.len()
     }
