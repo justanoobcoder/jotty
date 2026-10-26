@@ -28,10 +28,11 @@ transparent_cell_backgrounds = false
 # Blur what is behind the window, on compositors that support
 # ext-background-effect-v1. Only visible with opacity below 1.0.
 blur = false
-# "gpu" draws with OpenGL ES; "cpu" draws in software and uses far less
-# memory, since no GPU driver is loaded. jotty falls back to "cpu" when
-# OpenGL isn't available.
-renderer = "gpu"
+# "cpu" draws in software, repainting only what changed, and uses far less
+# memory, since no GPU driver is loaded. "gpu" draws with OpenGL ES, which
+# is cheaper for constant full-screen redraws of a large window. jotty falls
+# back to "cpu" when OpenGL isn't available.
+renderer = "cpu"
 # When the bell rings (BEL) while the window isn't focused, ask the
 # compositor to mark it urgent.
 bell_urgent = true

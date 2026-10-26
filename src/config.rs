@@ -74,7 +74,7 @@ impl Default for WindowConfig {
             opacity: 1.0,
             transparent_cell_backgrounds: false,
             blur: false,
-            renderer: RendererKind::Gpu,
+            renderer: RendererKind::Cpu,
             bell_urgent: true,
             columns: 80,
             lines: 24,
@@ -85,10 +85,10 @@ impl Default for WindowConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererKind {
-    /// OpenGL ES 3 through EGL. Fast, but the GPU driver it loads takes
-    /// 100 MiB or more of memory.
+    /// OpenGL ES 3 through EGL. Cheap per frame at any size, but the GPU
+    /// driver it loads takes 100 MiB or more of memory.
     Gpu,
-    /// Shared-memory buffers drawn on the CPU, like foot.
+    /// Shared-memory buffers drawn on the CPU, repainting only what changed.
     Cpu,
 }
 
