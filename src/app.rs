@@ -78,12 +78,32 @@ use crate::keybinds::Action;
 use crate::links::{Detector, Link};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
+use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
 use crate::terminal::{DefaultColors, MouseMode, Terminal};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+/// A scrollback search: the query and the current match.
+#[derive(Default)]
+struct Search {
+    query: String,
+    found: Option<(Point, Point)>,
+}
+
+impl Search {
+    /// The text of the search bar.
+    fn bar(&self) -> String {
+        let status = if self.found.is_none() && !self.query.is_empty() {
+            " (not found)"
+        } else {
+            ""
+        };
+        format!("search{status}: {}", self.query)
+    }
+}
+
 /// Clicks on the same cell within this many milliseconds of each other make
 /// a double or triple click.
 const DOUBLE_CLICK_MS: u32 = 400;
@@ -164,6 +184,8 @@ pub struct App {
     mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
     selecting: bool,
+    /// Scrollback search in progress.
+    search: Option<Search>,
     links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
@@ -387,6 +409,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         mouse_cell: None,
         selection: None,
         selecting: false,
+        search: None,
         links,
         hovered_link: None,
         pointer_inside: false,
@@ -617,6 +640,7 @@ impl App {
         self.frame_pending = true;
 
         let pad = self.padding();
+        let search_bar = self.search.as_ref().map(Search::bar);
         let frame = Frame {
             screen: self.term.screen(),
             selection: self.selection.as_ref(),
@@ -624,6 +648,7 @@ impl App {
             focused: self.focused,
             origin: (pad, pad),
             link: self.hovered_link.as_ref().map(|l| (l.start, l.end)),
+            search: search_bar.as_deref(),
         };
         match self.renderer.draw(&frame) {
             Ok(again) => self.dirty |= again,
@@ -647,6 +672,9 @@ impl App {
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
+        if self.search.is_some() {
+            return self.search_key(&event);
+        }
         let base = self.base_keysym(event.raw_code);
         if let Some(action) = self
             .config
@@ -666,6 +694,81 @@ impl App {
         {
             self.scroll_to_bottom();
             self.send(&bytes);
+        }
+    }
+
+    /// Handles a key while searching: it edits the query or moves between
+    /// matches instead of going to the program.
+    fn search_key(&mut self, event: &KeyEvent) {
+        let ctrl = self.modifiers.ctrl;
+        match event.keysym {
+            Keysym::Escape => {
+                self.search = None;
+                self.selection = None;
+            }
+            Keysym::Return | Keysym::KP_Enter => {
+                self.search = None;
+                self.set_primary();
+            }
+            Keysym::BackSpace => {
+                if let Some(search) = &mut self.search {
+                    search.query.pop();
+                }
+                self.search_step(Direction::Older, true);
+            }
+            Keysym::Up => self.search_step(Direction::Older, false),
+            Keysym::Down => self.search_step(Direction::Newer, false),
+            Keysym::r if ctrl => self.search_step(Direction::Older, false),
+            Keysym::s if ctrl => self.search_step(Direction::Newer, false),
+            _ if !ctrl && !self.modifiers.alt => {
+                if let Some(text) = &event.utf8 {
+                    self.search_type(text);
+                }
+            }
+            _ => {}
+        }
+        self.request_redraw();
+    }
+
+    /// Adds typed (or input-method) text to the search query.
+    fn search_type(&mut self, text: &str) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        search
+            .query
+            .extend(text.chars().filter(|c| !c.is_control()));
+        self.search_step(Direction::Older, true);
+    }
+
+    /// Moves to the next match in `direction` from the current one (or from
+    /// the bottom), selecting it and scrolling it into view. `inclusive`
+    /// keeps the current match if it still matches: the query changed.
+    fn search_step(&mut self, direction: Direction, inclusive: bool) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        let screen = self.term.screen();
+        let from = search.found.map_or(
+            Point {
+                line: screen.rows() as isize - 1,
+                col: usize::MAX,
+            },
+            |m| m.0,
+        );
+        match search::find(screen, &search.query, from, direction, inclusive) {
+            Some(found) => {
+                search.found = Some(found);
+                self.selection = Some(Selection::span(found.0, found.1, Unit::Word));
+                self.term.screen_mut().show_line(found.0.line);
+            }
+            // Moving past the last match keeps it; a changed query that
+            // matches nothing clears it.
+            None if inclusive => {
+                search.found = None;
+                self.selection = None;
+            }
+            None => {}
         }
     }
 
@@ -701,6 +804,10 @@ impl App {
             Action::FontLarger => self.set_font_points(self.font_points + 1.0),
             Action::FontSmaller => self.set_font_points(self.font_points - 1.0),
             Action::FontReset => self.set_font_points(self.config.font.size),
+            Action::Search => {
+                self.search = Some(Search::default());
+                self.request_redraw();
+            }
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -1065,7 +1172,9 @@ impl App {
             } => self.ime.set_delete(before_length, after_length),
             Event::Done { .. } => {
                 let bytes = self.ime.done();
-                if !bytes.is_empty() {
+                if self.search.is_some() {
+                    self.search_type(&String::from_utf8_lossy(&bytes));
+                } else if !bytes.is_empty() {
                     self.ime_caused_change = true;
                     self.scroll_to_bottom();
                     self.send(&bytes);

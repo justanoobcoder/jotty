@@ -10,6 +10,7 @@ mod keybinds;
 mod links;
 mod pty;
 mod renderer;
+mod search;
 mod selection;
 mod terminal;
 mod terminfo;

@@ -93,6 +93,10 @@ scroll_to_bottom = ["shift+end"]
 font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add"]
 font_smaller = ["ctrl+minus", "ctrl+kp_subtract"]
 font_reset = ["ctrl+0", "ctrl+kp_0"]
+# Search the scrollback: type to search older output, Up/Ctrl+R and
+# Down/Ctrl+S for the previous and next match, Enter to keep the match
+# selected, Escape to cancel.
+search = ["ctrl+shift+f"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set

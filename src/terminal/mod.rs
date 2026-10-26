@@ -418,6 +418,18 @@ impl Screen {
         }
     }
 
+    /// Scrolls the view so that `line` is visible, centering it if it
+    /// wasn't.
+    pub fn show_line(&mut self, line: isize) {
+        let rows = self.rows as isize;
+        let top = -(self.display_offset as isize);
+        if (top..top + rows).contains(&line) {
+            return;
+        }
+        let offset = (rows / 2 - line).clamp(0, self.grid().history.len() as isize);
+        self.scroll_display(offset - self.display_offset as isize);
+    }
+
     pub fn reset_display(&mut self) {
         self.scroll_display(-(self.display_offset as isize));
     }

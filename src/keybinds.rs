@@ -29,10 +29,12 @@ pub enum Action {
     FontLarger,
     FontSmaller,
     FontReset,
+    /// Search the scrollback.
+    Search,
 }
 
 impl Action {
-    const ALL: [(&'static str, Action); 12] = [
+    const ALL: [(&'static str, Action); 13] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -45,6 +47,7 @@ impl Action {
         ("font_larger", Action::FontLarger),
         ("font_smaller", Action::FontSmaller),
         ("font_reset", Action::FontReset),
+        ("search", Action::Search),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -64,6 +67,7 @@ impl Action {
             Action::FontLarger => &["ctrl+plus", "ctrl+equal", "ctrl+kp_add"],
             Action::FontSmaller => &["ctrl+minus", "ctrl+kp_subtract"],
             Action::FontReset => &["ctrl+0", "ctrl+kp_0"],
+            Action::Search => &["ctrl+shift+f"],
         }
     }
 }

@@ -277,6 +277,8 @@ pub struct Frame<'a> {
     pub origin: (u32, u32),
     /// First and last cell of a link to underline (Ctrl is held over it).
     pub link: Option<(Point, Point)>,
+    /// The search bar's text, drawn over the bottom row while searching.
+    pub search: Option<&'a str>,
 }
 
 fn style_of(cell: &Cell) -> Style {
@@ -390,12 +392,51 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         }
     }
 
-    if let Some(preedit) = frame.preedit {
+    if let Some(text) = frame.search {
+        draw_search_bar(&mut front, text, frame, theme, m, glyphs);
+    } else if let Some(preedit) = frame.preedit {
         draw_preedit(&mut front, preedit, frame, theme, cursor_color, m, glyphs);
     }
 
     back.append(front);
     back
+}
+
+/// Draws the search bar over the bottom row, in inverse colors, with a
+/// beam cursor after the text.
+fn draw_search_bar(
+    batch: &mut Batch,
+    text: &str,
+    frame: &Frame,
+    theme: &Theme,
+    m: CellMetrics,
+    glyphs: &mut impl GlyphCache,
+) {
+    let screen = frame.screen;
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    let x = |col: usize| frame.origin.0 as f32 + col as f32 * cw;
+    let py = frame.origin.1 as f32 + (screen.rows() - 1) as f32 * ch;
+    batch.rect(x(0), py, screen.cols() as f32 * cw, ch, theme.foreground);
+    let mut col = 0;
+    for c in text.chars() {
+        let width = c.width().unwrap_or(0);
+        if width == 0 {
+            continue;
+        }
+        if col + width > screen.cols() {
+            return;
+        }
+        if c != ' '
+            && let Some(glyph) = glyphs.glyph(c, Style::Regular, width == 2)
+        {
+            batch.glyph(x(col), py, &glyph, theme.background);
+        }
+        col += width;
+    }
+    if col < screen.cols() {
+        let beam = (m.stroke as f32 * 2.0).max(1.0);
+        batch.rect(x(col), py, beam, ch, theme.background);
+    }
 }
 
 /// Draws the preedit at the cursor, over the grid, clipped at the line end.
@@ -521,6 +562,7 @@ mod tests {
             focused: true,
             origin: (0, 0),
             link: None,
+            search: None,
         }
     }
 
