@@ -142,7 +142,7 @@ impl Drop for Egl {
 struct Atlas {
     texture: glow::Texture,
     packer: Packer,
-    glyphs: HashMap<(char, Style), Option<GlyphInfo>>,
+    glyphs: HashMap<(char, Style, bool), Option<GlyphInfo>>,
     /// The atlas filled up during this frame and was cleared.
     overflowed: bool,
 }
@@ -155,11 +155,11 @@ struct Uploader<'a> {
 }
 
 impl GlyphCache for Uploader<'_> {
-    fn glyph(&mut self, c: char, style: Style) -> Option<GlyphInfo> {
-        if let Some(info) = self.atlas.glyphs.get(&(c, style)) {
+    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
+        if let Some(info) = self.atlas.glyphs.get(&(c, style, wide)) {
             return *info;
         }
-        let info = self.fonts.rasterize(c, style).and_then(|glyph| {
+        let info = self.fonts.rasterize(c, style, wide).and_then(|glyph| {
             let (x, y) = match self.atlas.packer.alloc(glyph.width, glyph.height) {
                 Some(pos) => pos,
                 None => {
@@ -201,7 +201,7 @@ impl GlyphCache for Uploader<'_> {
                 top: glyph.top,
             })
         });
-        self.atlas.glyphs.insert((c, style), info);
+        self.atlas.glyphs.insert((c, style, wide), info);
         info
     }
 }

@@ -5,6 +5,8 @@ use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::PathBuf;
 
+use unicode_width::UnicodeWidthChar;
+
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
 use fontconfig_sys as fc;
 use fontconfig_sys::constants::*;
@@ -306,8 +308,9 @@ impl Fonts {
         face
     }
 
-    /// Rasterizes `c`. Returns `None` for characters with no visible pixels.
-    pub fn rasterize(&mut self, c: char, style: Style) -> Option<Glyph> {
+    /// Rasterizes `c` for a one-cell slot, or a two-cell slot when `wide`.
+    /// Returns `None` for characters with no visible pixels.
+    pub fn rasterize(&mut self, c: char, style: Style, wide: bool) -> Option<Glyph> {
         if c == ' ' {
             return None;
         }
@@ -316,12 +319,27 @@ impl Fonts {
         }
         let index = self.face_for(c, style).unwrap_or(self.styles[0]);
         let face = &self.faces[index];
+        let m = self.metrics;
+        let id = face.glyph_id(c);
+        let scale = px_scale(face, self.px);
         // Place the baseline where the cell's is, so bounds are cell-relative.
-        let glyph = face.glyph_id(c).with_scale_and_position(
-            px_scale(face, self.px),
-            point(0.0, self.metrics.baseline as f32),
-        );
-        let outline = face.outline_glyph(glyph)?;
+        let origin = point(0.0, m.baseline as f32);
+        let mut outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
+
+        // A narrow glyph in a two-cell slot, as for emoji presentation
+        // sequences (`❄` + VS16): enlarge it to fill the slot like an emoji
+        // would, and center it.
+        let slot_width = 2.0 * m.width as f32;
+        let fill_slot = wide && c.width() == Some(1);
+        if fill_slot {
+            let b = outline.px_bounds();
+            let factor = (slot_width * 0.9 / b.width())
+                .min(m.height as f32 * 0.9 / b.height())
+                .clamp(1.0, 2.0);
+            let scale = PxScale::from(scale.y * factor);
+            outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
+        }
+
         let bounds = outline.px_bounds();
         let (width, height) = (bounds.width() as u32, bounds.height() as u32);
         if width == 0 || height == 0 {
@@ -333,11 +351,19 @@ impl Fonts {
                 *px = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         });
+        let (left, top) = if fill_slot {
+            (
+                (slot_width as i32 - width as i32) / 2,
+                (m.height as i32 - height as i32) / 2,
+            )
+        } else {
+            (bounds.min.x as i32, bounds.min.y as i32)
+        };
         Some(Glyph {
             width,
             height,
-            left: bounds.min.x as i32,
-            top: bounds.min.y as i32,
+            left,
+            top,
             data,
         })
     }
@@ -553,10 +579,21 @@ mod tests {
         };
         let m = fonts.metrics;
         assert!(m.width > 0 && m.height > m.width);
-        let glyph = fonts.rasterize('A', Style::Regular).expect("glyph for A");
+        let glyph = fonts
+            .rasterize('A', Style::Regular, false)
+            .expect("glyph for A");
         assert_eq!(glyph.data.len(), (glyph.width * glyph.height) as usize);
         assert!(glyph.top >= 0);
-        assert!(fonts.rasterize(' ', Style::Regular).is_none());
+        assert!(fonts.rasterize(' ', Style::Regular, false).is_none());
+
+        // In a two-cell slot, a narrow glyph is enlarged and centered.
+        let wide = fonts
+            .rasterize('A', Style::Regular, true)
+            .expect("wide glyph for A");
+        assert!(wide.height > glyph.height);
+        assert!(wide.height <= m.height);
+        let right_gap = 2 * m.width as i32 - (wide.left + wide.width as i32);
+        assert!((wide.left - right_gap).abs() <= 1);
 
         fonts.set_size(32.0);
         assert!(fonts.metrics.height > m.height);

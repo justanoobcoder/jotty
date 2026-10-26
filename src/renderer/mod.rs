@@ -124,7 +124,8 @@ pub struct GlyphInfo {
 }
 
 pub trait GlyphCache {
-    fn glyph(&mut self, c: char, style: Style) -> Option<GlyphInfo>;
+    /// The glyph for `c` in a one-cell slot, or a two-cell slot when `wide`.
+    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo>;
 }
 
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
@@ -247,7 +248,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             }
             if cell.c != ' '
                 && !cell.flags.contains(Flags::HIDDEN)
-                && let Some(glyph) = glyphs.glyph(cell.c, style_of(&cell))
+                && let Some(glyph) = glyphs.glyph(cell.c, style_of(&cell), span > 1.0)
             {
                 front.glyph(px, py, &glyph, fg);
             }
@@ -318,7 +319,7 @@ fn draw_preedit(
         }
         let w = cw * width as f32;
         batch.fill(col_x(col), py, w, ch, theme.background, theme.opacity);
-        if let Some(glyph) = glyphs.glyph(c, Style::Regular) {
+        if let Some(glyph) = glyphs.glyph(c, Style::Regular, width == 2) {
             batch.glyph(col_x(col), py, &glyph, theme.foreground);
         }
         batch.rect(
@@ -360,7 +361,7 @@ mod tests {
     struct FakeGlyphs(Vec<(char, Style)>);
 
     impl GlyphCache for FakeGlyphs {
-        fn glyph(&mut self, c: char, style: Style) -> Option<GlyphInfo> {
+        fn glyph(&mut self, c: char, style: Style, _wide: bool) -> Option<GlyphInfo> {
             self.0.push((c, style));
             Some(GlyphInfo {
                 uv: [0.0; 4],
