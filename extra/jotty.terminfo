@@ -1,0 +1,18 @@
+# Terminfo entry for jotty. It extends xterm-256color with what jotty
+# supports beyond it, so programs don't have to probe for it at startup
+# (probes fail behind relays such as `devenv shell` or tmux).
+#
+# Install for the current user with:  tic -x -o ~/.terminfo jotty.terminfo
+jotty|jotty Wayland terminal emulator,
+# Styled (curly, dotted, ...) and colored underlines.
+	Su,
+	Smulx=\E[4:%p1%dm,
+	Setulc=\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m,
+# 24-bit color.
+	Tc,
+# Cursor shape (DECSCUSR) and color (OSC 12 / OSC 112).
+	Ss=\E[%p1%d q, Se=\E[0 q,
+	Cs=\E]12;%p1%s\007, Cr=\E]112\007,
+# Bracketed paste.
+	BE=\E[?2004h, BD=\E[?2004l, PS=\E[200~, PE=\E[201~,
+	use=xterm-256color,
