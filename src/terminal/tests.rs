@@ -404,6 +404,74 @@ fn prompt_marker_follows_scrolling() {
     assert_eq!(t.screen().input_start(), 2);
 }
 
+const PROMPT: &str = "\x1b]133;A\x07$ \x1b]133;B\x07";
+
+/// Feeds a prompt, a command and its output as a shell with OSC 133 does.
+fn run_command(t: &mut Terminal, command: &str, output: &str) {
+    t.feed(format!("{PROMPT}{command}\r\n\x1b]133;C\x07{output}\x1b]133;D;0\x07").as_bytes());
+}
+
+#[test]
+fn command_output_between_marks() {
+    let mut t = term(20, 10);
+    run_command(&mut t, "ls", "a\r\nb\r\n\r\n");
+    run_command(&mut t, "true", "");
+    t.feed(PROMPT.as_bytes());
+    let s = t.screen();
+    // Lines 1-2; the blank line 3 is left out.
+    assert_eq!(s.command_output(1), Some((1, 2)));
+    assert_eq!(s.command_output(2), Some((1, 2)));
+    // The prompt and command line, and a command without output.
+    assert_eq!(s.command_output(0), None);
+    assert_eq!(s.command_output(3), None);
+    assert_eq!(s.command_output(4), None);
+    assert_eq!(s.command_output(5), None);
+}
+
+#[test]
+fn command_output_while_running() {
+    let mut t = term(20, 5);
+    t.feed(format!("{PROMPT}cat\r\n\x1b]133;C\x07one\r\ntwo\r\n").as_bytes());
+    assert_eq!(t.screen().command_output(2), Some((1, 2)));
+    assert_eq!(t.screen().command_output(3), None);
+}
+
+#[test]
+fn command_output_in_history() {
+    let mut t = term(20, 3);
+    run_command(&mut t, "seq 4", "1\r\n2\r\n3\r\n4\r\n");
+    t.feed(PROMPT.as_bytes());
+    // Lines -3..=-1 are history; the prompt is on line 2.
+    assert_eq!(t.screen().command_output(-1), Some((-2, 1)));
+    assert_eq!(t.screen().command_output(1), Some((-2, 1)));
+}
+
+#[test]
+fn command_output_without_c_mark_follows_command_line() {
+    let mut t = term(4, 10);
+    // The command wraps onto a second row.
+    t.feed(format!("{PROMPT}echo\r\nhi\r\n{PROMPT}").as_bytes());
+    let s = t.screen();
+    assert_eq!(s.command_output(1), None);
+    assert_eq!(s.command_output(2), Some((2, 2)));
+}
+
+#[test]
+fn command_output_after_c_mark_mid_row() {
+    let mut t = term(20, 5);
+    t.feed(format!("{PROMPT}ls\x1b]133;C\x07\r\nx\r\n{PROMPT}").as_bytes());
+    assert_eq!(t.screen().command_output(0), None);
+    assert_eq!(t.screen().command_output(1), Some((1, 1)));
+}
+
+#[test]
+fn erasing_removes_marks() {
+    let mut t = term(20, 5);
+    run_command(&mut t, "ls", "a\r\n");
+    t.feed(b"\x1b[2J");
+    assert_eq!(t.screen().command_output(1), None);
+}
+
 #[test]
 fn split_input_across_feeds() {
     let mut t = term(10, 1);

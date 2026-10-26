@@ -9,7 +9,7 @@ pub mod grid;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
-pub use grid::{Cell, Color, Flags, Grid, Row, Underline};
+pub use grid::{Cell, Color, Flags, Grid, Mark, Row, Underline};
 
 pub struct Terminal {
     parser: vte::Parser,
@@ -306,6 +306,43 @@ impl Screen {
         }
     }
 
+    /// The lines of the command output that `line` belongs to, inclusive,
+    /// found through the shell's OSC 133 marks. Trailing blank lines are
+    /// left out. Without a `C` mark, the output is taken to start after the
+    /// command line (`B`).
+    pub fn command_output(&self, line: isize) -> Option<(isize, isize)> {
+        let top = -(self.grid().history.len() as isize);
+        let mark_at = |l: isize| self.row_at(l).and_then(|r| r.mark);
+        let (marked, mark) = (top..=line)
+            .rev()
+            .find_map(|l| mark_at(l).map(|m| (l, m)))?;
+        let first = match mark {
+            Mark::Prompt => return None,
+            Mark::Output { col: 0 } => marked,
+            Mark::Output { .. } => marked + 1,
+            Mark::Input => {
+                let mut l = marked;
+                while self.row_at(l).is_some_and(|r| r.wrapped) {
+                    l += 1;
+                }
+                l + 1
+            }
+        };
+        // The output ends before the next mark, or at the cursor while the
+        // command is still running.
+        let mut last = (line + 1..self.rows as isize)
+            .find(|&l| mark_at(l).is_some())
+            .map_or(self.cursor.row as isize, |l| l - 1);
+        let blank = |l: isize| {
+            self.row_at(l)
+                .is_none_or(|r| r.cells.iter().all(|c| c.c == ' '))
+        };
+        while last >= first && blank(last) {
+            last -= 1;
+        }
+        (first <= line && line <= last).then_some((first, last))
+    }
+
     pub fn display_offset(&self) -> usize {
         self.display_offset
     }
@@ -555,7 +592,9 @@ impl Screen {
     fn erase_rows(&mut self, start: usize, end: usize) {
         for row in start..end {
             self.erase_cells(row, 0, self.cols);
-            self.grid_mut().rows[row].wrapped = false;
+            let row = &mut self.grid_mut().rows[row];
+            row.wrapped = false;
+            row.mark = None;
         }
     }
 
@@ -1266,13 +1305,21 @@ impl Perform for Screen {
                 self.title = Some(title);
                 self.title_changed = true;
             }
-            [b"133", kind, ..] => match kind.first() {
-                Some(b'B') => {
-                    self.prompt_end = Some((self.cursor.row, self.cursor.col.min(self.cols - 1)))
-                }
-                Some(b'A' | b'C' | b'D') => self.prompt_end = None,
-                _ => {}
-            },
+            [b"133", kind, ..] => {
+                let (row, col) = self.cursor();
+                let mark = match kind.first() {
+                    Some(b'A') => Mark::Prompt,
+                    Some(b'B') => Mark::Input,
+                    Some(b'C') => Mark::Output { col },
+                    Some(b'D') => {
+                        self.prompt_end = None;
+                        return;
+                    }
+                    _ => return,
+                };
+                self.prompt_end = (mark == Mark::Input).then_some((row, col));
+                self.grid_mut().rows[row].mark = Some(mark);
+            }
             _ => log::debug!(
                 "unhandled OSC {:?}",
                 params.first().map(|p| String::from_utf8_lossy(p))

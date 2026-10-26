@@ -99,11 +99,24 @@ impl Cell {
     }
 }
 
+/// A shell-integration mark (OSC 133) on a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// The prompt starts here (`A`).
+    Prompt,
+    /// The prompt ends and the command line starts here (`B`).
+    Input,
+    /// The command's output starts here (`C`), at column `col`.
+    Output { col: usize },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub cells: Vec<Cell>,
     /// The line continues on the next row (it was soft-wrapped).
     pub wrapped: bool,
+    /// The last shell-integration mark set on this row.
+    pub mark: Option<Mark>,
 }
 
 impl Row {
@@ -111,6 +124,7 @@ impl Row {
         Row {
             cells: vec![Cell::blank(template); cols],
             wrapped: false,
+            mark: None,
         }
     }
 
