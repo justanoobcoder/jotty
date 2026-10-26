@@ -22,6 +22,8 @@ pub struct Theme {
     pub foreground: Rgb,
     pub background: Rgb,
     pub cursor: Rgb,
+    /// Color of the character under a block cursor.
+    pub cursor_text: Option<Rgb>,
     pub selection_foreground: Option<Rgb>,
     pub selection_background: Option<Rgb>,
     pub palette: [Rgb; 16],
@@ -38,6 +40,7 @@ impl Theme {
             foreground: config.colors.foreground,
             background: config.colors.background,
             cursor: config.colors.cursor(),
+            cursor_text: config.colors.cursor_text,
             selection_foreground: config.colors.selection_foreground,
             selection_background: config.colors.selection_background,
             palette: config.colors.palette(),
@@ -63,8 +66,14 @@ impl Theme {
         }
     }
 
-    /// Final foreground and background of a cell.
-    pub fn cell_colors(&self, cell: &Cell, selected: bool, block_cursor: bool) -> (Rgb, Rgb) {
+    /// Final foreground and background of a cell. `block_cursor` is the
+    /// cursor color when a block cursor covers the cell.
+    pub fn cell_colors(
+        &self,
+        cell: &Cell,
+        selected: bool,
+        block_cursor: Option<Rgb>,
+    ) -> (Rgb, Rgb) {
         let mut fg = match cell.fg {
             Color::Default => self.foreground,
             Color::Indexed(i @ 0..=7)
@@ -92,12 +101,16 @@ impl Theme {
             fg = self.selection_foreground.unwrap_or(inverse_fg);
             bg = self.selection_background.unwrap_or(inverse_bg);
         }
-        if block_cursor {
-            fg = bg;
-            bg = self.cursor;
-            if fg == bg {
-                fg = self.background;
-            }
+        if let Some(cursor) = block_cursor {
+            // Without a configured text color, the character takes the
+            // cell's background, falling back to the default background
+            // when that would make it invisible.
+            fg = match self.cursor_text {
+                Some(text) => text,
+                None if bg == cursor => self.background,
+                None => bg,
+            };
+            bg = cursor;
         }
         if cell.flags.contains(Flags::HIDDEN) {
             fg = bg;
@@ -214,6 +227,9 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
     let cursor_visible = screen.cursor_visible() && frame.preedit.is_none();
     let (cursor_row, cursor_col) = screen.cursor();
     let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
+    let cursor_color = screen
+        .cursor_color()
+        .map_or(theme.cursor, |(r, g, b)| Rgb(r, g, b));
     let offset = screen.display_offset() as isize;
 
     for y in 0..screen.rows() {
@@ -234,7 +250,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 .selection
                 .is_some_and(|s| s.contains(Point { line, col: x }));
             let is_cursor = block_cursor && y == cursor_row && x == cursor_col;
-            let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor);
+            let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
 
             if bg != theme.background {
@@ -267,22 +283,22 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         let py = oy + cursor_row as f32 * ch;
         let beam = (stroke * 2.0).max(1.0).min(cw);
         match (frame.focused, screen.cursor_shape) {
-            (true, CursorShape::Beam) => front.rect(px, py, beam, ch, theme.cursor),
+            (true, CursorShape::Beam) => front.rect(px, py, beam, ch, cursor_color),
             (true, CursorShape::Underline) => {
-                front.rect(px, py + ch - beam, cw, beam, theme.cursor)
+                front.rect(px, py + ch - beam, cw, beam, cursor_color)
             }
             _ => {
                 // Hollow block for an unfocused window.
-                front.rect(px, py, cw, stroke, theme.cursor);
-                front.rect(px, py + ch - stroke, cw, stroke, theme.cursor);
-                front.rect(px, py, stroke, ch, theme.cursor);
-                front.rect(px + cw - stroke, py, stroke, ch, theme.cursor);
+                front.rect(px, py, cw, stroke, cursor_color);
+                front.rect(px, py + ch - stroke, cw, stroke, cursor_color);
+                front.rect(px, py, stroke, ch, cursor_color);
+                front.rect(px + cw - stroke, py, stroke, ch, cursor_color);
             }
         }
     }
 
     if let Some(preedit) = frame.preedit {
-        draw_preedit(&mut front, preedit, frame, theme, m, glyphs);
+        draw_preedit(&mut front, preedit, frame, theme, cursor_color, m, glyphs);
     }
 
     back.append(front);
@@ -295,6 +311,7 @@ fn draw_preedit(
     preedit: &Preedit,
     frame: &Frame,
     theme: &Theme,
+    cursor_color: Rgb,
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
@@ -339,7 +356,7 @@ fn draw_preedit(
     }
     if let Some(col) = cursor_col.filter(|&c| c < screen.cols()) {
         let beam = (m.stroke as f32 * 2.0).max(1.0);
-        batch.rect(col_x(col), py, beam, ch, theme.cursor);
+        batch.rect(col_x(col), py, beam, ch, cursor_color);
     }
 }
 
@@ -417,19 +434,19 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, false, false),
+            t.cell_colors(&cell, false, None),
             (t.palette[1], t.background)
         );
         cell.flags.insert(Flags::BOLD);
-        assert_eq!(t.cell_colors(&cell, false, false).0, t.palette[9]);
+        assert_eq!(t.cell_colors(&cell, false, None).0, t.palette[9]);
         cell.flags.insert(Flags::INVERSE);
         assert_eq!(
-            t.cell_colors(&cell, false, false),
+            t.cell_colors(&cell, false, None),
             (t.background, t.palette[9])
         );
         // Selecting inverted text un-inverts it.
         assert_eq!(
-            t.cell_colors(&cell, true, false),
+            t.cell_colors(&cell, true, None),
             (t.palette[9], t.background)
         );
 
@@ -437,7 +454,7 @@ mod tests {
             flags: Flags::HIDDEN,
             ..Cell::default()
         };
-        let (fg, bg) = t.cell_colors(&hidden, false, false);
+        let (fg, bg) = t.cell_colors(&hidden, false, None);
         assert_eq!(fg, bg);
     }
 
@@ -451,12 +468,12 @@ mod tests {
         // Only the background configured: the text is still inverted.
         t.selection_background = Some(Rgb(1, 2, 3));
         assert_eq!(
-            t.cell_colors(&red, true, false),
+            t.cell_colors(&red, true, None),
             (t.background, Rgb(1, 2, 3))
         );
         t.selection_foreground = Some(Rgb(4, 5, 6));
         assert_eq!(
-            t.cell_colors(&red, true, false),
+            t.cell_colors(&red, true, None),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
         );
         // Inverse cells use the configured colors too.
@@ -465,12 +482,12 @@ mod tests {
             ..red
         };
         assert_eq!(
-            t.cell_colors(&inverse, true, false),
+            t.cell_colors(&inverse, true, None),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
         );
         // Unselected cells are unaffected.
         assert_eq!(
-            t.cell_colors(&red, false, false),
+            t.cell_colors(&red, false, None),
             (t.palette[1], t.background)
         );
     }
@@ -478,9 +495,55 @@ mod tests {
     #[test]
     fn block_cursor_colors() {
         let t = theme();
-        let (fg, bg) = t.cell_colors(&Cell::default(), false, true);
+        let (fg, bg) = t.cell_colors(&Cell::default(), false, Some(t.cursor));
         assert_eq!(bg, t.cursor);
         assert_eq!(fg, t.background);
+    }
+
+    #[test]
+    fn cursor_text_color() {
+        let mut t = theme();
+        t.cursor_text = Some(Rgb(1, 2, 3));
+        let cell = Cell {
+            fg: Color::Indexed(2),
+            ..Cell::default()
+        };
+        assert_eq!(
+            t.cell_colors(&cell, false, Some(Rgb(9, 9, 9))),
+            (Rgb(1, 2, 3), Rgb(9, 9, 9))
+        );
+    }
+
+    #[test]
+    fn program_cursor_color_overrides_theme() {
+        let mut term = Terminal::new(4, 1, 0);
+        term.feed(b"\x1b]12;#00ff00\x07");
+        let batch = build(
+            &frame(term.screen()),
+            &theme(),
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+
+        // Other cursor shapes and the unfocused outline use it too.
+        term.feed(b"\x1b[6 q");
+        let batch = build(
+            &frame(term.screen()),
+            &theme(),
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+
+        term.feed(b"\x1b]112\x07");
+        let batch = build(
+            &frame(term.screen()),
+            &theme(),
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(quad_at(&batch, 0).1, theme().cursor.to_f32());
     }
 
     #[test]
@@ -490,7 +553,7 @@ mod tests {
             flags: Flags::DIM,
             ..Cell::default()
         };
-        let fg = t.cell_colors(&cell, false, false).0;
+        let fg = t.cell_colors(&cell, false, None).0;
         assert!(fg.0 < t.foreground.0 && fg.0 > t.background.0);
     }
 

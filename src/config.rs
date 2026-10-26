@@ -102,6 +102,9 @@ pub struct ColorConfig {
     pub background: Rgb,
     /// Cursor color; defaults to the foreground color.
     pub cursor: Option<Rgb>,
+    /// Color of the character under a block cursor; defaults to the cell's
+    /// background color.
+    pub cursor_text: Option<Rgb>,
     /// Text color of selected cells; defaults to the cell's background
     /// (inverse video).
     pub selection_foreground: Option<Rgb>,
@@ -118,6 +121,7 @@ impl Default for ColorConfig {
             foreground: Rgb(0xdc, 0xdc, 0xdc),
             background: Rgb(0x18, 0x18, 0x18),
             cursor: None,
+            cursor_text: None,
             selection_foreground: None,
             selection_background: None,
             palette: Vec::new(),
@@ -287,6 +291,7 @@ mod tests {
             foreground = "#ffffff"
             background = "#000000"
             cursor = "#ff0000"
+            cursor_text = "#00ff00"
             selection_foreground = "#000001"
             selection_background = "#fffffe"
             palette = ["#010203", "#aabbcc"]
@@ -304,6 +309,7 @@ mod tests {
         assert_eq!(config.terminal.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.terminal.scrollback, 500);
         assert_eq!(config.colors.cursor(), Rgb(255, 0, 0));
+        assert_eq!(config.colors.cursor_text, Some(Rgb(0, 255, 0)));
         assert_eq!(config.colors.selection_foreground, Some(Rgb(0, 0, 1)));
         assert_eq!(config.colors.selection_background, Some(Rgb(255, 255, 254)));
         let palette = config.colors.palette();

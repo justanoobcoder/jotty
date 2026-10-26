@@ -217,7 +217,10 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         )
         .map_err(|e| format!("cannot watch the pty: {e}"))?;
 
-    let term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
+    let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
+    let cursor = config.colors.cursor();
+    term.screen_mut()
+        .set_default_cursor_color((cursor.0, cursor.1, cursor.2));
     let font_points = config.font.size;
     let mut app = App {
         qh: qh.clone(),
