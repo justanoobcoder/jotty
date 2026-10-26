@@ -40,16 +40,18 @@ The tests don't need a compositor, GPU or display:
 
 | Area | What is tested |
 | --- | --- |
-| `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, charsets, reports, resize, scrollback view, OSC 133, and a garbage-input fuzz test |
+| `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, grapheme clusters, charsets, reports (DECRQM, color queries), hyperlinks, resize and reflow, scrollback view, OSC 133, and a garbage-input fuzz test |
 | `terminal/grid.rs` | Scrolling, history bounds, resize |
 | `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, controlling terminal, exit status |
 | `input.rs` | Key encoding in all modes, shortcuts, paste encoding |
 | `ime.rs` | Surrounding text from rows (including wide and multibyte characters), byte limits, delete-to-keys, event ordering |
-| `renderer/mod.rs` | Color resolution, cursor styles, decorations, selection and preedit drawing, through a fake glyph cache |
+| `renderer/mod.rs` | Color resolution and program color overrides, cursor styles, decorations, selection and preedit drawing, clusters, through a fake glyph cache |
 | `renderer/atlas.rs` | Packing without overlap |
-| `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, clipping |
-| `font.rs` | Cell metrics, box drawing, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
-| `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text |
+| `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, color glyphs, clipping, partial repaints and damage bands |
+| `font.rs` | Cell metrics, box drawing, mark overlays, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
+| `emoji.rs` | Which text is drawn in color, scaling, and flag ligatures in the system emoji font (skipped without one) |
+| `links.rs`, `search.rs` | URL and hyperlink detection, trimming, wrapped lines, configured patterns; finding matches in both directions |
+| `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text, words, lines, following output |
 
 The Wayland and GL glue (`app.rs`, `renderer/gl.rs`) is tested by running
 jotty, as described next.
@@ -108,7 +110,7 @@ See [architecture.md](architecture.md) for the module map. Some conventions:
   `input`, `selection`, `renderer::build`), so they stay unit-testable.
 - When adding an escape sequence, add a test in `terminal/tests.rs` that
   feeds the bytes and checks the resulting grid.
-- `unsafe` stays in `pty.rs`, `font.rs` (fontconfig) and `renderer/gl.rs`,
+- `unsafe` stays in `pty.rs`, `font.rs` (fontconfig, `mmap`) and `renderer/gl.rs`,
   with a `SAFETY` comment where the reason isn't obvious.
 - Commit one change at a time, and make sure tests, clippy and rustfmt pass
   first.

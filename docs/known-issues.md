@@ -5,19 +5,25 @@ nothing surprises you.
 
 ## Text and fonts
 
-- **No combining characters or grapheme clusters.** Zero-width code points
-  are dropped: combining accents (`e` + U+0301), ZWJ emoji sequences, and
-  variation selectors other than VS16. VS16 (U+FE0F, emoji presentation)
-  widens the preceding character to two cells when it has an emoji form,
-  so prompts such as starship's stay aligned. Precomposed text, including
-  all Vietnamese letters as input methods produce them, displays correctly.
-- **No shaping or ligatures.** Each character is drawn on its own, so Arabic,
-  Indic scripts and programming ligatures don't render properly.
-- **No color emoji.** Bitmap and color fonts (CBDT/COLR, such as Noto Color
-  Emoji) aren't supported and are skipped during fallback. Emoji-presentation
-  characters are drawn with a monochrome glyph, enlarged to fill their two
-  cells. Emoji appear as monochrome glyphs if a font like Noto Emoji or
-  Symbola is installed; otherwise they are missing.
+- **Cell widths follow `wcwidth`.** Grapheme clusters are kept together,
+  but an emoji sequence still takes the cells that programs count for it:
+  👍🏽 and 👨‍👩‍👧 are drawn as one emoji in their first two cells, followed
+  by empty cells (2 + 2 and 2 + 2 + 2 columns). This keeps the cursor where
+  shells and editors expect it. The exception is VS16 (`❤️`), which
+  widens a narrow character to two cells, as starship and most terminals
+  assume.
+- **Combining marks without a precomposed form** are drawn over the base
+  character, centered, without the font's mark positioning; stacked or
+  unusual marks may not sit exactly right.
+- **No shaping or ligatures** for text. Each character is drawn on its own,
+  so Arabic, Indic scripts and programming ligatures don't render properly.
+  (Emoji fonts' own ligatures, for emoji sequences, are applied.)
+- **Color emoji need a bitmap font** (CBDT or sbix, such as Noto Color
+  Emoji). Vector color fonts (COLR, SVG) aren't supported; with only those
+  installed, emoji are monochrome. Which characters are emoji by default is
+  approximated (wide characters in the emoji and symbol blocks).
+- Search compares the first character of each cell, so combining marks are
+  ignored when searching.
 - **Variable fonts** only get their `wght` axis set (400, or 700 for bold).
   Other axes keep their defaults, and italic is not synthesized.
 - **No synthetic bold or italic.** If the family has no bold or italic face,
@@ -26,8 +32,10 @@ nothing surprises you.
 
 ## Terminal emulation
 
-- **No reflow on resize.** Making the window narrower cuts off long lines
-  instead of re-wrapping them, and making it wider doesn't un-wrap them.
+- **Reflow** applies to the normal screen and its history when the width
+  changes. Full-screen programs (on the alternate screen) are cut off or
+  padded instead; they redraw on resize. Reflowing a long history takes a
+  moment on every resize step.
 - Mouse reporting supports X10 (`?9`), normal (`?1000`), button-motion
   (`?1002`) and any-motion (`?1003`) tracking in the SGR (`?1006`) and
   legacy encodings. Not supported: the UTF-8 (`?1005`) and urxvt (`?1015`)
@@ -50,11 +58,16 @@ nothing surprises you.
   by Neovim, rejects larger files). The Nix build checks this. To fit, it
   leaves out the names of Ctrl+Alt navigation keys (`kUP7`, ...); the keys
   still work, but ncurses programs don't recognize them by name.
-- Not implemented: synchronized output (mode 2026), the kitty keyboard
-  protocol and `modifyOtherKeys`, OSC 8 hyperlinks, OSC 52 clipboard access,
-  OSC 4/10/11 color queries, sixel/kitty graphics, blinking text, DECCOLM, and
-  DECSCNM. Unhandled sequences are ignored (logged at `debug` level).
-- The **bell** is ignored.
+- Synchronized output (mode 2026) holds drawing for at most 150 ms, in
+  case a program never ends its update.
+- Not implemented: the kitty keyboard protocol and `modifyOtherKeys`, OSC 52
+  clipboard access, grapheme cluster mode (2027), sixel/kitty graphics,
+  blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
+  (logged at `debug` level).
+- The **bell** only marks an unfocused window urgent; there is no sound or
+  visual bell.
+- Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
+  entries per terminal; beyond that, new ones are dropped (the text stays).
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
   plain key in some cases, as in classic xterm.
 
@@ -77,15 +90,14 @@ nothing surprises you.
 - **No client-side decorations.** jotty asks for server-side decorations. On
   compositors that don't provide them (GNOME/Mutter), the window has no title
   bar or border.
-- **Integer scaling only.** Fractional scales (`wp_fractional_scale_v1`)
-  aren't supported. At 1.25× or 1.5×, jotty renders at the next integer scale
-  and the compositor scales it down, which looks slightly soft.
-- **No primary selection.** Middle click pastes the regular clipboard, and
-  selecting text doesn't copy it automatically.
-- No block (rectangular) selection. The selection is cleared whenever new
-  output arrives.
-- No `xdg-activation` (urgency) or `idle-inhibit`.
-- Pointer: only the text cursor shape. Drag-and-drop is not accepted.
+- **Fractional scaling** needs both `wp-fractional-scale-v1` and
+  `wp-viewporter`; without them, jotty renders at the next integer scale.
+- No block (rectangular) selection. The selection is kept while output goes
+  elsewhere, but cleared when its text changes or it scrolls out of the
+  history.
+- While a program has mouse reporting on, Ctrl+click goes to the program;
+  hold Shift as well to open a link.
+- No `idle-inhibit`. Drag-and-drop is not accepted.
 
 ## Rendering and performance
 
@@ -96,15 +108,17 @@ nothing surprises you.
 - With transparency, the input-method preedit is drawn over a translucent
   background, so text under it on the same row can show through faintly.
 - Opacity can't be changed at runtime.
-- No damage tracking: every frame rebuilds the whole screen. With the GPU
-  renderer that means one vertex upload, which is cheap. The CPU renderer
-  repaints and damages the whole window, so on a large high-DPI window,
-  fast-scrolling output costs noticeable CPU time.
+- Every frame rebuilds the whole screen's quads. The CPU renderer then
+  repaints and damages only the rows that changed, so typing is cheap, but
+  output that scrolls the whole screen repaints all of it; on a large
+  high-DPI window, constant fast scrolling costs more CPU than the GPU
+  renderer.
 - The GPU renderer needs OpenGL ES 3.0 through EGL. Without it, jotty falls
   back to the CPU renderer.
-- When the glyph atlas (2048×2048 on the GPU, 1024×1024 on the CPU) fills
-  up, it is cleared and the frame is redrawn, which can cause a brief hitch
-  with very large fonts or many scripts on screen.
+- When a glyph atlas fills up (text: 2048×2048 on the GPU, 1024×1024 on
+  the CPU; color emoji: 1024×1024 and 512×512), both are cleared and the
+  frame is redrawn, which can cause a brief hitch with very large fonts or
+  many scripts or emoji on screen.
 
 ## Platform
 

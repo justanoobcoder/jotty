@@ -104,6 +104,7 @@ search = ["ctrl+shift+f"]
 # The command that opens a link; the link is added as the last argument.
 launcher = ["xdg-open"]
 # Regular expressions (Rust regex syntax) for more kinds of links, matched
-# against the line under the pointer. The matched text goes to the launcher.
+# against the line under the pointer. The matched text goes to the launcher,
+# which gets every kind of link.
 # regex = ['\bJIRA-\d+\b']
 regex = []

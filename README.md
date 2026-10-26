@@ -10,13 +10,16 @@ A minimal terminal emulator for Wayland, written in Rust.
   fcitx5 or IBus can show preedit text inline, commit text, and delete text
   around the cursor (useful for Vietnamese, Chinese, Japanese, Korean, and so
   on).
-- **GPU or CPU rendering.** By default it draws with OpenGL ES 3 on an EGL
-  surface: one draw call per frame, glyphs cached in a texture atlas, and
-  frames paced by the compositor's frame callbacks. With
-  `renderer = "cpu"` it draws in software instead, using about 20 MiB of
-  memory instead of the 100+ MiB a GPU driver takes.
-- **Minimal.** About 6k lines of Rust, one TOML config file, no tabs or
-  splits. Use your compositor or tmux for those.
+- **Light on memory, GPU optional.** By default it draws on the CPU into
+  shared memory, repainting only the rows that changed, in about 20 MiB.
+  With `renderer = "gpu"` it draws with OpenGL ES 3 instead (one draw call
+  per frame), at the cost of the 100+ MiB a GPU driver takes. Either way,
+  frames are paced by the compositor's frame callbacks.
+- **Modern text.** Grapheme clusters, color emoji with their sequences,
+  reflow on resize, fractional scaling, synchronized output, hyperlinks and
+  clickable URLs, scrollback search, and the primary selection.
+- **Minimal.** About 11k lines of Rust including tests, one TOML config
+  file, no tabs or splits. Use your compositor or tmux for those.
 
 ## Install
 
@@ -55,7 +58,8 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Key / action           | Does                                         |
 | ---------------------- | -------------------------------------------- |
 | Ctrl+Shift+C           | Copy the selection to the clipboard           |
-| Ctrl+Shift+V, Shift+Insert, middle click | Paste the clipboard        |
+| Ctrl+Shift+V, Shift+Insert | Paste the clipboard                       |
+| Middle click           | Paste the primary selection (the last selected text) |
 | Left drag              | Select text (Shift+drag in programs that use the mouse) |
 | Double click           | Select a word, or a command's whole output (opt-in, needs [shell integration](docs/configuration.md#shell-integration)) |
 | Triple click           | Select a line (drag after a double or triple click to extend by words or lines) |
@@ -63,6 +67,8 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Shift+Home/End         | Jump to the top or bottom of the history      |
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
+| Ctrl+Shift+F           | Search the scrollback                         |
+| Ctrl+click             | Open a link or URL (Ctrl+hover underlines it) |
 
 These are the defaults; key bindings can be changed in the
 [`[keybinds]`](docs/configuration.md#keybinds) section.

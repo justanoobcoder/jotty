@@ -52,7 +52,8 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `opacity` | float | `1.0` | Background opacity, 0.0–1.0. Text, the cursor and the selection stay opaque. |
 | `transparent_cell_backgrounds` | bool | `false` | Also apply `opacity` to cells with an explicit background color. |
 | `blur` | bool | `false` | Blur what is behind the window, if the compositor supports `ext-background-effect-v1`. |
-| `renderer` | string | `"gpu"` | `"gpu"` draws with OpenGL ES; `"cpu"` draws in software. See [Renderer](#renderer). |
+| `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
+| `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
 
@@ -82,16 +83,18 @@ drawing what is behind it.
 
 ### Renderer
 
-`renderer = "gpu"` draws with OpenGL ES 3 through EGL. Loading OpenGL loads
-the GPU driver into the process, which costs about 100 MiB of memory with
-the NVIDIA driver, plus as much again for Mesa if both are installed (EGL
-loads every installed driver before picking one).
+`renderer = "cpu"` (the default) draws into shared-memory buffers on the
+CPU, as foot does. No GPU driver is loaded, so jotty uses about 20 MiB. It
+repaints only the rows that changed and tells the compositor which ones, so
+typing and most output cost little. Output that scrolls the whole screen
+repaints all of it, so on a large high-DPI window, constant fast scrolling
+uses more CPU than the GPU renderer.
 
-`renderer = "cpu"` draws into shared-memory buffers on the CPU, as foot does.
-No GPU driver is loaded, so jotty uses about 20 MiB. A terminal is a grid of
-text, so drawing it on the CPU is fast enough for typing and most output.
-It redraws the whole window every frame, though, so on a large high-DPI
-window, fast-scrolling output costs more CPU than with `"gpu"`.
+`renderer = "gpu"` draws with OpenGL ES 3 through EGL: each frame is one
+draw call, whatever the window size. Loading OpenGL loads the GPU driver
+into the process, which costs about 100 MiB of memory with the NVIDIA
+driver, plus as much again for Mesa if both are installed (EGL loads every
+installed driver before picking one).
 
 If the GPU renderer can't start (no EGL or OpenGL ES 3), jotty logs a
 warning and uses the CPU renderer.
@@ -157,11 +160,20 @@ The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 | `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
 | `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
 
-Programs can override the cursor color while they run with OSC 12
-(`printf '\e]12;#ff8800\a'`, also `rgb:ff/88/00`), query it with
-`OSC 12 ; ?`, and restore the configured color with OSC 112. Neovim and some
-shell vi modes use this to show the current mode. A full reset (`reset`,
-`tput reset`) also restores it.
+Programs can override colors while they run, and query them:
+
+| Sequence | Color | Reset with |
+| --- | --- | --- |
+| OSC 4 ; *n* ; *color* | palette entry *n* (0–255) | OSC 104 (all, or listed entries) |
+| OSC 10 ; *color* | default foreground | OSC 110 |
+| OSC 11 ; *color* | default background (also the padding) | OSC 111 |
+| OSC 12 ; *color* | cursor | OSC 112 |
+
+*color* is `#rrggbb`, `#rgb` or `rgb:rr/gg/bb`; `?` instead queries the
+current value, as Neovim does with OSC 11 to pick `background=dark` or
+`light`. For example, `printf '\e]12;#ff8800\a'` sets the cursor color,
+as Neovim and some shell vi modes do to show the current mode. A full
+reset (`reset`, `tput reset`) restores the configured colors.
 
 To match foot's `cursor=<text> <cursor>`, set both colors:
 
@@ -204,6 +216,7 @@ Actions you don't list keep their defaults.
 | `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add` | Increase the font size by a point |
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
+| `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -243,6 +256,23 @@ Unknown actions, modifiers or keys are reported with their line when the
 config is loaded. Middle-click paste isn't a key binding and can't be
 changed.
 
+### Searching
+
+The `search` binding (Ctrl+Shift+F) opens a search bar over the bottom row.
+Type to search the scrollback and the screen, from the bottom up; the
+match is selected and scrolled into view. The search ignores case unless
+the query has an uppercase letter, and finds text that wraps across rows.
+
+| Key | Does |
+| --- | --- |
+| Up, Ctrl+R | Previous (older) match |
+| Down, Ctrl+S | Next (newer) match |
+| Backspace | Delete the last character of the query |
+| Enter | Close the bar and keep the match selected (and as the primary selection) |
+| Escape | Close the bar and clear the selection |
+
+### Mouse
+
 **Double click** selects the word under the pointer. A word is a run of
 characters other than whitespace and `` "'`()[]{}<>|,; ``, so paths, URLs
 and options such as `--color=auto` are selected whole. Words continue
@@ -261,12 +291,49 @@ lines. Copy it as usual. This needs the shell to mark its prompts and
 commands (see [Shell integration](#shell-integration)); on prompts and
 command lines, a double click still selects a word.
 
+**Primary selection.** Selecting text also makes it the primary
+selection, and a middle click pastes the primary selection, as is usual on
+Linux. Compositors without `primary-selection-unstable-v1` get the
+clipboard instead. The selection stays while output arrives elsewhere,
+following its text as it scrolls into the history.
+
+**Links.** Hold Ctrl over a link to underline it, and Ctrl+click to open
+it with `url.launcher`. Links are hyperlinks that programs set (OSC 8, as
+`ls --hyperlink`, `gcc` and `delta` emit) and URLs in the text, which may
+wrap across rows; see [`[url]`](#url) to add more kinds.
+
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
-scroll the history, or paste with the middle button in jotty instead.
+scroll the history, paste with the middle button, or (with Ctrl) open
+links in jotty instead.
 
 Any other key goes to the program. Typing, pasting or committing input-method
 text scrolls back to the bottom.
+
+## `[url]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `launcher` | list of strings | `["xdg-open"]` | Command that opens a link; the link is added as the last argument. |
+| `regex` | list of strings | `[]` | Regular expressions for more kinds of links, besides URLs. |
+
+URLs are recognized by their scheme (`https://`, `file://`, `ssh://`,
+`git://`, `mailto:`, ...). Trailing punctuation and unmatched closing
+brackets are not part of them, so `(see https://x.org/a).` opens
+`https://x.org/a`.
+
+`regex` patterns use [Rust regex syntax](https://docs.rs/regex) and are
+matched against the line under the pointer; the matched text goes to the
+launcher as is. If a pattern is invalid, jotty logs the error and uses only
+the built-in URL pattern. The launcher
+gets every kind of link, so for matches that aren't URLs, use a small
+script that turns them into one. For example, to open issue numbers:
+
+```toml
+[url]
+launcher = ["sh", "-c", 'case "$0" in JOT-*) xdg-open "https://tracker.example/$0";; *) xdg-open "$0";; esac']
+regex = ['\bJOT-\d+\b']
+```
 
 ## Shell integration
 

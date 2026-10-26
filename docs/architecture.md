@@ -10,7 +10,7 @@ on the CPU.
              │                                                          │
   keyboard ──┤ input.rs ── bytes ──► pty.rs ──► child process (shell)   │
   text-input ┤ ime.rs   ── bytes ──┘   │                                │
-  pointer ───┤ selection.rs            │ output                         │
+  pointer ───┤ selection.rs, links.rs  │ output                         │
              │                         ▼                                │
              │                terminal/ (vte parser → Screen)           │
              │                         │ dirty                          │
@@ -34,8 +34,12 @@ on the CPU.
 | `input.rs` | Key → bytes encoding, mouse reports, paste encoding | xkb keysyms only |
 | `keybinds.rs` | Configurable key bindings for jotty's actions | xkb keysyms only |
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
-| `selection.rs` | Text selection in history-aware coordinates | no |
-| `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), box drawing | no |
+| `selection.rs` | Text selection in history-aware coordinates; words, lines, following output | no |
+| `text.rs` | The text of a logical line with the cell of each character | no |
+| `links.rs` | Hyperlinks (OSC 8) and URL/regex detection under the pointer | no |
+| `search.rs` | Finding text in the scrollback and on screen | no |
+| `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
+| `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |
 | `renderer/atlas.rs` | Glyph atlas: shelf packing and the on-demand glyph cache | no |
 | `renderer/gl.rs` | EGL context, shaders, atlas texture, draw and swap | yes |
@@ -61,8 +65,13 @@ stream into printable characters and control functions, and calls the
 - modes (application cursor, bracketed paste, autowrap, origin, insert, ...),
   the scroll region, and tab stops.
 - outputs for the application to collect: `take_responses()` (replies to
-  status queries: DSR, DA, OSC 12, and DECRQSS for SGR, the scroll region
-  and the cursor style), `take_title()`, `take_bell()` and `take_dirty()`.
+  status queries: DSR, DA, DECRQM, OSC 4/10/11/12 color queries, and
+  DECRQSS for SGR, the scroll region and the cursor style), `take_title()`,
+  `take_bell()` and `take_dirty()`.
+- colors the program changed (OSC 4/10/11/12), which the renderer applies
+  over the theme, and the configured defaults that queries report.
+- tables of hyperlink targets (OSC 8) and grapheme cluster tails, which
+  cells refer to by a 16-bit id.
 - the scrollback view offset, and the prompt marker from OSC 133;B.
 
 Each `Row` also keeps the last OSC 133 mark set on it (prompt, command line
@@ -70,11 +79,31 @@ or output start), which moves into the history with the row and is cleared
 when the row is erased. `Screen::command_output` walks these marks to find
 the output a double click selects.
 
-A `Cell` is a `char`, foreground and background colors (default, 256-color
-index or RGB), attribute flags, and an underline style (single, double,
-curly, dotted, dashed; SGR `4:n`) with its own color (SGR 58). A double-width character occupies a `WIDE`
-cell followed by a `WIDE_SPACER` cell. Every write and erase calls
-`split_wide()` so a wide character is never left half-overwritten.
+A `Cell` (24 bytes) is a `char`, foreground and background colors
+(default, 256-color index or RGB), attribute flags, an underline style
+(single, double, curly, dotted, dashed; SGR `4:n`) with its own color
+(SGR 58), a hyperlink id and a cluster id. A double-width character
+occupies a `WIDE` cell followed by a `WIDE_SPACER` cell. Every write and
+erase calls `split_wide()` so a wide character is never left
+half-overwritten.
+
+**Grapheme clusters.** A printed character that continues the cluster of
+the last one (by the Unicode segmentation rules) joins it instead of
+starting a new cell: its text is added to the first cell's cluster tail.
+Zero-width characters (combining marks, ZWJ, variation selectors) take no
+room. Characters with a width (the emoji after a ZWJ, skin tones, the
+second flag letter) still take their `wcwidth` cells, as `CONTINUATION`
+cells that only reserve room, so the cursor stays where programs expect.
+
+**Reflow.** When the width changes, `Grid::reflow` joins soft-wrapped rows
+of the primary screen and its history into lines, re-wraps them to the new
+width (moving a wide character that would straddle a row boundary to the
+next row), and maps the cursor, the saved cursor, the prompt marker and
+shell-integration marks to their new positions. The alternate screen is
+cut off or padded instead.
+
+**Synchronized output.** While mode 2026 is set, the application holds
+drawing until it is reset, or for at most 150 ms.
 
 When a row scrolls off the top of the full-screen region on the primary
 screen, it moves into history. If the user is looking at history at that
@@ -167,31 +196,52 @@ ramp, bold-is-bright, dim, inverse, hidden, selection and block cursor.
 
 Glyphs come through the `GlyphCache` trait. Tests pass in a fake
 implementation; at run time `atlas::Atlas` provides one that rasterizes on
-first use, places the bitmap in the atlas, and hands it to the backend to
-store (a texture upload, or a copy into memory).
+first use, places the bitmap in an atlas image (coverage for text, RGBA
+for color emoji), and hands it to the backend to store (a texture upload,
+or a copy into memory). Cells with a grapheme cluster ask for the whole
+cluster; continuation cells draw no glyph. The frame also carries the
+hovered link (underlined) and the search bar, drawn over the bottom row.
 
 **2. Drawing** (`renderer::gl`) uploads the batch into one vertex buffer and
 issues one `glDrawArrays`. A vertex has position, texture coordinate, color,
-and a mode (solid or glyph). A single shader handles both modes, writing
-premultiplied alpha. The EGL config has an alpha channel, so the
+and a mode (solid, glyph, or color glyph). A single shader handles all
+modes, writing premultiplied alpha. The EGL config has an alpha channel, so the
 compositor blends the window: the clear color is the background at
 `window.opacity`, and colored cell backgrounds use the same alpha when
 `transparent_cell_backgrounds` is set. The atlas is a 2048×2048
 single-channel (`R8`) texture sampled with `NEAREST`, since glyphs sit on
-whole pixels. When it fills up, it is cleared and the frame is redrawn.
+whole pixels, and color emoji go to a 1024×1024 `RGBA8` texture. When
+either fills up, both are cleared and the frame is redrawn.
 
-**2b. Drawing on the CPU** (`renderer::software`) paints the same batch
-into an ARGB8888 `wl_shm` buffer: it clears to the background, then fills
-each quad, blending glyph coverage from a 1024×1024 atlas in memory. Quads
-are axis-aligned and glyphs 1:1, so this is a plain blit with
+**2b. Drawing on the CPU** (`renderer::software`, the default) paints the
+same batch into an ARGB8888 `wl_shm` buffer: it clears to the background,
+then fills each quad, blending glyph coverage from a 1024×1024 atlas in
+memory, or color emoji from a 512×512 BGRA atlas allocated on first use.
+Quads are axis-aligned and glyphs 1:1, so this is a plain blit with
 premultiplied-alpha blending, and the result matches the GL output pixel
-for pixel. Buffers come from SCTK's `SlotPool`; a buffer the compositor
-still holds is skipped, so usually two alternate. Each frame redraws and
-damages the whole buffer, then attaches and commits it.
+for pixel.
+
+Only what changed is repainted. The window is divided into horizontal
+bands: the padding above the grid, one band per text row, and the rest.
+Each frame, every quad is hashed into each band it touches, which gives a
+fingerprint per band that also covers glyphs overhanging from neighboring
+rows. Buffers come from SCTK's `SlotPool`; a buffer the compositor still
+holds is skipped, so usually two alternate. Each buffer remembers the
+fingerprints of what it holds, so only bands that differ from it are
+repainted; only bands that differ from the previous frame are damaged.
 
 **Fonts.** fontconfig picks the regular, bold, italic and bold-italic faces,
 and finds fallback faces per character (excluding color fonts), with the
-results cached. `ab_glyph` (built on `ttf-parser`) rasterizes TrueType, CFF
+results cached. A grapheme cluster is drawn as the single character it
+composes to under NFC when there is one (`e` + U+0301 → `é`); otherwise
+its combining marks are drawn over the first character, centered.
+
+**Color emoji** (`emoji.rs`) come from the font fontconfig picks for
+`emoji` with color, loaded on first use. Characters that are emoji by
+default and sequences (VS16, ZWJ, flags, skin tones, keycaps) are mapped to
+glyphs, and the font's ligature substitutions (GSUB lookup type 4) turn a
+sequence into one glyph. Its PNG (CBDT) or BGRA (sbix) bitmap is decoded,
+premultiplied, and scaled by area averaging to fit the cell slot. `ab_glyph` (built on `ttf-parser`) rasterizes TrueType, CFF
 and CFF2 outlines; for variable fonts, the `wght` axis is set to 400 or 700.
 Cell size comes from the primary face's advance width and line metrics.
 Font files are memory-mapped rather than read, so a large fallback font
@@ -203,17 +253,26 @@ exactly, so they join without gaps.
 Each draw first requests a `wl_surface.frame` callback, and new content only
 marks the window dirty until that callback arrives. Output therefore costs at
 most one frame per display refresh, and nothing is drawn while the window is
-hidden. `eglSwapBuffers` also commits the surface.
+hidden. `eglSwapBuffers` (or the CPU renderer's attach) also commits the
+surface.
 
 ## Window and scaling (`app.rs`)
 
 The window is an `xdg_toplevel` that asks for server-side decorations. The
 first configure sets the logical size; the grid size is
-`(physical size − 2·padding) / cell size`. Integer output scales come from
-SCTK's `scale_factor_changed`. jotty sets the buffer scale, re-rasterizes the
-font at `size × 96/72 × scale` pixels per em, resizes the EGL window (or
-drops the shared-memory buffers of the old size), and
+`(physical size − 2·padding) / cell size`. With `wp-fractional-scale-v1` and
+`wp-viewporter`, the scale is the compositor's preferred fractional scale:
+the buffer is `round(logical size × scale)` pixels and the viewport maps it
+to the logical size. Otherwise integer scales come from SCTK's
+`scale_factor_changed`, and jotty sets the buffer scale. Either way, it
+re-rasterizes the font at `size × 96/72 × scale` pixels per em, resizes
+the EGL window (or drops the shared-memory buffers of the old size), and
 reports the new grid size to the child with `TIOCSWINSZ`.
+
+When the bell rings while the window is unfocused, jotty requests an
+`xdg-activation` token without an input serial and activates its own
+surface with it; compositors show such a request as urgency rather than
+moving focus.
 
 For transparency, `app.rs` also sets a whole-surface opaque region when the
 opacity is 1.0. When `window.blur` is set, it asks
@@ -228,7 +287,15 @@ Copying creates a `wl_data_source` for `text/plain;charset=utf-8`,
 short-lived thread writes it to the pipe, so a slow reader can't block the
 event loop. Pasting reads the current selection offer through a calloop
 source on the pipe. When jotty owns the selection itself, it pastes directly
-without a round trip. Pasted text is wrapped in bracketed-paste markers when
+without a round trip. The primary selection works the same way through
+`primary-selection-unstable-v1`: finishing a selection offers it, and a
+middle click pastes it.
+
+**Selection and output.** Before reading child output, the app takes a
+fingerprint of each selected row on the live screen and the grid's count
+of rows scrolled off the top. Afterwards it moves the selection up by the
+number of rows that scrolled, and keeps it only if every fingerprinted row
+still holds the same text. Pasted text is wrapped in bracketed-paste markers when
 the application asked for them, and ESC characters are removed so the paste
 can't end bracketed mode early.
 
@@ -239,7 +306,8 @@ The `unsafe` code is confined to:
 - `pty.rs`: `openpty`, `fcntl`, `ioctl`, `kill`, and the `pre_exec` hook,
   which only makes async-signal-safe calls;
 - `font.rs`: the fontconfig FFI calls, each a create/use/destroy sequence
-  inside one function;
+  inside one function, and `mmap` of font files, which are never unmapped
+  (so the `&'static` slices that faces borrow stay valid);
 - `renderer/gl.rs`: EGL and GL calls. The `Renderer` must not outlive the
   `wl_display` or the `wl_surface`. `App` declares `renderer` before `window`,
   so it is dropped first, and the event loop holding the connection outlives
