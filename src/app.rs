@@ -216,6 +216,12 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         ime_cursor_rect: (0, 0, 0, 0),
     };
 
+    // SCTK reports only seats added later through `new_seat`.
+    let seats: Vec<_> = app.seat_state.seats().collect();
+    for seat in seats {
+        app.new_seat(&conn, &qh, seat);
+    }
+
     while !app.exit {
         event_loop.dispatch(None, &mut app)?;
     }
@@ -678,7 +684,13 @@ impl SeatHandler for App {
         &mut self.seat_state
     }
 
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        // Created before the window gets focus, so the compositor's focus
+        // change reaches it as an `enter` event.
+        if let (None, Some(manager)) = (&self.text_input, &self.text_input_manager) {
+            self.text_input = Some(manager.get_text_input(&seat, qh, TextInputData));
+        }
+    }
 
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         match capability {
@@ -693,9 +705,6 @@ impl SeatHandler for App {
                 match keyboard {
                     Ok(keyboard) => self.keyboard = Some(keyboard),
                     Err(e) => log::warn!("cannot use keyboard: {e}"),
-                }
-                if let (None, Some(manager)) = (&self.text_input, &self.text_input_manager) {
-                    self.text_input = Some(manager.get_text_input(&seat, qh, TextInputData));
                 }
                 if let (None, Some(manager)) = (&self.data_device, &self.data_device_manager) {
                     self.data_device = Some(manager.get_data_device(qh, &seat));
