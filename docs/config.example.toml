@@ -100,21 +100,31 @@ search = ["ctrl+shift+f"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set
-# (OSC 8), a URL in the text, or the path of an existing image or video.
+# (OSC 8), a URL in the text, or the path of a file (see [files] below).
 # Holding Ctrl underlines it first.
-# The command that opens a link; the link is added as the last argument.
+# The command that opens URLs; the link is added as the last argument.
 launcher = ["xdg-open"]
 # Regular expressions (Rust regex syntax) for more kinds of links, matched
-# against the line under the pointer. The matched text goes to the launcher,
-# which gets every kind of link.
+# against the line under the pointer. The matched text goes to the launcher
+# above, which also opens files whose kind has no launcher of its own.
 # regex = ['\bJIRA-\d+\b']
 regex = []
-# Paths of existing files with these extensions are links too (relative
-# paths are resolved in the current directory of the program in the
-# terminal). [] turns this off.
-file_extensions = [
+
+# Kinds of files whose paths are links: Ctrl+click opens an existing file
+# with one of the kind's extensions (relative paths are resolved in the
+# current directory of the program in the terminal). Each kind has its own
+# launcher; empty means url.launcher. Add kinds with [files.<name>]; a kind
+# here only changes the fields it sets, and extensions = [] turns it off.
+[files.image]
+extensions = [
     "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp", "tif",
     "tiff", "svg", "ico",
+]
+launcher = []      # e.g. ["imv"] or ["swayimg"]
+
+[files.video]
+extensions = [
     "mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "ogv",
     "3gp",
 ]
+launcher = []      # e.g. ["mpv"]
