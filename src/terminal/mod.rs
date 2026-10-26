@@ -255,6 +255,18 @@ impl Screen {
         }
     }
 
+    /// The row at screen line `line`: 0 is the top of the live screen,
+    /// negative lines are in the history.
+    pub fn row_at(&self, line: isize) -> Option<&Row> {
+        let grid = self.grid();
+        if line < 0 {
+            let back = line.unsigned_abs();
+            grid.history.len().checked_sub(back).map(|i| &grid.history[i])
+        } else {
+            grid.rows.get(line as usize)
+        }
+    }
+
     pub fn display_offset(&self) -> usize {
         self.display_offset
     }
