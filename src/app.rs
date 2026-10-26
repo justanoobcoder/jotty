@@ -286,9 +286,15 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     };
     window.commit();
 
-    let links = Detector::new(&config.url.file_extensions, &config.url.regex).unwrap_or_else(|e| {
+    let kinds: Vec<Vec<String>> = config
+        .files
+        .0
+        .values()
+        .map(|k| k.extensions.clone())
+        .collect();
+    let links = Detector::new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
-        Detector::new(&config.url.file_extensions, &[]).expect("the built-in patterns are valid")
+        Detector::new(&kinds, &[]).expect("the built-in patterns are valid")
     });
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
@@ -902,9 +908,17 @@ impl App {
         self.request_redraw();
     }
 
-    /// Opens a link with the configured launcher, without waiting for it.
-    fn open_link(&self, target: &str) {
-        let Some((program, args)) = self.config.url.launcher.split_first() else {
+    /// Opens a link with its launcher (its file kind's, or else
+    /// `url.launcher`), without waiting for it.
+    fn open_link(&self, link: &Link) {
+        let target = &link.target;
+        let launcher = link
+            .kind
+            .and_then(|i| self.config.files.0.values().nth(i))
+            .map(|kind| &kind.launcher)
+            .filter(|launcher| !launcher.is_empty())
+            .unwrap_or(&self.config.url.launcher);
+        let Some((program, args)) = launcher.split_first() else {
             return;
         };
         log::info!("opening {target}");
@@ -1605,7 +1619,7 @@ impl PointerHandler for App {
                 } if self.hovered_link.is_some() => {
                     self.last_serial = *serial;
                     if let Some(link) = &self.hovered_link {
-                        self.open_link(&link.target);
+                        self.open_link(link);
                     }
                 }
                 PointerEventKind::Press {

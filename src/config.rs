@@ -2,6 +2,7 @@
 //!
 //! Every field has a default, so an empty or missing file is valid.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,8 @@ pub struct Config {
     /// Key bindings for jotty's actions; see `keybinds.rs`.
     pub keybinds: Keybinds,
     pub url: UrlConfig,
+    /// Kinds of files that Ctrl+click opens, such as images and videos.
+    pub files: Files,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -28,8 +31,6 @@ pub struct UrlConfig {
     pub launcher: Vec<String>,
     /// Regular expressions for more kinds of links, besides URLs.
     pub regex: Vec<String>,
-    /// Paths of existing files with these extensions are links too.
-    pub file_extensions: Vec<String>,
 }
 
 impl Default for UrlConfig {
@@ -37,16 +38,73 @@ impl Default for UrlConfig {
         Self {
             launcher: vec!["xdg-open".into()],
             regex: Vec::new(),
-            file_extensions: [
-                // Images.
-                "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp", "tif",
-                "tiff", "svg", "ico", // Videos.
-                "mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "ogv",
-                "3gp",
-            ]
-            .map(String::from)
-            .to_vec(),
         }
+    }
+}
+
+/// Kinds of files whose paths are links, by name: `image` and `video`
+/// built in, and any the user adds. A kind in the config only overrides
+/// the fields it sets.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(from = "BTreeMap<String, FileKindOverride>")]
+pub struct Files(pub BTreeMap<String, FileKind>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileKind {
+    /// File name extensions, without the dot, matched case-insensitively.
+    pub extensions: Vec<String>,
+    /// Command that opens these files; empty means `url.launcher`.
+    pub launcher: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileKindOverride {
+    extensions: Option<Vec<String>>,
+    launcher: Option<Vec<String>>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        let kind = |extensions: &[&str]| FileKind {
+            extensions: extensions.iter().map(|e| e.to_string()).collect(),
+            launcher: Vec::new(),
+        };
+        Files(BTreeMap::from([
+            (
+                "image".to_string(),
+                kind(&[
+                    "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp",
+                    "tif", "tiff", "svg", "ico",
+                ]),
+            ),
+            (
+                "video".to_string(),
+                kind(&[
+                    "mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "ogv",
+                    "3gp",
+                ]),
+            ),
+        ]))
+    }
+}
+
+impl From<BTreeMap<String, FileKindOverride>> for Files {
+    fn from(overrides: BTreeMap<String, FileKindOverride>) -> Files {
+        let mut files = Files::default();
+        for (name, o) in overrides {
+            let kind = files.0.entry(name).or_insert(FileKind {
+                extensions: Vec::new(),
+                launcher: Vec::new(),
+            });
+            if let Some(extensions) = o.extensions {
+                kind.extensions = extensions;
+            }
+            if let Some(launcher) = o.launcher {
+                kind.launcher = launcher;
+            }
+        }
+        files
     }
 }
 
@@ -421,6 +479,22 @@ mod tests {
         let mut expected = Config::default();
         expected.colors.palette = DEFAULT_PALETTE.to_vec();
         assert_eq!(example, expected);
+    }
+
+    #[test]
+    fn file_kinds_override_only_what_they_set() {
+        let config = Config::parse(
+            "[files.video]\nlauncher = [\"mpv\"]\n[files.pdf]\nextensions = [\"pdf\"]\n[files.image]\nextensions = []",
+        )
+        .unwrap();
+        let files = &config.files.0;
+        let defaults = Files::default().0;
+        assert_eq!(files["video"].launcher, ["mpv"]);
+        assert_eq!(files["video"].extensions, defaults["video"].extensions);
+        assert_eq!(files["pdf"].extensions, ["pdf"]);
+        assert!(files["pdf"].launcher.is_empty());
+        assert!(files["image"].extensions.is_empty());
+        assert!(Config::parse("[files.video]\nprogram = []").is_err());
     }
 
     #[test]

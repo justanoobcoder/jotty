@@ -19,6 +19,8 @@ pub struct Link {
     pub end: Point,
     /// What to open.
     pub target: String,
+    /// For a file, the index of its kind in the list given to the detector.
+    pub kind: Option<usize>,
 }
 
 pub struct Detector {
@@ -26,19 +28,30 @@ pub struct Detector {
     /// Paths ending in one of the configured extensions, bare or in single
     /// quotes (as `ls` quotes names with spaces); `None` with no extensions.
     file: Option<Regex>,
+    /// The extensions of each kind of file, lowercase.
+    kinds: Vec<Vec<String>>,
     /// The configured patterns.
     extra: Vec<Regex>,
 }
 
 impl Detector {
-    /// A detector for URLs, paths of files with `extensions` (such as
-    /// `png`), and the `extra` patterns from the config.
-    pub fn new(extensions: &[String], extra: &[String]) -> Result<Detector, regex::Error> {
+    /// A detector for URLs, paths of files with the extensions of each of
+    /// `kinds` (such as `png`), and the `extra` patterns from the config.
+    pub fn new(kinds: &[Vec<String>], extra: &[String]) -> Result<Detector, regex::Error> {
+        let kinds: Vec<Vec<String>> = kinds
+            .iter()
+            .map(|k| {
+                k.iter()
+                    .map(|e| e.trim_start_matches('.').to_lowercase())
+                    .collect()
+            })
+            .collect();
+        let extensions: Vec<&String> = kinds.iter().flatten().collect();
         let file = (!extensions.is_empty())
             .then(|| {
                 let ext = extensions
                     .iter()
-                    .map(|e| regex::escape(e.trim_start_matches('.')))
+                    .map(|e| regex::escape(e))
                     .collect::<Vec<_>>()
                     .join("|");
                 // Delimiters of paths in text, besides whitespace.
@@ -58,6 +71,7 @@ impl Detector {
         Ok(Detector {
             url: Regex::new(URL_PATTERN)?,
             file,
+            kinds,
             extra,
         })
     }
@@ -75,10 +89,11 @@ impl Detector {
         let line = LineText::new(screen, at)?;
         let index = line.index_of(at)?;
         let offset = line.cells[index].offset;
-        let link = |start: usize, end: usize, target: String| Link {
+        let link = |start: usize, end: usize, target: String, kind: Option<usize>| Link {
             start: line.point_at(start),
             end: line.point_before(end),
             target,
+            kind,
         };
         if let Some(link) = hyperlink(&line, screen, index) {
             return Some(link);
@@ -86,7 +101,8 @@ impl Detector {
         for m in self.url.find_iter(&line.text) {
             let end = m.start() + trim_url(m.as_str());
             if m.start() <= offset && offset < end {
-                return Some(link(m.start(), end, line.text[m.start()..end].to_string()));
+                let target = line.text[m.start()..end].to_string();
+                return Some(link(m.start(), end, target, None));
             }
         }
         if let Some(file) = &self.file {
@@ -100,14 +116,21 @@ impl Detector {
                     && offset < span.end()
                     && let Some(target) = resolve(path.as_str())
                 {
-                    return Some(link(span.start(), span.end(), target));
+                    let ext = path
+                        .as_str()
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let kind = self.kinds.iter().position(|k| k.contains(&ext));
+                    return Some(link(span.start(), span.end(), target, kind));
                 }
             }
         }
         for pattern in &self.extra {
             for m in pattern.find_iter(&line.text) {
                 if m.start() <= offset && offset < m.end() {
-                    return Some(link(m.start(), m.end(), m.as_str().to_string()));
+                    return Some(link(m.start(), m.end(), m.as_str().to_string(), None));
                 }
             }
         }
@@ -153,6 +176,7 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
         start: line.cells[first].point,
         end: line.cells[last].point,
         target: target.to_string(),
+        kind: None,
     })
 }
 
@@ -222,7 +246,8 @@ mod tests {
     }
 
     fn media() -> Detector {
-        Detector::new(&["png".into(), "jpg".into(), "mp4".into()], &[]).unwrap()
+        let kinds = [vec!["png".into(), "JPG".into()], vec![".mp4".into()]];
+        Detector::new(&kinds, &[]).unwrap()
     }
 
     /// Resolves paths as if every file existed under `/home/u`.
@@ -238,6 +263,11 @@ mod tests {
         let target = |col| d.link_at(t.screen(), p(0, col), exists).map(|l| l.target);
         assert_eq!(target(0), None);
         assert_eq!(target(8).as_deref(), Some("/home/u/shot.PNG"));
+        let kind = |col| {
+            d.link_at(t.screen(), p(0, col), exists)
+                .and_then(|l| l.kind)
+        };
+        assert_eq!((kind(8), kind(17), kind(32)), (Some(0), Some(0), Some(1)));
         assert_eq!(target(17).as_deref(), Some("/home/u/pics/cat.jpg"));
         // Quoted names with spaces; the link covers the quotes.
         let link = d.link_at(t.screen(), p(0, 32), exists).unwrap();
