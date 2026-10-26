@@ -174,6 +174,7 @@ Actions you don't list keep their defaults.
 | Action | Default | Does |
 | --- | --- | --- |
 | `copy` | `ctrl+shift+c` | Copy the selection |
+| `copy_or_interrupt` | unbound | Copy and clear the selection if there is one; otherwise pass the key to the program |
 | `paste` | `ctrl+shift+v`, `shift+insert` | Paste the clipboard |
 | `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
 | `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
@@ -204,6 +205,16 @@ copy = ["ctrl+insert"]
 paste = ["shift+insert"]
 scroll_line_up = ["shift+up"]
 scroll_line_down = ["shift+down"]
+```
+
+**Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C
+copies when text is selected, and interrupts the running program (sends
+`^C`) when nothing is. Copying clears the selection, so pressing Ctrl+C
+again interrupts:
+
+```toml
+[keybinds]
+copy_or_interrupt = ["ctrl+c"]
 ```
 
 Unknown actions, modifiers or keys are reported with their line when the
