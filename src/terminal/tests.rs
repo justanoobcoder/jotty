@@ -593,3 +593,23 @@ fn decrqss_reports_other_settings() {
     t.feed(b"\x1bPq#0;2;0;0;0\x1b\\");
     assert!(t.screen_mut().take_responses().is_empty());
 }
+
+#[test]
+fn mouse_modes() {
+    let mut t = term(10, 1);
+    assert_eq!(t.screen().modes.mouse, MouseMode::Off);
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    assert_eq!(t.screen().modes.mouse, MouseMode::Normal);
+    assert!(t.screen().modes.mouse_sgr);
+    // The last mode set wins; resetting another mode leaves it alone.
+    t.feed(b"\x1b[?1003h\x1b[?1002l");
+    assert_eq!(t.screen().modes.mouse, MouseMode::AnyMotion);
+    t.feed(b"\x1b[?1003l\x1b[?1006l");
+    assert_eq!(t.screen().modes.mouse, MouseMode::Off);
+    assert!(!t.screen().modes.mouse_sgr);
+    t.feed(b"\x1b[?9h");
+    assert_eq!(t.screen().modes.mouse, MouseMode::X10);
+    // A full reset turns reporting off.
+    t.feed(b"\x1b[?1002h\x1bc");
+    assert_eq!(t.screen().modes.mouse, MouseMode::Off);
+}

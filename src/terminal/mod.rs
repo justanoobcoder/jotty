@@ -114,6 +114,21 @@ struct SavedCursor {
     origin: bool,
 }
 
+/// Which pointer events the program asked to receive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseMode {
+    #[default]
+    Off,
+    /// `?9`: button presses only.
+    X10,
+    /// `?1000`: presses and releases, including the wheel.
+    Normal,
+    /// `?1002`: also motion while a button is held.
+    ButtonMotion,
+    /// `?1003`: also motion without a button.
+    AnyMotion,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Modes {
     pub app_cursor: bool,
@@ -121,6 +136,9 @@ pub struct Modes {
     pub bracketed_paste: bool,
     pub focus_events: bool,
     pub show_cursor: bool,
+    pub mouse: MouseMode,
+    /// `?1006`: report pointer events in the SGR encoding.
+    pub mouse_sgr: bool,
     autowrap: bool,
     origin: bool,
     insert: bool,
@@ -134,6 +152,8 @@ impl Default for Modes {
             app_keypad: false,
             bracketed_paste: false,
             focus_events: false,
+            mouse: MouseMode::Off,
+            mouse_sgr: false,
             show_cursor: true,
             autowrap: true,
             origin: false,
@@ -764,6 +784,20 @@ impl Screen {
                     self.restore_cursor();
                 }
             }
+            9 | 1000 | 1002 | 1003 => {
+                let mode = match mode {
+                    9 => MouseMode::X10,
+                    1000 => MouseMode::Normal,
+                    1002 => MouseMode::ButtonMotion,
+                    _ => MouseMode::AnyMotion,
+                };
+                if on {
+                    self.modes.mouse = mode;
+                } else if self.modes.mouse == mode {
+                    self.modes.mouse = MouseMode::Off;
+                }
+            }
+            1006 => self.modes.mouse_sgr = on,
             1004 => self.modes.focus_events = on,
             2004 => self.modes.bracketed_paste = on,
             _ => log::debug!("unhandled private mode {mode} = {on}"),
