@@ -17,7 +17,16 @@ use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, 
 use smithay_client_toolkit::data_device_manager::data_source::{
     CopyPasteSource, DataSourceHandler,
 };
-use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WritePipe};
+use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
+use smithay_client_toolkit::primary_selection::PrimarySelectionManagerState;
+use smithay_client_toolkit::primary_selection::device::{
+    PrimarySelectionDevice, PrimarySelectionDeviceHandler,
+};
+use smithay_client_toolkit::primary_selection::selection::{
+    PrimarySelectionSource, PrimarySelectionSourceHandler,
+};
+use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1;
+use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1;
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
@@ -77,6 +86,14 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const READ_BUDGET: usize = 1 << 20;
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
+/// The preferred text type among those a paste offer has.
+fn paste_mime(offered: &[String]) -> Option<String> {
+    PASTE_MIMES
+        .iter()
+        .find(|m| offered.iter().any(|o| o == *m))
+        .map(|m| m.to_string())
+}
+
 pub struct App {
     qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,
@@ -86,6 +103,7 @@ pub struct App {
     compositor: CompositorState,
     shm: Shm,
     data_device_manager: Option<DataDeviceManagerState>,
+    primary_selection_manager: Option<PrimarySelectionManagerState>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
     /// Present once the compositor agreed to blur behind the window.
@@ -136,6 +154,9 @@ pub struct App {
     last_click: Option<(u32, Point, u8)>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
+    /// The primary selection: set by selecting text, pasted by middle click.
+    primary_device: Option<PrimarySelectionDevice>,
+    primary_source: Option<(PrimarySelectionSource, String)>,
 
     text_input: Option<ZwpTextInputV3>,
     ime: ImeState,
@@ -167,6 +188,9 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         log::warn!("blur requested, but the compositor lacks ext-background-effect-v1");
     }
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+    let primary_selection_manager = PrimarySelectionManagerState::bind(&globals, &qh)
+        .map_err(|e| log::info!("no primary selection: {e}"))
+        .ok();
     let text_input_manager = globals
         .bind::<ZwpTextInputManagerV3, _, _>(&qh, 1..=1, TextInputManagerData)
         .map_err(|e| log::warn!("text-input-v3 unavailable, no input method support: {e}"))
@@ -287,6 +311,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         compositor,
         shm,
         data_device_manager,
+        primary_selection_manager,
         text_input_manager,
         background_effect,
         blur: None,
@@ -320,6 +345,8 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         last_click: None,
         data_device: None,
         copy_source: None,
+        primary_device: None,
+        primary_source: None,
         text_input: None,
         ime: ImeState::default(),
         ime_caused_change: false,
@@ -740,6 +767,51 @@ impl App {
         self.copy_source = Some((source, text));
     }
 
+    /// Offers the selection as the primary selection, which a middle click
+    /// pastes (here or in other applications).
+    fn set_primary(&mut self) {
+        let Some(selection) = self.selection.filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let (Some(manager), Some(device)) = (&self.primary_selection_manager, &self.primary_device)
+        else {
+            return;
+        };
+        let text = selection.text(self.term.screen());
+        if text.is_empty() {
+            return;
+        }
+        let source = manager.create_selection_source(&self.qh, PASTE_MIMES);
+        source.set_selection(device, self.last_serial);
+        self.primary_source = Some((source, text));
+    }
+
+    /// Pastes the primary selection, or the clipboard where the compositor
+    /// has no primary selection.
+    fn paste_primary(&mut self) {
+        if self.primary_selection_manager.is_none() {
+            return self.paste();
+        }
+        if let Some((_, text)) = &self.primary_source {
+            let text = text.clone();
+            return self.paste_text(&text);
+        }
+        let Some(offer) = self
+            .primary_device
+            .as_ref()
+            .and_then(|d| d.data().selection_offer())
+        else {
+            return;
+        };
+        let Some(mime) = offer.with_mime_types(paste_mime) else {
+            return;
+        };
+        match offer.receive(mime) {
+            Ok(pipe) => self.paste_from(pipe),
+            Err(e) => log::warn!("cannot read the primary selection: {e}"),
+        }
+    }
+
     fn paste(&mut self) {
         // Our own selection: skip the round trip through the compositor.
         if let Some((_, text)) = &self.copy_source {
@@ -754,22 +826,17 @@ impl App {
         else {
             return;
         };
-        let mime = offer.with_mime_types(|offered| {
-            PASTE_MIMES
-                .iter()
-                .find(|m| offered.iter().any(|o| o == *m))
-                .map(|m| m.to_string())
-        });
-        let Some(mime) = mime else {
+        let Some(mime) = offer.with_mime_types(paste_mime) else {
             return;
         };
-        let pipe = match offer.receive(mime) {
-            Ok(pipe) => pipe,
-            Err(e) => {
-                log::warn!("cannot read clipboard: {e}");
-                return;
-            }
-        };
+        match offer.receive(mime) {
+            Ok(pipe) => self.paste_from(pipe),
+            Err(e) => log::warn!("cannot read clipboard: {e}"),
+        }
+    }
+
+    /// Reads pasted text from another client without blocking, then sends it.
+    fn paste_from(&mut self, pipe: ReadPipe) {
         let mut data = Vec::new();
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
             // SAFETY: the file is only read, never closed or replaced.
@@ -1014,6 +1081,11 @@ impl SeatHandler for App {
                 }
                 if let (None, Some(manager)) = (&self.data_device, &self.data_device_manager) {
                     self.data_device = Some(manager.get_data_device(qh, &seat));
+                }
+                if let (None, Some(manager)) =
+                    (&self.primary_device, &self.primary_selection_manager)
+                {
+                    self.primary_device = Some(manager.get_selection_device(qh, &seat));
                 }
             }
             Capability::Pointer if self.pointer.is_none() => {
@@ -1260,6 +1332,7 @@ impl PointerHandler for App {
                     if self.selection.is_some_and(|s| s.is_empty()) {
                         self.selection = None;
                     }
+                    self.set_primary();
                     self.request_redraw();
                 }
                 PointerEventKind::Press {
@@ -1268,7 +1341,7 @@ impl PointerHandler for App {
                     ..
                 } => {
                     self.last_serial = *serial;
-                    self.paste();
+                    self.paste_primary();
                 }
                 PointerEventKind::Axis { vertical, .. } => self.scroll(vertical),
                 _ => {}
@@ -1383,6 +1456,61 @@ impl DataOfferHandler for App {
     }
 }
 
+impl PrimarySelectionDeviceHandler for App {
+    // The offer is read lazily, on middle click.
+    fn selection(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &ZwpPrimarySelectionDeviceV1,
+    ) {
+    }
+}
+
+impl PrimarySelectionSourceHandler for App {
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &ZwpPrimarySelectionSourceV1,
+        _: String,
+        pipe: WritePipe,
+    ) {
+        if let Some((_, text)) = self
+            .primary_source
+            .as_ref()
+            .filter(|(s, _)| s.inner() == source)
+        {
+            write_in_background(pipe, text.clone());
+        }
+    }
+
+    fn cancelled(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &ZwpPrimarySelectionSourceV1,
+    ) {
+        if self
+            .primary_source
+            .as_ref()
+            .is_some_and(|(s, _)| s.inner() == source)
+        {
+            self.primary_source = None;
+        }
+    }
+}
+
+/// Writes selection data to a reader, which may be slow (or be us), without
+/// blocking the event loop.
+fn write_in_background(mut pipe: WritePipe, text: String) {
+    std::thread::spawn(move || {
+        if let Err(e) = pipe.write_all(text.as_bytes()) {
+            log::debug!("selection write: {e}");
+        }
+    });
+}
+
 impl DataSourceHandler for App {
     fn accept_mime(
         &mut self,
@@ -1399,22 +1527,15 @@ impl DataSourceHandler for App {
         _: &QueueHandle<Self>,
         source: &WlDataSource,
         _: String,
-        mut pipe: WritePipe,
+        pipe: WritePipe,
     ) {
-        let Some((_, text)) = self
+        if let Some((_, text)) = self
             .copy_source
             .as_ref()
             .filter(|(s, _)| s.inner() == source)
-        else {
-            return;
-        };
-        let text = text.clone();
-        // The reader may be slow (or be us); never block the event loop.
-        std::thread::spawn(move || {
-            if let Err(e) = pipe.write_all(text.as_bytes()) {
-                log::debug!("clipboard write: {e}");
-            }
-        });
+        {
+            write_in_background(pipe, text.clone());
+        }
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
