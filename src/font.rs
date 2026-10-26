@@ -351,11 +351,17 @@ impl Fonts {
                 *px = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         });
+        // Center the visible ink: bitmaps can have faint antialiasing rows
+        // on one side only.
+        let ink = ink_rows(&data, width, 64).unwrap_or((0, height - 1));
+        let ink_height = (ink.1 - ink.0 + 1) as i32;
+        let centered_top = (m.height as i32 - ink_height) / 2 - ink.0 as i32;
         let (left, top) = if fill_slot {
-            (
-                (slot_width as i32 - width as i32) / 2,
-                (m.height as i32 - height as i32) / 2,
-            )
+            ((slot_width as i32 - width as i32) / 2, centered_top)
+        } else if is_icon(c) && ink_height <= m.height as i32 {
+            // Icon fonts center glyphs on the font's math axis, which sits
+            // above the cell's middle; center them in the cell instead.
+            (bounds.min.x as i32, centered_top)
         } else {
             (bounds.min.x as i32, bounds.min.y as i32)
         };
@@ -473,6 +479,29 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
     })
 }
 
+/// The first and last bitmap rows with a pixel of at least `threshold`
+/// coverage.
+fn ink_rows(data: &[u8], width: u32, threshold: u8) -> Option<(u32, u32)> {
+    let mut rows = data
+        .chunks(width as usize)
+        .enumerate()
+        .filter(|(_, row)| row.iter().any(|&c| c >= threshold))
+        .map(|(y, _)| y as u32);
+    let first = rows.next()?;
+    Some((first, rows.next_back().unwrap_or(first)))
+}
+
+/// Icons in the Private Use Areas, as used by Nerd Fonts, except powerline
+/// separators (U+E0A0–U+E0D7), which must keep their position to line up
+/// with the cell backgrounds next to them.
+fn is_icon(c: char) -> bool {
+    matches!(c,
+        '\u{E000}'..='\u{E09F}'
+        | '\u{E0D8}'..='\u{F8FF}'
+        | '\u{F0000}'..='\u{FFFFD}'
+        | '\u{100000}'..='\u{10FFFD}')
+}
+
 fn has_glyph(face: &FontVec, c: char) -> bool {
     face.glyph_id(c).0 != 0
 }
@@ -552,6 +581,24 @@ mod tests {
     }
 
     #[test]
+    fn ink_rows_ignore_faint_pixels() {
+        let data = [0, 0, 10, 0, 200, 0, 90, 90, 20, 0, 0, 0];
+        assert_eq!(ink_rows(&data, 3, 64), Some((1, 2)));
+        assert_eq!(ink_rows(&[0; 6], 3, 64), None);
+    }
+
+    #[test]
+    fn icon_ranges() {
+        assert!(is_icon('\u{F43A}')); // nf-oct-clock
+        assert!(is_icon('\u{E7A8}')); // nf-dev-rust
+        assert!(is_icon('\u{F08C7}')); // nf-md-arch
+        assert!(!is_icon('\u{E0B0}')); // powerline arrow
+        assert!(!is_icon('\u{E0B6}')); // powerline round cap
+        assert!(!is_icon('A'));
+        assert!(!is_icon('中'));
+    }
+
+    #[test]
     fn block_elements() {
         let m = CellMetrics::new(8.0, 12.0, -4.0, 0.0);
         let full = box_glyph('█', m).unwrap();
@@ -594,6 +641,17 @@ mod tests {
         assert!(wide.height <= m.height);
         let right_gap = 2 * m.width as i32 - (wide.left + wide.width as i32);
         assert!((wide.left - right_gap).abs() <= 1);
+
+        // Icons, when some installed font has them, are centered vertically.
+        if let Some(icon) = fonts.rasterize('\u{F43A}', Style::Regular, false) {
+            let (first, last) = ink_rows(&icon.data, icon.width, 64).unwrap();
+            let top_gap = icon.top + first as i32;
+            let bottom_gap = m.height as i32 - (icon.top + last as i32 + 1);
+            assert!(
+                (top_gap - bottom_gap).abs() <= 1,
+                "{top_gap} vs {bottom_gap}"
+            );
+        }
 
         fonts.set_size(32.0);
         assert!(fonts.metrics.height > m.height);
