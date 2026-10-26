@@ -6,6 +6,9 @@
 
 pub mod grid;
 
+use std::collections::HashMap;
+
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
@@ -190,6 +193,12 @@ pub struct Screen {
     colors: ColorOverrides,
     /// Hyperlink targets (OSC 8); a cell's `link` is an index + 1.
     links: Vec<String>,
+    /// Grapheme cluster tails; a cell's `cluster` is an index + 1.
+    clusters: Vec<String>,
+    cluster_ids: HashMap<String, u16>,
+    /// The first cell of the grapheme cluster being printed, which later
+    /// characters of the cluster join.
+    cluster_start: Option<(usize, usize)>,
     /// The configured colors, reported by OSC 4, 10 and 11 queries.
     default_colors: DefaultColors,
     /// Where the last character was printed, if nothing else happened
@@ -285,6 +294,9 @@ impl Screen {
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
             links: Vec::new(),
+            clusters: Vec::new(),
+            cluster_ids: HashMap::new(),
+            cluster_start: None,
             default_colors: DefaultColors::default(),
             last_printed: None,
             title: None,
@@ -462,7 +474,75 @@ impl Screen {
         self.cursor_color
     }
 
-    /// The target of hyperlink `id` (a cell's `link`).
+    /// The characters after a cell's `c` in its grapheme cluster.
+    pub fn cluster(&self, id: u16) -> &str {
+        usize::from(id)
+            .checked_sub(1)
+            .and_then(|i| self.clusters.get(i))
+            .map_or("", String::as_str)
+    }
+
+    /// A cell's whole text: its character and the rest of its cluster.
+    /// Continuation cells have none; the cluster's first cell holds it.
+    pub fn cell_text(&self, cell: &Cell, out: &mut String) {
+        if !cell.flags.contains(Flags::CONTINUATION) {
+            out.push(cell.c);
+            out.push_str(self.cluster(cell.cluster));
+        }
+    }
+
+    /// The id of a cluster tail, adding it if new; `None` when all ids are
+    /// used.
+    fn intern_cluster(&mut self, tail: &str) -> Option<u16> {
+        if let Some(&id) = self.cluster_ids.get(tail) {
+            return Some(id);
+        }
+        if self.clusters.len() >= usize::from(u16::MAX) {
+            return None;
+        }
+        self.clusters.push(tail.to_string());
+        let id = self.clusters.len() as u16;
+        self.cluster_ids.insert(tail.to_string(), id);
+        Some(id)
+    }
+
+    /// Adds `c` to the grapheme cluster being printed, if it continues it.
+    /// Zero-width characters (combining marks, ZWJ, variation selectors)
+    /// only join it. Others (the emoji after a ZWJ, a skin tone, the second
+    /// letter of a flag) also take up their usual width, as programs that
+    /// count with `wcwidth` expect, in continuation cells. Returns `false`
+    /// when `c` starts a new cluster.
+    fn join_cluster(&mut self, c: char, width: usize) -> bool {
+        let Some((row, col)) = self.cluster_start else {
+            return false;
+        };
+        let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
+            return false;
+        };
+        let mut text = String::new();
+        self.cell_text(&start, &mut text);
+        let base = start.c.len_utf8();
+        text.push(c);
+        if text.graphemes(true).nth(1).is_some() {
+            return false;
+        }
+        // Continuation cells must stay on the cluster's row.
+        let wraps = self.cursor.pending_wrap || self.cursor.col + width > self.cols;
+        if width > 0 && (wraps || row != self.cursor.row) {
+            return false;
+        }
+        if let Some(id) = self.intern_cluster(&text[base..]) {
+            self.grid_mut().rows[row].cells[col].cluster = id;
+        }
+        self.dirty = true;
+        if c == EMOJI_PRESENTATION {
+            self.apply_emoji_presentation();
+        }
+        if width > 0 {
+            self.print_cell(c, width, Flags::CONTINUATION);
+        }
+        true
+    }
     pub fn link(&self, id: u16) -> Option<&str> {
         let index = usize::from(id).checked_sub(1)?;
         self.links.get(index).map(String::as_str)
@@ -514,6 +594,9 @@ impl Screen {
             return;
         }
 
+        // Positions of the last printed character are stale.
+        self.last_printed = None;
+        self.cluster_start = None;
         if cols != self.cols {
             self.reflow_primary(cols, rows);
         } else {
@@ -788,17 +871,17 @@ impl Screen {
 
     fn print_char(&mut self, c: char) {
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
-        if c == EMOJI_PRESENTATION {
-            self.apply_emoji_presentation();
+        let width = c.width().unwrap_or(0).min(2);
+        if self.join_cluster(c, width) || width == 0 {
+            // A zero-width character with nothing to join is dropped.
             return;
         }
-        // Other zero-width characters (combining marks, ZWJ) are not
-        // supported yet.
-        let width = match c.width() {
-            Some(w @ 1..=2) => w,
-            _ => return,
-        };
+        self.cluster_start = self.print_cell(c, width, Flags::empty());
+    }
 
+    /// Writes `c` at the cursor with the current attributes and advances.
+    /// Returns where it went, if it fit.
+    fn print_cell(&mut self, c: char, width: usize, flags: Flags) -> Option<(usize, usize)> {
         if self.cursor.pending_wrap {
             self.wrap_line();
         }
@@ -809,7 +892,7 @@ impl Screen {
             } else if self.cols >= 2 {
                 self.cursor.col = self.cols - 2;
             } else {
-                return;
+                return None;
             }
         }
         if self.modes.insert {
@@ -823,6 +906,7 @@ impl Screen {
         }
         let mut cell = self.cursor.template;
         cell.c = c;
+        cell.flags.insert(flags);
         if width == 2 {
             cell.flags.insert(Flags::WIDE);
         }
@@ -846,13 +930,14 @@ impl Screen {
         self.last_char = Some(c);
         self.last_printed = Some((row, col));
         self.dirty = true;
+        Some((row, col))
     }
 
     /// Handles VS16 after a character that has an emoji form (like `❄` or
     /// `☀`): the pair is two cells wide, as in other terminals and in the
     /// width calculations of programs such as starship.
     fn apply_emoji_presentation(&mut self) {
-        let Some((row, col)) = self.last_printed.take() else {
+        let Some((row, col)) = self.last_printed else {
             return;
         };
         let cell = self.grid().rows[row].cells[col];
@@ -1274,6 +1359,7 @@ impl Perform for Screen {
 
     fn execute(&mut self, byte: u8) {
         self.last_printed = None;
+        self.cluster_start = None;
         match byte {
             0x07 => self.bell = true,
             0x08 => self.move_backward(1),
@@ -1294,6 +1380,7 @@ impl Perform for Screen {
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         self.last_printed = None;
+        self.cluster_start = None;
         let args: Vec<u16> = params.iter().map(|p| p[0]).collect();
         // Argument `i`, where 0 or absent means `default`.
         let arg = |i: usize, default: usize| match args.get(i) {
@@ -1432,6 +1519,7 @@ impl Perform for Screen {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
         self.last_printed = None;
+        self.cluster_start = None;
         match (intermediates, byte) {
             ([], b'7') => self.save_cursor(),
             ([], b'8') => self.restore_cursor(),
@@ -1476,6 +1564,7 @@ impl Perform for Screen {
 
     fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         self.last_printed = None;
+        self.cluster_start = None;
         if intermediates == b"$" && action == 'q' {
             self.decrqss = Some(Vec::new());
         }

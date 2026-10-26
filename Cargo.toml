@@ -18,6 +18,7 @@ regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 smithay-client-toolkit = "0.21.1"
 toml = "1.1.8"
+unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 vte = "0.15.0"
 wayland-client = "0.31.15"

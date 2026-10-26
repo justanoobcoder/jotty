@@ -15,7 +15,9 @@ pub enum Direction {
 /// Finds `query` from `from` in `direction`: the nearest match that starts
 /// before `from` (Older) or after it (Newer), or at it with `inclusive`.
 /// Matches may span soft-wrapped rows. The search ignores case unless the
-/// query has an uppercase letter. Returns the first and last cell.
+/// query has an uppercase letter, and compares the first character of
+/// each cell (combining marks are ignored). Returns the first and last
+/// cell.
 pub fn find(
     screen: &Screen,
     query: &str,
@@ -43,7 +45,8 @@ pub fn find(
     let mut line = from.line.clamp(top, bottom);
     loop {
         let text = LineText::new(screen, Point { line, col: 0 })?;
-        let hay: Vec<char> = text.text.chars().map(fold).collect();
+        // One character per cell: the cluster's first one.
+        let hay: Vec<char> = text.cells.iter().map(|c| fold(c.c)).collect();
         let mut matches = (0..=hay.len().saturating_sub(needle.len()))
             .filter(|&i| hay[i..].starts_with(&needle))
             .map(|i| (text.cells[i].point, text.cells[i + needle.len() - 1].point));

@@ -577,6 +577,53 @@ fn identical_hyperlinks_share_an_id() {
     assert_eq!(cell(&t, 0, 0).link, cell(&t, 0, 2).link);
 }
 
+fn text_at(t: &Terminal, row: usize, col: usize) -> String {
+    let mut text = String::new();
+    t.screen().cell_text(&cell(t, row, col), &mut text);
+    text
+}
+
+#[test]
+fn combining_marks_join_the_previous_cell() {
+    let mut t = term(10, 1);
+    t.feed("e\u{301}x".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "e\u{301}");
+    assert_eq!(cell(&t, 0, 1).c, 'x');
+    assert_eq!(t.screen().cursor(), (0, 2));
+}
+
+#[test]
+fn emoji_sequences_join_and_keep_their_width() {
+    let mut t = term(20, 1);
+    // A ZWJ family (2+0+2 columns) and a flag (1+1), as wcwidth counts.
+    t.feed("👨\u{200d}👩🇻🇳!".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "👨\u{200d}👩");
+    assert!(cell(&t, 0, 2).flags.contains(Flags::CONTINUATION));
+    assert_eq!(text_at(&t, 0, 2), "");
+    assert_eq!(text_at(&t, 0, 4), "🇻🇳");
+    assert!(cell(&t, 0, 5).flags.contains(Flags::CONTINUATION));
+    assert_eq!(cell(&t, 0, 6).c, '!');
+}
+
+#[test]
+fn clusters_end_at_controls_and_new_clusters() {
+    let mut t = term(10, 2);
+    // A second flag starts a new cluster; so does anything after a CR.
+    t.feed("🇻🇳🇫🇷\r\n\u{301}a".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "🇻🇳");
+    assert_eq!(text_at(&t, 0, 2), "🇫🇷");
+    assert_eq!(text_at(&t, 1, 0), "a");
+}
+
+#[test]
+fn variation_selector_is_kept_in_the_cluster() {
+    let mut t = term(10, 1);
+    t.feed("❤\u{fe0f}x".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "❤\u{fe0f}");
+    assert!(cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert_eq!(cell(&t, 0, 2).c, 'x');
+}
+
 #[test]
 fn split_input_across_feeds() {
     let mut t = term(10, 1);

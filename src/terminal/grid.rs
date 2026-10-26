@@ -26,6 +26,10 @@ impl Flags {
     pub const WIDE: Flags = Flags(1 << 8);
     /// Placeholder occupying the second half of a double-width character.
     pub const WIDE_SPACER: Flags = Flags(1 << 9);
+    /// Continues the grapheme cluster of an earlier cell (an emoji after a
+    /// ZWJ, a skin tone, the second letter of a flag). That cell holds the
+    /// whole cluster and draws it; this one only takes up room.
+    pub const CONTINUATION: Flags = Flags(1 << 10);
 
     pub const fn empty() -> Self {
         Flags(0)
@@ -75,6 +79,9 @@ pub struct Cell {
     pub underline_color: Color,
     /// Hyperlink (OSC 8) id, see `Screen::link`; 0 for none.
     pub link: u16,
+    /// Characters after `c` in its grapheme cluster (combining marks,
+    /// emoji sequences), see `Screen::cluster`; 0 for none.
+    pub cluster: u16,
 }
 
 impl Default for Cell {
@@ -87,6 +94,7 @@ impl Default for Cell {
             underline: Underline::None,
             underline_color: Color::Default,
             link: 0,
+            cluster: 0,
         }
     }
 }
@@ -518,6 +526,7 @@ mod tests {
             underline: Underline::Curly,
             underline_color: Color::Indexed(3),
             link: 1,
+            cluster: 1,
         };
         let blank = Cell::blank(&template);
         assert_eq!(blank.link, 0);

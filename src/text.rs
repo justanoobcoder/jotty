@@ -7,6 +7,8 @@ use crate::terminal::{Flags, Screen};
 /// One cell of a [`LineText`].
 pub struct TextCell {
     pub point: Point,
+    /// The cell's character, without the rest of its cluster.
+    pub c: char,
     /// Byte offset of the cell's character in the text.
     pub offset: usize,
     pub link: u16,
@@ -40,10 +42,11 @@ impl LineText {
                 }
                 cells.push(TextCell {
                     point: Point { line, col },
+                    c: cell.c,
                     offset: text.len(),
                     link: cell.link,
                 });
-                text.push(cell.c);
+                screen.cell_text(cell, &mut text);
             }
             if !row.wrapped {
                 break;

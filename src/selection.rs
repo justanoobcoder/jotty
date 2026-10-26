@@ -262,14 +262,12 @@ impl Selection {
             } else {
                 row.cells.len()
             };
-            let mut text: String = row
-                .cells
-                .iter()
-                .take(last)
-                .skip(first)
-                .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
-                .map(|c| c.c)
-                .collect();
+            let mut text = String::new();
+            for cell in row.cells.iter().take(last).skip(first) {
+                if !cell.flags.contains(Flags::WIDE_SPACER) {
+                    screen.cell_text(cell, &mut text);
+                }
+            }
             let joined = row.wrapped && line != end.line;
             if !joined {
                 text.truncate(text.trim_end_matches(' ').len());
@@ -457,6 +455,15 @@ mod tests {
         let before = s.live_rows(t.screen());
         t.feed(b"a\r\nb\r\nc\r\n");
         assert!(!s.follow_output(t.screen(), &before, 3));
+    }
+
+    #[test]
+    fn clusters_are_copied_whole() {
+        let mut t = Terminal::new(20, 1, 10);
+        t.feed("ca\u{301}fe\u{301} 🇻🇳!".as_bytes());
+        let mut s = Selection::new(p(0, 0));
+        s.update(p(0, 10));
+        assert_eq!(s.text(t.screen()), "ca\u{301}fe\u{301} 🇻🇳!");
     }
 
     #[test]
