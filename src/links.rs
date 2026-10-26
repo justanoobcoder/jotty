@@ -4,7 +4,8 @@
 use regex::Regex;
 
 use crate::selection::Point;
-use crate::terminal::{Flags, Screen};
+use crate::terminal::Screen;
+use crate::text::LineText;
 
 /// URLs with a scheme, `mailto:` addresses and magnet links. They end at
 /// whitespace and at characters that usually delimit URLs in text.
@@ -39,8 +40,7 @@ impl Detector {
     pub fn link_at(&self, screen: &Screen, at: Point) -> Option<Link> {
         let line = LineText::new(screen, at)?;
         let index = line.index_of(at)?;
-        line.hyperlink(screen, index)
-            .or_else(|| self.match_at(&line, index))
+        hyperlink(&line, screen, index).or_else(|| self.match_at(&line, index))
     }
 
     fn match_at(&self, line: &LineText, index: usize) -> Option<Link> {
@@ -85,91 +85,25 @@ fn trim_url(url: &str) -> usize {
     end
 }
 
-/// One cell of a [`LineText`].
-struct TextCell {
-    point: Point,
-    /// Byte offset of the cell's character in the text.
-    offset: usize,
-    link: u16,
-}
-
-/// The text of a logical line (soft-wrapped rows joined), with where each
-/// character came from.
-struct LineText {
-    text: String,
-    cells: Vec<TextCell>,
-}
-
-impl LineText {
-    fn new(screen: &Screen, at: Point) -> Option<LineText> {
-        screen.row_at(at.line)?;
-        let mut first = at.line;
-        while screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
-            first -= 1;
-        }
-        let mut text = String::new();
-        let mut cells = Vec::new();
-        let mut line = first;
-        while let Some(row) = screen.row_at(line) {
-            for (col, cell) in row.cells.iter().enumerate() {
-                if cell.flags.contains(Flags::WIDE_SPACER) {
-                    continue;
-                }
-                cells.push(TextCell {
-                    point: Point { line, col },
-                    offset: text.len(),
-                    link: cell.link,
-                });
-                text.push(cell.c);
-            }
-            if !row.wrapped {
-                break;
-            }
-            line += 1;
-        }
-        Some(LineText { text, cells })
-    }
-
-    /// The cell at `at`; the second half of a wide character counts as its
-    /// first half.
-    fn index_of(&self, at: Point) -> Option<usize> {
-        self.cells
-            .iter()
-            .rposition(|c| c.point.line == at.line && c.point.col <= at.col)
-    }
-
-    /// The point of the character starting at byte `offset`.
-    fn point_at(&self, offset: usize) -> Point {
-        let i = self.cells.partition_point(|c| c.offset < offset);
-        self.cells[i.min(self.cells.len() - 1)].point
-    }
-
-    /// The point of the last character before byte `offset`.
-    fn point_before(&self, offset: usize) -> Point {
-        let i = self.cells.partition_point(|c| c.offset < offset);
-        self.cells[i.saturating_sub(1)].point
-    }
-
-    /// The hyperlink covering cell `index`: the run of cells around it
-    /// with the same link id.
-    fn hyperlink(&self, screen: &Screen, index: usize) -> Option<Link> {
-        let id = self.cells[index].link;
-        let target = screen.link(id)?;
-        let first = self.cells[..index]
-            .iter()
-            .rposition(|c| c.link != id)
-            .map_or(0, |i| i + 1);
-        let last = self.cells[index..]
-            .iter()
-            .position(|c| c.link != id)
-            .map_or(self.cells.len(), |i| index + i)
-            - 1;
-        Some(Link {
-            start: self.cells[first].point,
-            end: self.cells[last].point,
-            target: target.to_string(),
-        })
-    }
+/// The hyperlink covering cell `index` of `line`: the run of cells around
+/// it with the same link id.
+fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
+    let id = line.cells[index].link;
+    let target = screen.link(id)?;
+    let first = line.cells[..index]
+        .iter()
+        .rposition(|c| c.link != id)
+        .map_or(0, |i| i + 1);
+    let last = line.cells[index..]
+        .iter()
+        .position(|c| c.link != id)
+        .map_or(line.cells.len(), |i| index + i)
+        - 1;
+    Some(Link {
+        start: line.cells[first].point,
+        end: line.cells[last].point,
+        target: target.to_string(),
+    })
 }
 
 #[cfg(test)]

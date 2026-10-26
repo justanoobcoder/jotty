@@ -13,6 +13,7 @@ mod renderer;
 mod selection;
 mod terminal;
 mod terminfo;
+mod text;
 
 use std::process::ExitCode;
 
