@@ -3,6 +3,9 @@
 # (probes fail behind relays such as `devenv shell` or tmux).
 #
 # Install for the current user with:  tic -x -o ~/.terminfo jotty.terminfo
+#
+# Keep the compiled entry under 4096 bytes: unibilium, which Neovim uses
+# to read terminfo, rejects larger files.
 jotty|jotty Wayland terminal emulator,
 # Styled (curly, dotted, ...) and colored underlines.
 	Su,
@@ -13,6 +16,7 @@ jotty|jotty Wayland terminal emulator,
 # Cursor shape (DECSCUSR) and color (OSC 12 / OSC 112).
 	Ss=\E[%p1%d q, Se=\E[0 q,
 	Cs=\E]12;%p1%s\007, Cr=\E]112\007,
-# Bracketed paste.
-	BE=\E[?2004h, BD=\E[?2004l, PS=\E[200~, PE=\E[201~,
+# Cancel what jotty doesn't implement (OSC 52 clipboard, SGR mouse
+# reporting, visual bell); this also keeps the entry small enough.
+	Ms@, XM@, xm@, flash@,
 	use=xterm-256color,
