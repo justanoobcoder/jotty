@@ -48,6 +48,20 @@ impl Renderer {
         }
     }
 
+    pub fn set_fonts(&mut self, fonts: crate::font::Fonts) {
+        match self {
+            Renderer::Gpu(r) => r.set_fonts(fonts),
+            Renderer::Cpu(r) => r.set_fonts(fonts),
+        }
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        match self {
+            Renderer::Gpu(r) => r.theme = theme,
+            Renderer::Cpu(r) => r.theme = theme,
+        }
+    }
+
     /// Draws and presents a frame (this commits the surface). Returns
     /// whether another frame is needed because the glyph atlas overflowed.
     pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
@@ -91,6 +105,17 @@ impl Theme {
             opacity: config.window.opacity,
             transparent_cells: config.window.transparent_cell_backgrounds,
             overrides: [None; 256],
+        }
+    }
+
+    /// The configured colors, as color queries report them.
+    pub fn default_colors(&self) -> crate::terminal::DefaultColors {
+        let rgb = |c: Rgb| (c.0, c.1, c.2);
+        crate::terminal::DefaultColors {
+            foreground: rgb(self.foreground),
+            background: rgb(self.background),
+            cursor: rgb(self.cursor),
+            palette: std::array::from_fn(|i| rgb(self.indexed(i as u8))),
         }
     }
 

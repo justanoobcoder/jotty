@@ -35,10 +35,12 @@ pub enum Action {
     NewWindow,
     /// Turn vi mode on or off.
     ViMode,
+    /// Read the config file again.
+    ReloadConfig,
 }
 
 impl Action {
-    const ALL: [(&'static str, Action); 15] = [
+    const ALL: [(&'static str, Action); 16] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -54,6 +56,7 @@ impl Action {
         ("search", Action::Search),
         ("new_window", Action::NewWindow),
         ("vi_mode", Action::ViMode),
+        ("reload_config", Action::ReloadConfig),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -76,6 +79,7 @@ impl Action {
             Action::Search => &["ctrl+shift+f"],
             Action::NewWindow => &["ctrl+shift+n"],
             Action::ViMode => &["ctrl+shift+space"],
+            Action::ReloadConfig => &["ctrl+shift+r"],
         }
     }
 }

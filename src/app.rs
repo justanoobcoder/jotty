@@ -81,8 +81,9 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{DefaultColors, MouseMode, Terminal};
+use crate::terminal::{MouseMode, Terminal};
 use crate::vi::{self, ViMode};
+use crate::watch;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -196,8 +197,10 @@ pub struct App {
     last_search: Option<(String, Direction)>,
     /// Vi mode, when on: a keyboard cursor over the screen and scrollback.
     vi: Option<ViMode>,
-    /// The `--config` file, passed on to new windows.
+    /// The `--config` file, passed on to new windows and reloaded.
     config_path: Option<PathBuf>,
+    /// A reload is scheduled (changes come in bursts while a file is saved).
+    reload_pending: bool,
     links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
@@ -389,14 +392,8 @@ pub fn run(
         .map_err(|e| format!("cannot watch the pty: {e}"))?;
 
     let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
-    let defaults = Theme::from_config(&config);
-    let rgb = |c: crate::config::Rgb| (c.0, c.1, c.2);
-    term.screen_mut().set_default_colors(DefaultColors {
-        foreground: rgb(defaults.foreground),
-        background: rgb(defaults.background),
-        cursor: rgb(defaults.cursor),
-        palette: std::array::from_fn(|i| rgb(defaults.indexed(i as u8))),
-    });
+    term.screen_mut()
+        .set_default_colors(Theme::from_config(&config).default_colors());
     let font_points = config.font.size;
     let mut app = App {
         qh: qh.clone(),
@@ -445,6 +442,7 @@ pub fn run(
         last_search: None,
         vi: None,
         config_path,
+        reload_pending: false,
         links,
         hovered_link: None,
         pointer_inside: false,
@@ -462,6 +460,7 @@ pub fn run(
         ime_cursor_rect: (0, 0, 0, 0),
     };
 
+    app.watch_config();
     // SCTK reports only seats added later through `new_seat`.
     let seats: Vec<_> = app.seat_state.seats().collect();
     for seat in seats {
@@ -996,6 +995,7 @@ impl App {
                 }
             }
             Action::NewWindow => self.new_window(),
+            Action::ReloadConfig => self.reload_config(),
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -1100,6 +1100,162 @@ impl App {
         }
         self.hovered_link = link;
         self.request_redraw();
+    }
+
+    /// Reloads the config when its file changes or on SIGUSR1.
+    fn watch_config(&mut self) {
+        let path = self
+            .config_path
+            .clone()
+            .or_else(crate::config::default_path);
+        if let Some(path) = path
+            && let Some(name) = path.file_name().map(|n| n.to_owned())
+        {
+            match watch::watch_file(&path) {
+                Ok(file) => {
+                    let source = Generic::new(file, Interest::READ, Mode::Level);
+                    let inserted = self.loop_handle.insert_source(source, move |_, file, app| {
+                        // SAFETY: the file is only read, never closed or replaced.
+                        if watch::changed(unsafe { file.get_mut() }, &name) {
+                            app.schedule_reload();
+                        }
+                        Ok(PostAction::Continue)
+                    });
+                    if let Err(e) = inserted {
+                        log::warn!("cannot watch the config file: {e}");
+                    }
+                }
+                // Typically: no config directory yet.
+                Err(e) => log::info!("not watching {} for changes: {e}", path.display()),
+            }
+        }
+        match watch::sigusr1() {
+            Ok(file) => {
+                let source = Generic::new(file, Interest::READ, Mode::Level);
+                let inserted = self.loop_handle.insert_source(source, |_, file, app| {
+                    // SAFETY: as above.
+                    watch::drain(unsafe { file.get_mut() });
+                    app.reload_config();
+                    Ok(PostAction::Continue)
+                });
+                if let Err(e) = inserted {
+                    log::warn!("cannot handle SIGUSR1: {e}");
+                }
+            }
+            Err(e) => log::warn!("cannot handle SIGUSR1: {e}"),
+        }
+    }
+
+    /// Reloads shortly, once the burst of changes from saving a file is over.
+    fn schedule_reload(&mut self) {
+        if std::mem::replace(&mut self.reload_pending, true) {
+            return;
+        }
+        let timer = Timer::from_duration(Duration::from_millis(100));
+        let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
+            app.reload_pending = false;
+            app.reload_config();
+            TimeoutAction::Drop
+        });
+        if let Err(e) = inserted {
+            log::warn!("cannot schedule a config reload: {e}");
+            self.reload_pending = false;
+        }
+    }
+
+    /// Reads the config file again and applies what can change in a running
+    /// window. An invalid file is reported and the current config kept.
+    fn reload_config(&mut self) {
+        let new = match Config::load(self.config_path.as_deref()) {
+            Ok(config) => config,
+            Err(e) => return log::error!("{e}; keeping the current configuration"),
+        };
+        if new == self.config {
+            return;
+        }
+        log::info!("reloading the configuration");
+        let old = std::mem::replace(&mut self.config, new.clone());
+
+        for (changed, what) in [
+            (old.terminal.shell != new.terminal.shell, "terminal.shell"),
+            (old.terminal.term != new.terminal.term, "terminal.term"),
+            (
+                old.terminal.scrollback != new.terminal.scrollback,
+                "terminal.scrollback",
+            ),
+            (
+                old.window.renderer != new.window.renderer,
+                "window.renderer",
+            ),
+            (
+                (old.window.columns, old.window.lines) != (new.window.columns, new.window.lines),
+                "window.columns and window.lines",
+            ),
+            (
+                (&old.window.title, &old.window.app_id) != (&new.window.title, &new.window.app_id),
+                "window.title and window.app_id",
+            ),
+        ] {
+            if changed {
+                log::info!("{what} applies to new windows");
+            }
+        }
+
+        let mut relayout = old.window.padding != new.window.padding;
+        if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
+            let px = points_to_px(self.font_points, self.scale as f32);
+            match Fonts::new(&new.font.family, &new.font.fallback, px) {
+                Ok(fonts) => {
+                    self.renderer.set_fonts(fonts);
+                    relayout = true;
+                }
+                Err(e) => log::error!("{e}; keeping the current font"),
+            }
+        }
+        if old.font.size != new.font.size {
+            // A new configured size replaces any zooming.
+            self.font_points = new.font.size;
+            self.renderer
+                .set_font_size(points_to_px(self.font_points, self.scale as f32));
+            relayout = true;
+        }
+
+        let theme = Theme::from_config(&new);
+        self.term
+            .screen_mut()
+            .set_default_colors(theme.default_colors());
+        self.renderer.set_theme(theme);
+
+        if (old.window.opacity >= 1.0) != (new.window.opacity >= 1.0) {
+            let surface = self.window.wl_surface();
+            if new.window.opacity >= 1.0 {
+                set_whole_region(&self.compositor, |region| surface.set_opaque_region(region));
+            } else {
+                surface.set_opaque_region(None);
+            }
+        }
+        if old.window.blur != new.window.blur {
+            if new.window.blur {
+                self.update_capabilities();
+            } else if let Some(blur) = self.blur.take() {
+                blur.destroy();
+            }
+        }
+        if (&old.url, &old.files) != (&new.url, &new.files) {
+            let kinds: Vec<Vec<String>> =
+                new.files.0.values().map(|k| k.extensions.clone()).collect();
+            match Detector::new(&kinds, &new.url.regex) {
+                Ok(links) => self.links = links,
+                Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
+            }
+            self.hovered_link = None;
+        }
+
+        if relayout {
+            self.apply_size();
+        } else {
+            self.request_redraw();
+        }
     }
 
     /// Starts another jotty in the current directory of the program in the

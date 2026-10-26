@@ -304,6 +304,12 @@ impl Renderer {
         }
     }
 
+    /// Replaces the fonts, after a config reload.
+    pub fn set_fonts(&mut self, fonts: Fonts) {
+        self.fonts = fonts;
+        self.atlas.clear();
+    }
+
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
         self.atlas.clear();

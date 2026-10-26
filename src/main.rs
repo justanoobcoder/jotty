@@ -17,6 +17,7 @@ mod terminal;
 mod terminfo;
 mod text;
 mod vi;
+mod watch;
 
 use std::process::ExitCode;
 
