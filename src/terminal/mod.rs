@@ -158,6 +158,10 @@ pub struct Screen {
     pub modes: Modes,
     pub cursor_shape: CursorShape,
     last_char: Option<char>,
+    /// Cursor color set by the program (OSC 12), overriding the configured one.
+    cursor_color: Option<(u8, u8, u8)>,
+    /// The configured cursor color, reported by OSC 12 queries.
+    default_cursor_color: (u8, u8, u8),
     /// Where the last character was printed, if nothing else happened
     /// since; a following variation selector applies to it.
     last_printed: Option<(usize, usize)>,
@@ -197,6 +201,8 @@ impl Screen {
             modes: Modes::default(),
             cursor_shape: CursorShape::default(),
             last_char: None,
+            cursor_color: None,
+            default_cursor_color: (255, 255, 255),
             last_printed: None,
             title: None,
             title_changed: false,
@@ -316,6 +322,17 @@ impl Screen {
     /// Whether anything visible changed since the last call.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// The cursor color requested by the program with OSC 12, if any.
+    pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
+        self.cursor_color
+    }
+
+    /// The configured cursor color, which OSC 12 queries report while the
+    /// program hasn't set one.
+    pub fn set_default_cursor_color(&mut self, rgb: (u8, u8, u8)) {
+        self.default_cursor_color = rgb;
     }
 
     /// The column where user input starts on the cursor row: after the
@@ -761,7 +778,9 @@ impl Screen {
 
     fn reset(&mut self) {
         let scrollback = self.primary.max_history;
+        let default_cursor_color = self.default_cursor_color;
         *self = Screen::new(self.cols, self.rows, scrollback);
+        self.default_cursor_color = default_cursor_color;
     }
 
     fn sgr(&mut self, params: &Params) {
@@ -820,6 +839,38 @@ impl Screen {
             }
         }
     }
+}
+
+/// Parses an X11 color specification as used by OSC color sequences:
+/// `#rgb`, `#rrggbb`, or `rgb:r/g/b` with 1–4 hex digits per component.
+fn parse_color(spec: &[u8]) -> Option<(u8, u8, u8)> {
+    let spec = std::str::from_utf8(spec).ok()?;
+    let scale = |hex: &str| -> Option<u8> {
+        if hex.is_empty() || hex.len() > 4 {
+            return None;
+        }
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        let max = (1u32 << (4 * hex.len())) - 1;
+        Some((value * 255 / max) as u8)
+    };
+    if let Some(hex) = spec.strip_prefix('#') {
+        if !matches!(hex.len(), 3 | 6) || !hex.is_ascii() {
+            return None;
+        }
+        let n = hex.len() / 3;
+        return Some((
+            scale(&hex[..n])?,
+            scale(&hex[n..2 * n])?,
+            scale(&hex[2 * n..])?,
+        ));
+    }
+    let mut parts = spec.strip_prefix("rgb:")?.split('/');
+    let rgb = (
+        scale(parts.next()?)?,
+        scale(parts.next()?)?,
+        scale(parts.next()?)?,
+    );
+    parts.next().is_none().then_some(rgb)
 }
 
 /// Parses the arguments of SGR 38/48/58 in either the colon form
@@ -1053,8 +1104,27 @@ impl Perform for Screen {
         self.dirty = true;
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         match params {
+            [b"12", b"?", ..] => {
+                let (r, g, b) = self.cursor_color.unwrap_or(self.default_cursor_color);
+                // Reply with the request's terminator, as xterm does.
+                let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+                let reply =
+                    format!("\x1b]12;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}");
+                self.responses.extend_from_slice(reply.as_bytes());
+            }
+            [b"12", spec, ..] => match parse_color(spec) {
+                Some(rgb) => {
+                    self.cursor_color = Some(rgb);
+                    self.dirty = true;
+                }
+                None => log::debug!("bad cursor color {:?}", String::from_utf8_lossy(spec)),
+            },
+            [b"112", ..] => {
+                self.cursor_color = None;
+                self.dirty = true;
+            }
             [b"0" | b"2", rest @ ..] => {
                 let title = rest
                     .iter()

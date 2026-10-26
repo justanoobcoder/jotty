@@ -484,3 +484,58 @@ fn emoji_presentation_at_second_to_last_column_sets_pending_wrap() {
     assert!(cell(&t, 0, 2).flags.contains(Flags::WIDE));
     assert_eq!(lines(&t), ["ab\u{2744}", "c"]);
 }
+
+#[test]
+fn osc_12_sets_and_resets_cursor_color() {
+    let mut t = term(10, 1);
+    assert_eq!(t.screen().cursor_color(), None);
+    t.feed(b"\x1b]12;#ff8000\x07");
+    assert_eq!(t.screen().cursor_color(), Some((255, 128, 0)));
+    t.feed(b"\x1b]12;rgb:00/80/ff\x1b\\");
+    assert_eq!(t.screen().cursor_color(), Some((0, 128, 255)));
+    t.feed(b"\x1b]112\x07");
+    assert_eq!(t.screen().cursor_color(), None);
+    // Invalid specifications are ignored.
+    t.feed(b"\x1b]12;not-a-color\x07");
+    assert_eq!(t.screen().cursor_color(), None);
+}
+
+#[test]
+fn osc_12_query_reports_current_color() {
+    let mut t = term(10, 1);
+    t.screen_mut().set_default_cursor_color((0x12, 0x34, 0x56));
+    t.feed(b"\x1b]12;?\x07");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]12;rgb:1212/3434/5656\x07"
+    );
+    t.feed(b"\x1b]12;#ffffff\x07\x1b]12;?\x1b\\");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]12;rgb:ffff/ffff/ffff\x1b\\"
+    );
+}
+
+#[test]
+fn full_reset_restores_cursor_color() {
+    let mut t = term(10, 1);
+    t.screen_mut().set_default_cursor_color((1, 2, 3));
+    t.feed(b"\x1b]12;#ffffff\x07\x1bc\x1b]12;?\x07");
+    assert_eq!(t.screen().cursor_color(), None);
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b]12;rgb:0101/0202/0303\x07"
+    );
+}
+
+#[test]
+fn color_specifications() {
+    assert_eq!(parse_color(b"#fff"), Some((255, 255, 255)));
+    assert_eq!(parse_color(b"#102030"), Some((0x10, 0x20, 0x30)));
+    assert_eq!(parse_color(b"rgb:f/0/8"), Some((255, 0, 136)));
+    assert_eq!(parse_color(b"rgb:ffff/0000/8080"), Some((255, 0, 128)));
+    assert_eq!(parse_color(b"rgb:1/2"), None);
+    assert_eq!(parse_color(b"rgb:1/2/3/4"), None);
+    assert_eq!(parse_color(b"#12345"), None);
+    assert_eq!(parse_color(b"red"), None);
+}
