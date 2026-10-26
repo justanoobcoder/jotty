@@ -464,8 +464,8 @@ impl App {
             .config
             .keybinds
             .lookup(event.keysym, base, self.modifiers)
+            && self.run_action(action)
         {
-            self.run_action(action);
             return;
         }
         let modes = self.term.screen().modes;
@@ -488,10 +488,21 @@ impl App {
         }
     }
 
-    fn run_action(&mut self, action: Action) {
+    /// Runs a bound action. Returns false when the action declined the key,
+    /// which then goes to the program as usual.
+    fn run_action(&mut self, action: Action) -> bool {
         let page = self.term.screen().rows() as isize;
         match action {
             Action::Copy => self.copy(),
+            Action::CopyOrInterrupt => {
+                if !self.selection.is_some_and(|s| !s.is_empty()) {
+                    return false;
+                }
+                self.copy();
+                // Cleared, so pressing the key again interrupts.
+                self.selection = None;
+                self.request_redraw();
+            }
             Action::Paste => self.paste(),
             Action::ScrollLineUp => self.term.screen_mut().scroll_display(1),
             Action::ScrollLineDown => self.term.screen_mut().scroll_display(-1),
@@ -506,6 +517,7 @@ impl App {
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
         }
+        true
     }
 
     /// The visible cell under a surface-local position, as (column, row).

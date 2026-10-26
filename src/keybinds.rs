@@ -16,6 +16,9 @@ use xkbcommon::xkb;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Copy,
+    /// Copy if text is selected, otherwise send the key to the program
+    /// (Ctrl+C then interrupts).
+    CopyOrInterrupt,
     Paste,
     ScrollLineUp,
     ScrollLineDown,
@@ -29,8 +32,9 @@ pub enum Action {
 }
 
 impl Action {
-    const ALL: [(&'static str, Action); 11] = [
+    const ALL: [(&'static str, Action); 12] = [
         ("copy", Action::Copy),
+        ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
         ("scroll_line_up", Action::ScrollLineUp),
         ("scroll_line_down", Action::ScrollLineDown),
@@ -52,7 +56,7 @@ impl Action {
         match self {
             Action::Copy => &["ctrl+shift+c"],
             Action::Paste => &["ctrl+shift+v", "shift+insert"],
-            Action::ScrollLineUp | Action::ScrollLineDown => &[],
+            Action::CopyOrInterrupt | Action::ScrollLineUp | Action::ScrollLineDown => &[],
             Action::ScrollPageUp => &["shift+page_up"],
             Action::ScrollPageDown => &["shift+page_down"],
             Action::ScrollToTop => &["shift+home"],
@@ -378,6 +382,19 @@ mod tests {
         );
         // Untouched actions keep their defaults.
         assert_eq!(k.combos(Action::ScrollToTop), ["shift+Home"]);
+    }
+
+    #[test]
+    fn copy_or_interrupt_is_opt_in() {
+        let ctrl_c = |k: &Keybinds| k.lookup(Keysym::c, Some(Keysym::c), CTRL);
+        assert_eq!(ctrl_c(&Keybinds::default()), None);
+        let k = binds(r#"copy_or_interrupt = ["ctrl+c"]"#).unwrap();
+        assert_eq!(ctrl_c(&k), Some(Action::CopyOrInterrupt));
+        // The plain copy binding is unaffected.
+        assert_eq!(
+            k.lookup(Keysym::C, Some(Keysym::c), CTRL_SHIFT),
+            Some(Action::Copy)
+        );
     }
 
     #[test]
