@@ -42,6 +42,11 @@ nothing surprises you.
   there. Install the entry (see
   [configuration](configuration.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
+- Double-clicking only selects command output (when enabled); there is no
+  word or line selection by double or triple click. If a command's last
+  line has no newline and the next prompt starts on it, that line isn't
+  part of the selected output. Output marks are kept per row, so they are
+  lost when the shell redraws the screen without emitting them again.
 - The terminfo entry must stay under 4096 bytes compiled (unibilium, used
   by Neovim, rejects larger files). The Nix build checks this. To fit, it
   leaves out the names of Ctrl+Alt navigation keys (`kUP7`, ...); the keys

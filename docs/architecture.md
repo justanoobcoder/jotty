@@ -62,6 +62,11 @@ stream into printable characters and control functions, and calls the
   and the cursor style), `take_title()`, `take_bell()` and `take_dirty()`.
 - the scrollback view offset, and the prompt marker from OSC 133;B.
 
+Each `Row` also keeps the last OSC 133 mark set on it (prompt, command line
+or output start), which moves into the history with the row and is cleared
+when the row is erased. `Screen::command_output` walks these marks to find
+the output a double click selects.
+
 A `Cell` is a `char`, foreground and background colors (default, 256-color
 index or RGB), attribute flags, and an underline style (single, double,
 curly, dotted, dashed; SGR `4:n`) with its own color (SGR 58). A double-width character occupies a `WIDE`

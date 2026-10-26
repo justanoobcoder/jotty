@@ -87,6 +87,7 @@ drawing what is behind it.
 | `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
 | `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
+| `double_click_selects_output` | bool | `false` | Double-clicking a command's output selects all of it. Needs [shell integration](#shell-integration). |
 
 ### `TERM` and terminfo
 
@@ -221,6 +222,14 @@ Unknown actions, modifiers or keys are reported with their line when the
 config is loaded. Middle-click paste isn't a key binding and can't be
 changed.
 
+**Selecting a command's output.** With
+`terminal.double_click_selects_output = true`, double-clicking anywhere in
+a command's output selects all of it, from the line after the command to
+the line before the next prompt, without trailing blank lines. Copy it as
+usual. This needs the shell to mark its prompts and commands (see
+[Shell integration](#shell-integration)); elsewhere, a double click
+does nothing special.
+
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
 scroll the history, or paste with the middle button in jotty instead.
@@ -229,6 +238,11 @@ Any other key goes to the program. Typing, pasting or committing input-method
 text scrolls back to the bottom.
 
 ## Shell integration
+
+Shells can mark where their prompt starts (`OSC 133 ; A`), where the prompt
+ends and the command line starts (`B`), and where the command's output
+starts (`C`). jotty uses these marks for two things: the text it reports to
+input methods, and selecting a command's output with a double click.
 
 Input methods ask the application for the text around the cursor, so they can
 correct or replace what was typed. A terminal doesn't really know which text
@@ -240,10 +254,15 @@ This is optional. Without it, the surrounding text also includes the prompt.
 That still works with most input methods, since they only look at the last
 few characters.
 
+To select a command's output, jotty needs `A`, to know where the output
+ends, and `C` (or `B`, if the command fits on one line) to know where it
+starts.
+
 **bash** (`~/.bashrc`, after `PS1` is set):
 
 ```bash
 PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+PS0='\e]133;C\a'
 ```
 
 **zsh** (`~/.zshrc`, after the prompt is set up):
@@ -252,11 +271,13 @@ PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
 autoload -Uz add-zsh-hook
 _jotty_prompt_start() { print -n '\e]133;A\a' }
 add-zsh-hook precmd _jotty_prompt_start
+_jotty_output_start() { print -n '\e]133;C\a' }
+add-zsh-hook preexec _jotty_output_start
 PS1="$PS1"$'%{\e]133;B\a%}'
 ```
 
-**fish** emits these markers itself in recent versions. If yours doesn't,
-add this to `~/.config/fish/config.fish`:
+**fish** emits all of these marks itself since version 4.0. For older
+versions, add this to `~/.config/fish/config.fish`:
 
 ```fish
 functions -c fish_prompt __jotty_fish_prompt
@@ -264,6 +285,9 @@ function fish_prompt
     printf '\e]133;A\a'
     __jotty_fish_prompt
     printf '\e]133;B\a'
+end
+function __jotty_output_start --on-event fish_preexec
+    printf '\e]133;C\a'
 end
 ```
 
