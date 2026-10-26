@@ -12,6 +12,39 @@ pub enum Direction {
     Newer,
 }
 
+impl Direction {
+    pub fn reversed(self) -> Direction {
+        match self {
+            Direction::Older => Direction::Newer,
+            Direction::Newer => Direction::Older,
+        }
+    }
+}
+
+/// Like [`find`], but past the last match in `direction` it continues from
+/// the other end, as vim does.
+pub fn find_wrapping(
+    screen: &Screen,
+    query: &str,
+    from: Point,
+    direction: Direction,
+    inclusive: bool,
+) -> Option<(Point, Point)> {
+    find(screen, query, from, direction, inclusive).or_else(|| {
+        let edge = match direction {
+            Direction::Older => Point {
+                line: screen.rows() as isize - 1,
+                col: usize::MAX,
+            },
+            Direction::Newer => Point {
+                line: -(screen.grid().history.len() as isize),
+                col: 0,
+            },
+        };
+        find(screen, query, edge, direction, true)
+    })
+}
+
 /// Finds `query` from `from` in `direction`: the nearest match that starts
 /// before `from` (Older) or after it (Newer), or at it with `inclusive`.
 /// Matches may span soft-wrapped rows. The search ignores case unless the
@@ -105,6 +138,17 @@ mod tests {
         let t = terminal();
         let m = find(t.screen(), "Foo", p(2, 7), Direction::Older, true).unwrap();
         assert_eq!(m, (p(-2, 0), p(-2, 2)));
+    }
+
+    #[test]
+    fn wraps_around() {
+        let t = terminal();
+        let s = t.screen();
+        // Past the oldest match, the newest one.
+        let m = find_wrapping(s, "foo", p(-3, 2), Direction::Older, false).unwrap();
+        assert_eq!(m, (p(0, 6), p(1, 0)));
+        let m = find_wrapping(s, "foo", m.0, Direction::Newer, false).unwrap();
+        assert_eq!(m, (p(-3, 2), p(-3, 4)));
     }
 
     #[test]

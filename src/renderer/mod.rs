@@ -288,6 +288,10 @@ pub struct Frame<'a> {
     pub link: Option<(Point, Point)>,
     /// A cell marked by Shift+click, drawn like the selection.
     pub mark: Option<Point>,
+    /// The vi mode cursor, drawn as a block instead of the terminal's.
+    pub vi_cursor: Option<Point>,
+    /// A short label drawn in the top-right corner, such as vi mode's.
+    pub label: Option<&'a str>,
     /// The search bar's text, drawn over the bottom row while searching.
     pub search: Option<&'a str>,
 }
@@ -307,7 +311,8 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
     let mut back = Batch::default();
     let mut front = Batch::default();
 
-    let cursor_visible = screen.cursor_visible() && frame.preedit.is_none();
+    let cursor_visible =
+        screen.cursor_visible() && frame.preedit.is_none() && frame.vi_cursor.is_none();
     let (cursor_row, cursor_col) = screen.cursor();
     let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
     let cursor_color = screen
@@ -333,7 +338,10 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 .selection
                 .is_some_and(|s| s.contains(Point { line, col: x }))
                 || frame.mark == Some(Point { line, col: x });
-            let is_cursor = block_cursor && y == cursor_row && x == cursor_col;
+            let is_cursor = match frame.vi_cursor {
+                Some(vi) => vi == Point { line, col: x },
+                None => block_cursor && y == cursor_row && x == cursor_col,
+            };
             let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
 
@@ -418,6 +426,9 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         }
     }
 
+    if let Some(label) = frame.label {
+        draw_label(&mut front, label, frame, theme, m, glyphs);
+    }
     if let Some(text) = frame.search {
         draw_search_bar(&mut front, text, frame, theme, m, glyphs);
     } else if let Some(preedit) = frame.preedit {
@@ -426,6 +437,42 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
 
     back.append(front);
     back
+}
+
+/// Draws `text` over the right end of the top row, in inverse colors.
+fn draw_label(
+    batch: &mut Batch,
+    text: &str,
+    frame: &Frame,
+    theme: &Theme,
+    m: CellMetrics,
+    glyphs: &mut impl GlyphCache,
+) {
+    let cols = frame.screen.cols();
+    let width: usize = text.chars().filter_map(|c| c.width()).sum();
+    // A cell of padding on each side.
+    let start = cols.saturating_sub(width + 2);
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    let x = |col: usize| frame.origin.0 as f32 + col as f32 * cw;
+    let py = frame.origin.1 as f32;
+    batch.rect(
+        x(start),
+        py,
+        (cols - start) as f32 * cw,
+        ch,
+        theme.foreground,
+    );
+    let mut col = start + 1;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if w == 0 || col + w > cols {
+            continue;
+        }
+        if let Some(glyph) = glyphs.glyph(c, Style::Bold, w == 2) {
+            batch.glyph(x(col), py, &glyph, theme.background);
+        }
+        col += w;
+    }
 }
 
 /// Draws the search bar over the bottom row, in inverse colors, with a
@@ -623,6 +670,8 @@ mod tests {
             origin: (0, 0),
             link: None,
             mark: None,
+            vi_cursor: None,
+            label: None,
             search: None,
         }
     }

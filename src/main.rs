@@ -16,6 +16,7 @@ mod selection;
 mod terminal;
 mod terminfo;
 mod text;
+mod vi;
 
 use std::process::ExitCode;
 

@@ -82,15 +82,20 @@ use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
 use crate::terminal::{DefaultColors, MouseMode, Terminal};
+use crate::vi::{self, ViMode};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 /// A scrollback search: the query and the current match.
-#[derive(Default)]
 struct Search {
     query: String,
     found: Option<(Point, Point)>,
+    /// Which way typing searches: up the scrollback (`?`, the `search`
+    /// binding) or down (`/` in vi mode).
+    direction: Direction,
+    /// Where the search starts: the bottom, or the vi cursor.
+    origin: Point,
 }
 
 impl Search {
@@ -187,6 +192,10 @@ pub struct App {
     selecting: bool,
     /// Scrollback search in progress.
     search: Option<Search>,
+    /// The last search's query and direction, for `n` and `N` in vi mode.
+    last_search: Option<(String, Direction)>,
+    /// Vi mode, when on: a keyboard cursor over the screen and scrollback.
+    vi: Option<ViMode>,
     /// The `--config` file, passed on to new windows.
     config_path: Option<PathBuf>,
     links: Detector,
@@ -433,6 +442,8 @@ pub fn run(
         selection: None,
         selecting: false,
         search: None,
+        last_search: None,
+        vi: None,
         config_path,
         links,
         hovered_link: None,
@@ -522,6 +533,7 @@ impl App {
         }
         self.selection = None;
         self.shift_mark = None;
+        self.vi_refresh();
         self.request_redraw();
     }
 
@@ -593,6 +605,13 @@ impl App {
                 if !keep {
                     self.selection = None;
                     self.selecting = false;
+                }
+            }
+            if let Some(vi) = &mut self.vi {
+                if same_buffer {
+                    vi.scroll(delta, screen);
+                } else {
+                    vi.move_to(vi.cursor, screen);
                 }
             }
             if let Some(mark) = &mut self.shift_mark {
@@ -678,6 +697,13 @@ impl App {
             origin: (pad, pad),
             link: self.hovered_link.as_ref().map(|l| (l.start, l.end)),
             mark: self.shift_mark,
+            vi_cursor: self.vi.as_ref().map(|vi| vi.cursor),
+            label: self.vi.as_ref().map(|vi| match vi.visual() {
+                None => "VI",
+                Some(vi::Visual::Char) => "VISUAL",
+                Some(vi::Visual::Line) => "V-LINE",
+                Some(vi::Visual::Block) => "V-BLOCK",
+            }),
             search: search_bar.as_deref(),
         };
         match self.renderer.draw(&frame) {
@@ -718,6 +744,10 @@ impl App {
         {
             return;
         }
+        // In vi mode, keys move the vi cursor and never reach the program.
+        if self.vi.is_some() {
+            return self.vi_key(&event, base);
+        }
         let modes = self.term.screen().modes;
         let modes = KeyModes {
             app_cursor: modes.app_cursor,
@@ -739,16 +769,30 @@ impl App {
             Keysym::Escape => {
                 self.search = None;
                 self.selection = None;
+                self.vi_refresh();
             }
             Keysym::Return | Keysym::KP_Enter => {
-                self.search = None;
-                self.set_primary();
+                let Some(search) = self.search.take() else {
+                    return;
+                };
+                if !search.query.is_empty() {
+                    self.last_search = Some((search.query, search.direction));
+                }
+                // In vi mode, the cursor goes to the match.
+                match (&mut self.vi, search.found) {
+                    (Some(vi), Some((start, _))) => vi.move_to(start, self.term.screen()),
+                    (Some(_), None) => {}
+                    (None, _) => self.set_primary(),
+                }
+                self.vi_refresh();
             }
             Keysym::BackSpace => {
-                if let Some(search) = &mut self.search {
-                    search.query.pop();
-                }
-                self.search_step(Direction::Older, true);
+                let Some(search) = &mut self.search else {
+                    return;
+                };
+                search.query.pop();
+                let direction = search.direction;
+                self.search_step(direction, true);
             }
             Keysym::Up => self.search_step(Direction::Older, false),
             Keysym::Down => self.search_step(Direction::Newer, false),
@@ -772,25 +816,44 @@ impl App {
         search
             .query
             .extend(text.chars().filter(|c| !c.is_control()));
-        self.search_step(Direction::Older, true);
+        let direction = search.direction;
+        self.search_step(direction, true);
+    }
+
+    /// Opens the search bar, searching in `direction` from the vi cursor,
+    /// or from the bottom.
+    fn start_search(&mut self, direction: Direction) {
+        let screen = self.term.screen();
+        let origin = self.vi.as_ref().map_or(
+            Point {
+                line: screen.rows() as isize - 1,
+                col: usize::MAX,
+            },
+            |vi| vi.cursor,
+        );
+        self.search = Some(Search {
+            query: String::new(),
+            found: None,
+            direction,
+            origin,
+        });
+        self.request_redraw();
     }
 
     /// Moves to the next match in `direction` from the current one (or from
-    /// the bottom), selecting it and scrolling it into view. `inclusive`
-    /// keeps the current match if it still matches: the query changed.
+    /// where the search started), wrapping around at the ends, selecting it
+    /// and scrolling it into view. `inclusive` keeps the current match if
+    /// it still matches: the query changed.
     fn search_step(&mut self, direction: Direction, inclusive: bool) {
         let Some(search) = &mut self.search else {
             return;
         };
         let screen = self.term.screen();
-        let from = search.found.map_or(
-            Point {
-                line: screen.rows() as isize - 1,
-                col: usize::MAX,
-            },
-            |m| m.0,
-        );
-        match search::find(screen, &search.query, from, direction, inclusive) {
+        let (from, inclusive) = match search.found {
+            Some(found) => (found.0, inclusive),
+            None => (search.origin, false),
+        };
+        match search::find_wrapping(screen, &search.query, from, direction, inclusive) {
             Some(found) => {
                 search.found = Some(found);
                 self.selection = Some(Selection::span(found.0, found.1, Unit::Word));
@@ -804,6 +867,85 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Handles a key in vi mode.
+    fn vi_key(&mut self, event: &KeyEvent, base: Option<Keysym>) {
+        if self.modifiers.alt || self.modifiers.logo {
+            return;
+        }
+        let key = match event.keysym {
+            Keysym::Escape => vi::Key::Escape,
+            Keysym::Left => vi::Key::Left,
+            Keysym::Right => vi::Key::Right,
+            Keysym::Up => vi::Key::Up,
+            Keysym::Down => vi::Key::Down,
+            Keysym::Home => vi::Key::Home,
+            Keysym::End => vi::Key::End,
+            Keysym::Page_Up => vi::Key::PageUp,
+            Keysym::Page_Down => vi::Key::PageDown,
+            _ if self.modifiers.ctrl => match base.and_then(|k| k.key_char()) {
+                Some(c) if c.is_ascii_alphabetic() || c == '[' => {
+                    vi::Key::Ctrl(c.to_ascii_lowercase())
+                }
+                _ => return,
+            },
+            _ => {
+                let mut chars = event.utf8.as_deref().unwrap_or("").chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => vi::Key::Char(c),
+                    _ => return,
+                }
+            }
+        };
+        let Some(vi) = &mut self.vi else {
+            return;
+        };
+        match vi.key(self.term.screen(), key) {
+            vi::Outcome::Done => {}
+            vi::Outcome::Ignored => return,
+            vi::Outcome::Exit => {
+                self.vi = None;
+                self.selection = None;
+                return self.request_redraw();
+            }
+            vi::Outcome::Yank(text) => self.copy_text(text),
+            vi::Outcome::Search(direction) => return self.start_search(direction),
+            vi::Outcome::Next { reverse } => self.search_next(reverse),
+        }
+        self.vi_refresh();
+    }
+
+    /// `n` and `N`: moves the vi cursor to the next match of the last
+    /// search, in its direction or reversed.
+    fn search_next(&mut self, reverse: bool) {
+        let (Some((query, direction)), Some(vi)) = (&self.last_search, &mut self.vi) else {
+            return;
+        };
+        let direction = if reverse {
+            direction.reversed()
+        } else {
+            *direction
+        };
+        let screen = self.term.screen();
+        if let Some((start, _)) = search::find_wrapping(screen, query, vi.cursor, direction, false)
+        {
+            vi.move_to(start, screen);
+        }
+    }
+
+    /// After the vi cursor or the screen changed: selects what visual mode
+    /// covers and keeps the cursor in view.
+    fn vi_refresh(&mut self) {
+        let Some(vi) = &mut self.vi else {
+            return;
+        };
+        let screen = self.term.screen();
+        vi.move_to(vi.cursor, screen);
+        self.selection = vi.selection(screen);
+        let line = vi.cursor.line;
+        self.term.screen_mut().show_line(line);
+        self.request_redraw();
     }
 
     fn scroll_to_bottom(&mut self) {
@@ -838,9 +980,20 @@ impl App {
             Action::FontLarger => self.set_font_points(self.font_points + 1.0),
             Action::FontSmaller => self.set_font_points(self.font_points - 1.0),
             Action::FontReset => self.set_font_points(self.config.font.size),
-            Action::Search => {
-                self.search = Some(Search::default());
-                self.request_redraw();
+            Action::Search => self.start_search(Direction::Older),
+            Action::ViMode => {
+                if self.vi.take().is_some() {
+                    self.selection = None;
+                    self.request_redraw();
+                } else {
+                    let (row, col) = self.term.screen().cursor();
+                    self.vi = Some(ViMode::new(Point {
+                        line: row as isize,
+                        col,
+                    }));
+                    self.selection = None;
+                    self.vi_refresh();
+                }
             }
             Action::NewWindow => self.new_window(),
         }
@@ -1112,7 +1265,11 @@ impl App {
         let Some(selection) = self.selection.filter(|s| !s.is_empty()) else {
             return;
         };
-        let text = selection.text(self.term.screen());
+        self.copy_text(selection.text(self.term.screen()));
+    }
+
+    /// Puts `text` on the clipboard.
+    fn copy_text(&mut self, text: String) {
         let (Some(manager), Some(device)) = (&self.data_device_manager, &self.data_device) else {
             log::warn!("no clipboard support (wl_data_device_manager missing)");
             return;

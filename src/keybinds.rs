@@ -33,10 +33,12 @@ pub enum Action {
     Search,
     /// Open another jotty in the current working directory.
     NewWindow,
+    /// Turn vi mode on or off.
+    ViMode,
 }
 
 impl Action {
-    const ALL: [(&'static str, Action); 14] = [
+    const ALL: [(&'static str, Action); 15] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -51,6 +53,7 @@ impl Action {
         ("font_reset", Action::FontReset),
         ("search", Action::Search),
         ("new_window", Action::NewWindow),
+        ("vi_mode", Action::ViMode),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -72,6 +75,7 @@ impl Action {
             Action::FontReset => &["ctrl+0", "ctrl+kp_0"],
             Action::Search => &["ctrl+shift+f"],
             Action::NewWindow => &["ctrl+shift+n"],
+            Action::ViMode => &["ctrl+shift+space"],
         }
     }
 }
