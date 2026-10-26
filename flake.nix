@@ -51,8 +51,34 @@
         default = {
           type = "app";
           program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/jotty";
+          meta.description = "Run the jotty terminal";
         };
       });
+
+      checks = forAllSystems (
+        pkgs:
+        let
+          package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        in
+        {
+          # Builds and runs the test suite.
+          build = package;
+
+          clippy = package.overrideAttrs (old: {
+            pname = "jotty-clippy";
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
+            buildPhase = "cargo clippy --all-targets --offline -- -D warnings";
+            doCheck = false;
+            installPhase = "touch $out";
+            postFixup = "";
+          });
+
+          fmt = pkgs.runCommand "jotty-fmt" { nativeBuildInputs = [ pkgs.rustfmt ]; } ''
+            rustfmt --check --edition 2024 ${./src}/main.rs
+            touch $out
+          '';
+        }
+      );
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
@@ -70,6 +96,6 @@
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
 }
