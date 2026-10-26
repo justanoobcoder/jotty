@@ -1,0 +1,107 @@
+# Development
+
+## Environment
+
+The flake's dev shell provides the Rust toolchain (cargo, rustc, clippy,
+rustfmt, rust-analyzer), pkg-config, and the native libraries: wayland,
+libxkbcommon, libGL (libglvnd) and fontconfig.
+
+```sh
+nix develop          # or: direnv allow  (the repo has an .envrc)
+cargo build
+cargo run -- -e htop
+```
+
+Without Nix, install the development packages for those four libraries and a
+Rust toolchain of version 1.88 or newer.
+
+## Checks
+
+Run these before committing. `nix flake check` runs all three in the
+sandbox.
+
+```sh
+cargo test                                    # unit tests
+cargo clippy --all-targets -- -D warnings     # lints
+cargo fmt --check                             # formatting
+
+nix flake check     # builds the package (with tests), clippy, rustfmt
+nix fmt             # formats flake.nix
+```
+
+## Tests
+
+The tests don't need a compositor, GPU or display:
+
+| Area | What is tested |
+| --- | --- |
+| `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, charsets, reports, resize, scrollback view, OSC 133, and a garbage-input fuzz test |
+| `terminal/grid.rs` | Scrolling, history bounds, resize |
+| `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, controlling terminal, exit status |
+| `input.rs` | Key encoding in all modes, shortcuts, paste encoding |
+| `ime.rs` | Surrounding text from rows (including wide and multibyte characters), byte limits, delete-to-keys, event ordering |
+| `renderer/mod.rs` | Color resolution, cursor styles, decorations, selection and preedit drawing, through a fake glyph cache |
+| `renderer/atlas.rs` | Packing without overlap |
+| `font.rs` | Cell metrics, box drawing, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
+| `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text |
+
+The Wayland and GL glue (`app.rs`, `renderer/gl.rs`) is tested by running
+jotty, as described next.
+
+## Running jotty headless
+
+`scripts/headless.sh` starts a headless sway with software rendering, runs
+jotty in it, optionally drives it, and saves a screenshot. Nothing appears on
+your screen, and it works over SSH or in CI.
+
+```sh
+cargo build
+nix shell nixpkgs#sway nixpkgs#grim nixpkgs#wtype -c \
+  scripts/headless.sh shot.png -- ./target/debug/jotty -e sh -c 'ls --color=always; sleep 5'
+```
+
+To type into it, write an actions script and pass it with `-a`:
+
+```sh
+cat > /tmp/actions.sh <<'EOF'
+wtype -k Shift_L -s 200 'echo hello' -k Return -s 300
+swaymsg output HEADLESS-1 scale 2
+EOF
+nix shell nixpkgs#sway nixpkgs#grim nixpkgs#wtype -c \
+  scripts/headless.sh -a /tmp/actions.sh shot.png -- ./target/debug/jotty
+```
+
+Put the whole input sequence in a single `wtype` call (use `-s` for pauses).
+Each `wtype` process creates and removes a virtual keyboard, and the keys it
+sends right after the seat regains a keyboard can be lost.
+
+The input method can be exercised the same way. sway relays
+`text-input-v3` to an `input-method-v2` client, so a small client that sends
+`set_preedit_string`, `commit_string` and `delete_surrounding_text` (and
+prints the `surrounding_text` events it receives) tests the whole IME path.
+Note that sway only sends `text_input.enter` while an input method is
+connected.
+
+## Debugging
+
+- `RUST_LOG=debug` logs every escape sequence jotty doesn't handle.
+- `WAYLAND_DEBUG=1` traces all Wayland messages. Combine it with `grep
+  text_input` to debug the input method.
+- To force software rendering on NixOS with an NVIDIA GPU, set
+  `LIBGL_ALWAYS_SOFTWARE=1` and
+  `__EGL_VENDOR_LIBRARY_FILENAMES=/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json`.
+- To see what jotty receives from a program, record its output with
+  `script -q /tmp/log` in another terminal, or run `cat -v` inside jotty.
+
+## Code layout and conventions
+
+See [architecture.md](architecture.md) for the module map. Some conventions:
+
+- Keep Wayland and GL types out of the logic modules (`terminal`, `ime`,
+  `input`, `selection`, `renderer::build`), so they stay unit-testable.
+- When adding an escape sequence, add a test in `terminal/tests.rs` that
+  feeds the bytes and checks the resulting grid.
+- `unsafe` stays in `pty.rs`, `font.rs` (fontconfig) and `renderer/gl.rs`,
+  with a `SAFETY` comment where the reason isn't obvious.
+- Commit one change at a time, and make sure tests, clippy and rustfmt pass
+  first.

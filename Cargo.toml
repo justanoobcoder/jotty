@@ -2,6 +2,7 @@
 name = "jotty"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "A minimal, Wayland-native, GPU-accelerated terminal emulator"
 license = "MIT"
 authors = ["Nguyễn Hồng Hiệp"]
