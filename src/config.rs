@@ -57,6 +57,9 @@ pub struct WindowConfig {
     pub blur: bool,
     /// Draw with the GPU (OpenGL ES) or on the CPU.
     pub renderer: RendererKind,
+    /// Mark the window urgent (xdg-activation) when the bell rings while
+    /// it isn't focused.
+    pub bell_urgent: bool,
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
@@ -72,6 +75,7 @@ impl Default for WindowConfig {
             transparent_cell_backgrounds: false,
             blur: false,
             renderer: RendererKind::Gpu,
+            bell_urgent: true,
             columns: 80,
             lines: 24,
         }

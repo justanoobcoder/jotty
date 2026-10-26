@@ -18,6 +18,7 @@ use smithay_client_toolkit::data_device_manager::data_source::{
     CopyPasteSource, DataSourceHandler,
 };
 use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
+use smithay_client_toolkit::activation::{ActivationHandler, ActivationState, RequestData};
 use smithay_client_toolkit::primary_selection::PrimarySelectionManagerState;
 use smithay_client_toolkit::primary_selection::device::{
     PrimarySelectionDevice, PrimarySelectionDeviceHandler,
@@ -104,6 +105,8 @@ pub struct App {
     shm: Shm,
     data_device_manager: Option<DataDeviceManagerState>,
     primary_selection_manager: Option<PrimarySelectionManagerState>,
+    /// xdg-activation, to mark the window urgent when the bell rings.
+    activation: Option<ActivationState>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
     /// Present once the compositor agreed to blur behind the window.
@@ -188,6 +191,9 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         log::warn!("blur requested, but the compositor lacks ext-background-effect-v1");
     }
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+    let activation = ActivationState::bind(&globals, &qh)
+        .map_err(|e| log::info!("no xdg-activation, the bell won't mark the window urgent: {e}"))
+        .ok();
     let primary_selection_manager = PrimarySelectionManagerState::bind(&globals, &qh)
         .map_err(|e| log::info!("no primary selection: {e}"))
         .ok();
@@ -312,6 +318,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         shm,
         data_device_manager,
         primary_selection_manager,
+        activation,
         text_input_manager,
         background_effect,
         blur: None,
@@ -444,14 +451,16 @@ impl App {
         let screen = self.term.screen_mut();
         let responses = screen.take_responses();
         let title = screen.take_title();
-        // The bell is not implemented yet; drop it.
-        screen.take_bell();
+        let bell = screen.take_bell();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {
             self.send(&responses);
         }
         if let Some(title) = title {
             self.window.set_title(title);
+        }
+        if bell {
+            self.ring_bell();
         }
         if dirty {
             // Selections refer to screen contents that may have moved.
@@ -867,6 +876,26 @@ impl App {
         });
         if let Err(e) = inserted {
             log::warn!("cannot read clipboard: {e}");
+        }
+    }
+
+    /// Asks the compositor to draw attention to the window, if it isn't
+    /// focused: an activation request without a valid input serial, which
+    /// compositors show as urgency instead of switching focus.
+    fn ring_bell(&mut self) {
+        if self.focused || !self.config.window.bell_urgent {
+            return;
+        }
+        if let Some(activation) = &self.activation {
+            activation.request_token(
+                &self.qh,
+                RequestData {
+                    app_id: Some(self.config.window.app_id.clone()),
+                    seat_and_serial: None,
+                    surface: Some(self.window.wl_surface().clone()),
+                    udata: (),
+                },
+            );
         }
     }
 
@@ -1453,6 +1482,16 @@ impl DataOfferHandler for App {
         _: &mut DragOffer,
         _: DndAction,
     ) {
+    }
+}
+
+impl ActivationHandler for App {
+    type RequestUdata = ();
+
+    fn new_token(&mut self, token: String, _: &RequestData<()>) {
+        if let Some(activation) = &self.activation {
+            activation.activate::<App>(self.window.wl_surface(), token);
+        }
     }
 }
 

@@ -32,6 +32,9 @@ blur = false
 # memory, since no GPU driver is loaded. jotty falls back to "cpu" when
 # OpenGL isn't available.
 renderer = "gpu"
+# When the bell rings (BEL) while the window isn't focused, ask the
+# compositor to mark it urgent.
+bell_urgent = true
 # Initial size in cells (the compositor may override it).
 columns = 80
 lines = 24
