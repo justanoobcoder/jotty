@@ -1,0 +1,29 @@
+[package]
+name = "jotty"
+version = "0.1.0"
+edition = "2024"
+description = "A minimal, Wayland-native, GPU-accelerated terminal emulator"
+license = "MIT"
+authors = ["Nguyễn Hồng Hiệp"]
+
+[dependencies]
+env_logger = "0.11.11"
+fontdb = "0.24.0"
+fontdue = "0.9.5"
+glow = "0.18.0"
+khronos-egl = { version = "6.0.0", features = ["static"] }
+libc = "0.2.191"
+log = "0.4.34"
+nix = { version = "0.31.3", features = ["term", "process", "fs", "ioctl", "signal"] }
+serde = { version = "1.0.229", features = ["derive"] }
+smithay-client-toolkit = "0.21.1"
+toml = "1.1.8"
+unicode-width = "0.2.2"
+vte = "0.15.0"
+wayland-client = "0.31.15"
+wayland-egl = "0.32.11"
+wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
