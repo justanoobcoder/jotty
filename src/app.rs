@@ -422,6 +422,15 @@ impl App {
     }
 
     fn read_pty(&mut self) {
+        // What the selection covers, to keep it while output goes elsewhere.
+        let selected = self.selection.map(|s| {
+            let screen = self.term.screen();
+            (
+                s.live_rows(screen),
+                screen.grid().scrolled,
+                screen.is_alt_screen(),
+            )
+        });
         let mut buf = [0u8; 1 << 16];
         let mut total = 0;
         while total < READ_BUDGET {
@@ -463,8 +472,19 @@ impl App {
             self.ring_bell();
         }
         if dirty {
-            // Selections refer to screen contents that may have moved.
-            self.selection = None;
+            let screen = self.term.screen();
+            if let (Some(selection), Some((rows, scrolled, alt))) = (&mut self.selection, selected)
+            {
+                let delta = screen.grid().scrolled.wrapping_sub(scrolled) as isize;
+                // Another buffer means other text; history and alternate
+                // screens never share lines.
+                let keep =
+                    alt == screen.is_alt_screen() && selection.follow_output(screen, &rows, delta);
+                if !keep {
+                    self.selection = None;
+                    self.selecting = false;
+                }
+            }
             self.request_redraw();
         }
     }

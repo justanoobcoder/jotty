@@ -158,6 +158,9 @@ pub struct Grid {
     pub rows: Vec<Row>,
     pub history: VecDeque<Row>,
     pub max_history: usize,
+    /// Rows scrolled off the top so far (kept in history or not), so that
+    /// positions in the history can follow new output.
+    pub scrolled: u64,
     cols: usize,
 }
 
@@ -169,6 +172,7 @@ impl Grid {
                 .collect(),
             history: VecDeque::new(),
             max_history,
+            scrolled: 0,
             cols,
         }
     }
@@ -179,6 +183,7 @@ impl Grid {
     }
 
     pub fn push_history(&mut self, row: Row) {
+        self.scrolled += 1;
         if self.max_history == 0 {
             return;
         }

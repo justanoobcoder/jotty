@@ -16,6 +16,18 @@ fn is_word(cell: &Cell) -> bool {
         || !(cell.c.is_whitespace() || WORD_DELIMITERS.contains(cell.c))
 }
 
+/// A fingerprint of the text of the row at `line`.
+fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let row = screen.row_at(line)?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    row.wrapped.hash(&mut hasher);
+    for cell in &row.cells {
+        cell.c.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Point {
     pub line: isize,
@@ -178,6 +190,45 @@ impl Selection {
             self.anchor = origin_start;
             self.head = end.max(origin_end);
         }
+    }
+
+    /// Moves the selection up by `lines`, after that many rows scrolled into
+    /// the history.
+    pub fn scroll(&mut self, lines: isize) {
+        for p in [
+            &mut self.anchor,
+            &mut self.head,
+            &mut self.origin.0,
+            &mut self.origin.1,
+        ] {
+            p.line -= lines;
+        }
+    }
+
+    /// A fingerprint of each selected row on the live screen, by line, to
+    /// tell later whether output changed the selected text.
+    pub fn live_rows(&self, screen: &Screen) -> Vec<(isize, u64)> {
+        let (start, end) = self.range();
+        (start.line.max(0)..=end.line.min(screen.rows() as isize - 1))
+            .filter_map(|line| Some((line, row_hash(screen, line)?)))
+            .collect()
+    }
+
+    /// Updates the selection after output, given the `live_rows` from
+    /// before it and how many rows scrolled into the history meanwhile.
+    /// The selection follows its rows; it is dropped (`false`) when
+    /// selected text changed or scrolled out of the history.
+    pub fn follow_output(
+        &mut self,
+        screen: &Screen,
+        before: &[(isize, u64)],
+        scrolled: isize,
+    ) -> bool {
+        self.scroll(scrolled);
+        screen.row_at(self.range().0.line).is_some()
+            && before
+                .iter()
+                .all(|&(line, hash)| row_hash(screen, line - scrolled) == Some(hash))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -366,6 +417,46 @@ mod tests {
         assert_eq!(s.text(screen), "two\nthree");
         s.extend(screen, p(0, 5));
         assert_eq!(s.text(screen), "one\ntwo");
+    }
+
+    #[test]
+    fn selection_follows_scrolled_output() {
+        let mut t = Terminal::new(10, 3, 10);
+        t.feed(b"one\r\ntwo\r\n");
+        let mut s = Selection::word(t.screen(), p(1, 0)).unwrap();
+        let before = s.live_rows(t.screen());
+        let scrolled = t.screen().grid().scrolled;
+        t.feed(b"x\r\ny\r\n");
+        let delta = (t.screen().grid().scrolled - scrolled) as isize;
+        assert_eq!(delta, 2);
+        assert!(s.follow_output(t.screen(), &before, delta));
+        assert_eq!(s.text(t.screen()), "two");
+        assert_eq!(s.range().0.line, -1);
+    }
+
+    #[test]
+    fn selection_is_dropped_when_its_text_changes() {
+        let mut t = Terminal::new(10, 3, 10);
+        t.feed(b"one\r\ntwo");
+        let mut s = Selection::word(t.screen(), p(1, 0)).unwrap();
+        let before = s.live_rows(t.screen());
+        t.feed(b"\rTWO");
+        assert!(!s.follow_output(t.screen(), &before, 0));
+        // Output elsewhere keeps it.
+        let mut s = Selection::word(t.screen(), p(0, 0)).unwrap();
+        let before = s.live_rows(t.screen());
+        t.feed(b"!");
+        assert!(s.follow_output(t.screen(), &before, 0));
+    }
+
+    #[test]
+    fn selection_is_dropped_when_it_leaves_the_history() {
+        let mut t = Terminal::new(10, 2, 1);
+        t.feed(b"one\r\n");
+        let mut s = Selection::word(t.screen(), p(0, 0)).unwrap();
+        let before = s.live_rows(t.screen());
+        t.feed(b"a\r\nb\r\nc\r\n");
+        assert!(!s.follow_output(t.screen(), &before, 3));
     }
 
     #[test]
