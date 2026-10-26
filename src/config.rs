@@ -28,6 +28,8 @@ pub struct UrlConfig {
     pub launcher: Vec<String>,
     /// Regular expressions for more kinds of links, besides URLs.
     pub regex: Vec<String>,
+    /// Paths of existing files with these extensions are links too.
+    pub file_extensions: Vec<String>,
 }
 
 impl Default for UrlConfig {
@@ -35,6 +37,15 @@ impl Default for UrlConfig {
         Self {
             launcher: vec!["xdg-open".into()],
             regex: Vec::new(),
+            file_extensions: [
+                // Images.
+                "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp", "tif",
+                "tiff", "svg", "ico", // Videos.
+                "mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "ogv",
+                "3gp",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 }

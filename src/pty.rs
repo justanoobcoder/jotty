@@ -183,6 +183,19 @@ impl Pty {
         Ok(())
     }
 
+    /// The current directory of the program in the foreground (the shell,
+    /// or what it runs), for resolving relative paths it printed.
+    pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+        // SAFETY: tcgetpgrp only reads the terminal's foreground group.
+        let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let pid = if group > 0 {
+            group as u32
+        } else {
+            self.child.id()
+        };
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }

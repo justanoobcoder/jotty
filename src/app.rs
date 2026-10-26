@@ -286,9 +286,9 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     };
     window.commit();
 
-    let links = Detector::new(&config.url.regex).unwrap_or_else(|e| {
-        log::error!("invalid url.regex, using only the built-in URL pattern: {e}");
-        Detector::new(&[]).expect("the built-in URL pattern is valid")
+    let links = Detector::new(&config.url.file_extensions, &config.url.regex).unwrap_or_else(|e| {
+        log::error!("invalid url.regex, ignoring it: {e}");
+        Detector::new(&config.url.file_extensions, &[]).expect("the built-in patterns are valid")
     });
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
@@ -867,8 +867,21 @@ impl App {
     /// a hand pointer over it.
     fn update_hovered_link(&mut self) {
         let link = if self.modifiers.ctrl && self.pointer_inside && !self.reporting_mouse() {
+            let cwd = std::cell::OnceCell::new();
+            let resolve = |path: &str| {
+                let path = match path.strip_prefix("~/") {
+                    Some(rest) => std::env::home_dir()?.join(rest),
+                    None => {
+                        let path = std::path::Path::new(path);
+                        cwd.get_or_init(|| self.pty.foreground_cwd())
+                            .as_ref()
+                            .map_or(path.to_path_buf(), |dir| dir.join(path))
+                    }
+                };
+                path.is_file().then(|| path.to_string_lossy().into_owned())
+            };
             self.links
-                .link_at(self.term.screen(), self.point_at(self.pointer_pos))
+                .link_at(self.term.screen(), self.point_at(self.pointer_pos), resolve)
         } else {
             None
         };
