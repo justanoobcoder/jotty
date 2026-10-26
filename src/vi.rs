@@ -180,7 +180,7 @@ impl ViMode {
                     return Outcome::Exit;
                 }
             }
-            Key::Char('i' | 'I' | 'q') => return Outcome::Exit,
+            Key::Char('i' | 'I' | 'a' | 'A' | 'q') => return Outcome::Exit,
             _ => return Outcome::Ignored,
         }
         self.cursor.line = self.cursor.line.clamp(top, bottom);

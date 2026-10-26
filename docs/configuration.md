@@ -317,7 +317,7 @@ its text as it scrolls.
 | `y` | Yank the selection to the clipboard; `yy` (`3yy`) yanks lines |
 | `/` `?` | Search down or up from the cursor; Enter jumps to the match |
 | `n` `N` | Next match of the last search, in its direction or the other way (wrapping around) |
-| Escape | Leave visual mode, then vi mode (also `i`, `I`, `q`, Ctrl+C) |
+| Escape | Leave visual mode, then vi mode (also `i`, `I`, `a`, `A`, `q`, Ctrl+C) |
 
 Key bindings still work in vi mode, so Ctrl+Shift+C copies the visual
 selection too.
