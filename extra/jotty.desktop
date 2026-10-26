@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=jotty
+GenericName=Terminal
+Comment=A minimal Wayland terminal emulator
+Exec=jotty
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;terminal;
+StartupWMClass=jotty
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=jotty

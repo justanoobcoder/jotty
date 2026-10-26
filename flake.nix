@@ -37,6 +37,7 @@
 
           # jotty finds the entry next to its executable and sets TERM=jotty.
           postInstall = ''
+            install -Dm644 extra/jotty.desktop -t $out/share/applications
             mkdir -p $out/share/terminfo
             tic -x -o $out/share/terminfo extra/jotty.terminfo
             # unibilium (Neovim) refuses entries of 4096 bytes or more.
