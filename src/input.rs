@@ -3,6 +3,8 @@
 
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 
+use crate::terminal::MouseMode;
+
 /// Terminal modes that change how keys are encoded.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KeyModes {
@@ -184,6 +186,106 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight,
+}
+
+impl MouseButton {
+    /// xterm's button number.
+    fn code(self) -> u8 {
+        match self {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            MouseButton::WheelUp => 64,
+            MouseButton::WheelDown => 65,
+            MouseButton::WheelLeft => 66,
+            MouseButton::WheelRight => 67,
+        }
+    }
+
+    fn is_wheel(self) -> bool {
+        self.code() >= 64
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press(MouseButton),
+    Release(MouseButton),
+    /// Pointer motion, with the button held down, if any.
+    Motion(Option<MouseButton>),
+}
+
+/// A pointer event on the cell at `col`, `row` (0-based, screen
+/// coordinates).
+#[derive(Debug, Clone, Copy)]
+pub struct MouseEvent {
+    pub action: MouseAction,
+    pub col: usize,
+    pub row: usize,
+    pub mods: Modifiers,
+}
+
+/// Encodes a pointer event for a program that enabled mouse reporting, or
+/// returns `None` if `mode` doesn't report this kind of event.
+pub fn encode_mouse(event: MouseEvent, mode: MouseMode, sgr: bool) -> Option<Vec<u8>> {
+    use MouseAction::*;
+    let reported = match (mode, event.action) {
+        (MouseMode::Off, _) => false,
+        (_, Release(button)) if button.is_wheel() => false,
+        (MouseMode::X10, action) => matches!(action, Press(_)),
+        (MouseMode::Normal, action) => !matches!(action, Motion(_)),
+        (MouseMode::ButtonMotion, action) => action != Motion(None),
+        (MouseMode::AnyMotion, _) => true,
+    };
+    if !reported {
+        return None;
+    }
+
+    let mut code = match event.action {
+        Press(button) => button.code(),
+        // The legacy encoding can't tell which button was released.
+        Release(button) if sgr => button.code(),
+        Release(_) => 3,
+        Motion(Some(button)) => button.code() + 32,
+        Motion(None) => 3 + 32,
+    };
+    if mode != MouseMode::X10 {
+        let m = event.mods;
+        code += 4 * u8::from(m.shift) + 8 * u8::from(m.alt) + 16 * u8::from(m.ctrl);
+    }
+
+    let (x, y) = (event.col + 1, event.row + 1);
+    if sgr {
+        let end = if matches!(event.action, Release(_)) {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes());
+    }
+    // Each value is one byte offset by 32, so positions stop at 223.
+    if x > 223 || y > 223 {
+        return None;
+    }
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        32 + code,
+        32 + x as u8,
+        32 + y as u8,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +426,107 @@ mod tests {
         assert_eq!(shortcut(Keysym::c, CTRL), None);
         assert_eq!(shortcut(Keysym::v, CTRL), None);
         assert_eq!(shortcut(Keysym::Page_Up, NONE), None);
+    }
+
+    fn mouse(action: MouseAction, col: usize, row: usize, mods: Modifiers) -> MouseEvent {
+        MouseEvent {
+            action,
+            col,
+            row,
+            mods,
+        }
+    }
+
+    use MouseAction::{Motion, Press, Release};
+    use MouseButton::{Left, Right, WheelDown, WheelUp};
+
+    #[test]
+    fn sgr_mouse_encoding() {
+        let enc = |e| encode_mouse(e, MouseMode::Normal, true);
+        assert_eq!(
+            enc(mouse(Press(Left), 0, 0, NONE)).unwrap(),
+            b"\x1b[<0;1;1M"
+        );
+        assert_eq!(
+            enc(mouse(Release(Left), 4, 9, NONE)).unwrap(),
+            b"\x1b[<0;5;10m"
+        );
+        assert_eq!(
+            enc(mouse(Press(Right), 299, 99, NONE)).unwrap(),
+            b"\x1b[<2;300;100M"
+        );
+        assert_eq!(
+            enc(mouse(Press(WheelUp), 1, 1, NONE)).unwrap(),
+            b"\x1b[<64;2;2M"
+        );
+        assert_eq!(
+            enc(mouse(Press(WheelDown), 1, 1, CTRL)).unwrap(),
+            b"\x1b[<81;2;2M"
+        );
+        assert_eq!(
+            enc(mouse(Press(Left), 0, 0, CTRL_SHIFT)).unwrap(),
+            b"\x1b[<20;1;1M"
+        );
+        assert_eq!(enc(mouse(Press(Left), 0, 0, ALT)).unwrap(), b"\x1b[<8;1;1M");
+    }
+
+    #[test]
+    fn legacy_mouse_encoding() {
+        let enc = |e| encode_mouse(e, MouseMode::Normal, false);
+        assert_eq!(enc(mouse(Press(Left), 0, 0, NONE)).unwrap(), b"\x1b[M !!");
+        // Releases don't say which button.
+        assert_eq!(
+            enc(mouse(Release(Right), 2, 3, NONE)).unwrap(),
+            b"\x1b[M##$"
+        );
+        // Positions past 223 can't be encoded.
+        assert_eq!(enc(mouse(Press(Left), 223, 0, NONE)), None);
+    }
+
+    #[test]
+    fn modes_filter_events() {
+        let all = [
+            mouse(Press(Left), 0, 0, NONE),
+            mouse(Release(Left), 0, 0, NONE),
+            mouse(Motion(Some(Left)), 0, 0, NONE),
+            mouse(Motion(None), 0, 0, NONE),
+        ];
+        let reported = |mode| {
+            all.iter()
+                .map(|&e| encode_mouse(e, mode, true).is_some())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reported(MouseMode::Off), [false, false, false, false]);
+        assert_eq!(reported(MouseMode::X10), [true, false, false, false]);
+        assert_eq!(reported(MouseMode::Normal), [true, true, false, false]);
+        assert_eq!(reported(MouseMode::ButtonMotion), [true, true, true, false]);
+        assert_eq!(reported(MouseMode::AnyMotion), [true, true, true, true]);
+        // Wheel "releases" are never reported.
+        let wheel = mouse(Release(WheelUp), 0, 0, NONE);
+        assert_eq!(encode_mouse(wheel, MouseMode::AnyMotion, true), None);
+    }
+
+    #[test]
+    fn motion_codes() {
+        let drag = mouse(Motion(Some(Left)), 3, 4, NONE);
+        assert_eq!(
+            encode_mouse(drag, MouseMode::ButtonMotion, true).unwrap(),
+            b"\x1b[<32;4;5M"
+        );
+        let hover = mouse(Motion(None), 3, 4, SHIFT);
+        assert_eq!(
+            encode_mouse(hover, MouseMode::AnyMotion, true).unwrap(),
+            b"\x1b[<39;4;5M"
+        );
+    }
+
+    #[test]
+    fn x10_ignores_modifiers() {
+        let press = mouse(Press(Left), 0, 0, CTRL);
+        assert_eq!(
+            encode_mouse(press, MouseMode::X10, true).unwrap(),
+            b"\x1b[<0;1;1M"
+        );
     }
 
     #[test]
