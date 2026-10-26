@@ -52,9 +52,9 @@ input and put its package in your packages:
 
 ```nix
 {
-  inputs.jotty.url = "git+file:///path/to/jotty"; # or its git URL
+  inputs.jotty.url = "github:justanoobcoder/jotty";
   # ...
-  environment.systemPackages = [ inputs.jotty.packages.${pkgs.system}.default ];
+  environment.systemPackages = [ inputs.jotty.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 }
 ```
 
