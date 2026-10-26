@@ -59,13 +59,14 @@ use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::Action;
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme};
-use crate::selection::{Point, Selection};
+use crate::selection::{Point, Selection, Unit};
 use crate::terminal::{MouseMode, Terminal};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
-/// Two clicks on the same cell within this many milliseconds are a double click.
+/// Clicks on the same cell within this many milliseconds of each other make
+/// a double or triple click.
 const DOUBLE_CLICK_MS: u32 = 400;
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
@@ -123,8 +124,9 @@ pub struct App {
     mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
     selecting: bool,
-    /// Time and cell of the last left click, to detect double clicks.
-    last_click: Option<(u32, Point)>,
+    /// Time, cell and count (1-3) of the last left click, to detect double
+    /// and triple clicks.
+    last_click: Option<(u32, Point, u8)>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
 
@@ -566,6 +568,7 @@ impl App {
                 line: last,
                 col: end,
             },
+            Unit::Word,
         ))
     }
 
@@ -1128,7 +1131,7 @@ impl PointerHandler for App {
                 PointerEventKind::Motion { .. } if self.selecting => {
                     let point = self.point_at(event.position);
                     if let Some(selection) = &mut self.selection {
-                        selection.update(point);
+                        selection.extend(self.term.screen(), point);
                         self.request_redraw();
                     }
                 }
@@ -1168,23 +1171,26 @@ impl PointerHandler for App {
                 } => {
                     self.last_serial = *serial;
                     let point = self.point_at(event.position);
-                    let double = self.last_click.is_some_and(|(last, at)| {
-                        at == point && time.wrapping_sub(last) <= DOUBLE_CLICK_MS
-                    });
-                    // A third click starts over instead of being another double.
-                    self.last_click = (!double).then_some((*time, point));
-                    let expanded = double
-                        .then(|| {
-                            self.output_selection(point)
-                                .or_else(|| Selection::word(self.term.screen(), point))
-                        })
-                        .flatten();
-                    if let Some(selection) = expanded {
-                        self.selection = Some(selection);
-                    } else {
-                        self.selection = Some(Selection::new(point));
-                        self.selecting = true;
-                    }
+                    // A fourth click starts over as a single click.
+                    let clicks = match self.last_click {
+                        Some((last, at, n))
+                            if at == point && time.wrapping_sub(last) <= DOUBLE_CLICK_MS =>
+                        {
+                            n % 3 + 1
+                        }
+                        _ => 1,
+                    };
+                    self.last_click = Some((*time, point, clicks));
+                    let screen = self.term.screen();
+                    let selection = match clicks {
+                        2 => self
+                            .output_selection(point)
+                            .or_else(|| Selection::word(screen, point)),
+                        3 => Some(Selection::line(screen, point)),
+                        _ => None,
+                    };
+                    self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
+                    self.selecting = true;
                     self.request_redraw();
                 }
                 PointerEventKind::Release {

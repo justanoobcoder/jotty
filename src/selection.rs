@@ -22,13 +22,106 @@ pub struct Point {
     pub col: usize,
 }
 
+/// First and last cell of the word under `at`, following soft-wrapped
+/// lines, or `None` on whitespace and delimiters.
+fn word_bounds(screen: &Screen, at: Point) -> Option<(Point, Point)> {
+    let word_at = |p: Point| {
+        screen
+            .row_at(p.line)
+            .and_then(|r| r.cells.get(p.col))
+            .is_some_and(is_word)
+    };
+    if !word_at(at) {
+        return None;
+    }
+    let mut start = at;
+    loop {
+        let prev = if start.col > 0 {
+            Point {
+                line: start.line,
+                col: start.col - 1,
+            }
+        } else {
+            match screen.row_at(start.line - 1) {
+                Some(row) if row.wrapped => Point {
+                    line: start.line - 1,
+                    col: row.cells.len().saturating_sub(1),
+                },
+                _ => break,
+            }
+        };
+        if !word_at(prev) {
+            break;
+        }
+        start = prev;
+    }
+    let mut end = at;
+    loop {
+        let row = screen.row_at(end.line)?;
+        let next = if end.col + 1 < row.cells.len() {
+            Point {
+                line: end.line,
+                col: end.col + 1,
+            }
+        } else if row.wrapped {
+            Point {
+                line: end.line + 1,
+                col: 0,
+            }
+        } else {
+            break;
+        };
+        if !word_at(next) {
+            break;
+        }
+        end = next;
+    }
+    Some((start, end))
+}
+
+/// First and last cell of the line under `at`, including the rows it
+/// soft-wraps onto.
+fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
+    let mut first = at.line;
+    while screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
+        first -= 1;
+    }
+    let mut last = at.line;
+    while screen.row_at(last).is_some_and(|r| r.wrapped) {
+        last += 1;
+    }
+    let end = screen
+        .row_at(last)
+        .map_or(at.col, |r| r.cells.len().saturating_sub(1));
+    (
+        Point {
+            line: first,
+            col: 0,
+        },
+        Point {
+            line: last,
+            col: end,
+        },
+    )
+}
+
+/// What a selection grows by while dragging: cells after a single click,
+/// words after a double click, lines after a triple click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    Cell,
+    Word,
+    Line,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     anchor: Point,
     head: Point,
-    /// Made from a double click rather than a drag, so it covers at least
-    /// one cell even when `anchor == head`.
-    expanded: bool,
+    unit: Unit,
+    /// What the click itself selected (a word, a line, or command output);
+    /// dragging extends from it and never shrinks below it.
+    origin: (Point, Point),
 }
 
 impl Selection {
@@ -36,82 +129,59 @@ impl Selection {
         Selection {
             anchor: at,
             head: at,
-            expanded: false,
+            unit: Unit::Cell,
+            origin: (at, at),
         }
     }
 
-    /// A selection of `start..=end` that is never empty.
-    pub fn span(start: Point, end: Point) -> Self {
+    /// A selection of `start..=end` that is never empty and, when dragged,
+    /// grows by `unit`.
+    pub fn span(start: Point, end: Point, unit: Unit) -> Self {
         Selection {
             anchor: start,
             head: end,
-            expanded: true,
+            unit,
+            origin: (start, end),
         }
     }
 
     /// The word under `at`, following soft-wrapped lines, or `None` on
     /// whitespace and delimiters.
     pub fn word(screen: &Screen, at: Point) -> Option<Self> {
-        let word_at = |p: Point| {
-            screen
-                .row_at(p.line)
-                .and_then(|r| r.cells.get(p.col))
-                .is_some_and(is_word)
-        };
-        if !word_at(at) {
-            return None;
-        }
-        let mut start = at;
-        loop {
-            let prev = if start.col > 0 {
-                Point {
-                    line: start.line,
-                    col: start.col - 1,
-                }
-            } else {
-                match screen.row_at(start.line - 1) {
-                    Some(row) if row.wrapped => Point {
-                        line: start.line - 1,
-                        col: row.cells.len().saturating_sub(1),
-                    },
-                    _ => break,
-                }
-            };
-            if !word_at(prev) {
-                break;
-            }
-            start = prev;
-        }
-        let mut end = at;
-        loop {
-            let row = screen.row_at(end.line)?;
-            let next = if end.col + 1 < row.cells.len() {
-                Point {
-                    line: end.line,
-                    col: end.col + 1,
-                }
-            } else if row.wrapped {
-                Point {
-                    line: end.line + 1,
-                    col: 0,
-                }
-            } else {
-                break;
-            };
-            if !word_at(next) {
-                break;
-            }
-            end = next;
-        }
-        Some(Selection::span(start, end))
+        let (start, end) = word_bounds(screen, at)?;
+        Some(Selection::span(start, end, Unit::Word))
+    }
+
+    /// The whole line under `at`, including the rows it soft-wraps onto.
+    pub fn line(screen: &Screen, at: Point) -> Self {
+        let (start, end) = line_bounds(screen, at);
+        Selection::span(start, end, Unit::Line)
     }
 
     pub fn update(&mut self, to: Point) {
         self.head = to;
     }
 
+    /// Extends the selection to `to` while dragging, by whole words or
+    /// lines if it was started by a double or triple click.
+    pub fn extend(&mut self, screen: &Screen, to: Point) {
+        let (start, end) = match self.unit {
+            Unit::Cell => return self.update(to),
+            Unit::Word => word_bounds(screen, to).unwrap_or((to, to)),
+            Unit::Line => line_bounds(screen, to),
+        };
+        let (origin_start, origin_end) = self.origin;
+        if start < origin_start {
+            self.anchor = origin_end;
+            self.head = start;
+        } else {
+            self.anchor = origin_start;
+            self.head = end.max(origin_end);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.anchor == self.head && !self.expanded
+        self.anchor == self.head && self.unit == Unit::Cell
     }
 
     /// Start and end, inclusive, in reading order.
@@ -257,6 +327,45 @@ mod tests {
         let mut t = Terminal::new(10, 1, 10);
         t.feed("a中文b c".as_bytes());
         assert_eq!(word_text(&t, p(0, 2)).as_deref(), Some("a中文b"));
+    }
+
+    #[test]
+    fn line_includes_wrapped_rows() {
+        let mut t = Terminal::new(4, 4, 10);
+        t.feed(b"one\r\nabcdefg\r\nz");
+        let s = Selection::line(t.screen(), p(2, 1));
+        assert_eq!(s.range(), (p(1, 0), p(2, 3)));
+        assert_eq!(s.text(t.screen()), "abcdefg");
+        assert_eq!(Selection::line(t.screen(), p(0, 3)).text(t.screen()), "one");
+    }
+
+    #[test]
+    fn dragging_extends_by_words() {
+        let mut t = Terminal::new(40, 2, 10);
+        t.feed(b"alpha beta gamma\r\ndelta");
+        let screen = t.screen();
+        let mut s = Selection::word(screen, p(0, 7)).unwrap();
+        s.extend(screen, p(0, 12));
+        assert_eq!(s.text(screen), "beta gamma");
+        s.extend(screen, p(0, 1));
+        assert_eq!(s.text(screen), "alpha beta");
+        // Dragging back into the clicked word keeps just that word.
+        s.extend(screen, p(0, 8));
+        assert_eq!(s.text(screen), "beta");
+        s.extend(screen, p(1, 2));
+        assert_eq!(s.text(screen), "beta gamma\ndelta");
+    }
+
+    #[test]
+    fn dragging_extends_by_lines() {
+        let mut t = Terminal::new(10, 3, 10);
+        t.feed(b"one\r\ntwo\r\nthree");
+        let screen = t.screen();
+        let mut s = Selection::line(screen, p(1, 1));
+        s.extend(screen, p(2, 0));
+        assert_eq!(s.text(screen), "two\nthree");
+        s.extend(screen, p(0, 5));
+        assert_eq!(s.text(screen), "one\ntwo");
     }
 
     #[test]
