@@ -168,6 +168,8 @@ pub struct Screen {
     title: Option<String>,
     title_changed: bool,
     responses: Vec<u8>,
+    /// Data of a DECRQSS request (`DCS $ q … ST`) being received.
+    decrqss: Option<Vec<u8>>,
     bell: bool,
     dirty: bool,
     /// How many history rows the view is scrolled back.
@@ -207,6 +209,7 @@ impl Screen {
             title: None,
             title_changed: false,
             responses: Vec::new(),
+            decrqss: None,
             bell: false,
             dirty: true,
             display_offset: 0,
@@ -783,6 +786,72 @@ impl Screen {
         self.default_cursor_color = default_cursor_color;
     }
 
+    /// The current attributes as SGR parameters, for DECRQSS replies.
+    fn sgr_report(&self) -> String {
+        let t = &self.cursor.template;
+        let mut parts = vec!["0".to_string()];
+        for (flag, code) in [
+            (Flags::BOLD, "1"),
+            (Flags::DIM, "2"),
+            (Flags::ITALIC, "3"),
+            (Flags::BLINK, "5"),
+            (Flags::INVERSE, "7"),
+            (Flags::HIDDEN, "8"),
+            (Flags::STRIKE, "9"),
+        ] {
+            if t.flags.contains(flag) {
+                parts.push(code.into());
+            }
+        }
+        match t.underline {
+            Underline::None => {}
+            Underline::Single => parts.push("4".into()),
+            Underline::Double => parts.push("4:2".into()),
+            Underline::Curly => parts.push("4:3".into()),
+            Underline::Dotted => parts.push("4:4".into()),
+            Underline::Dashed => parts.push("4:5".into()),
+        }
+        let color = |color: Color, base: u16, bright: u16, extended: u16| match color {
+            Color::Default => None,
+            Color::Indexed(i @ 0..=7) if base > 0 => Some(format!("{}", base + u16::from(i))),
+            Color::Indexed(i @ 8..=15) if bright > 0 => {
+                Some(format!("{}", bright + u16::from(i) - 8))
+            }
+            Color::Indexed(i) => Some(format!("{extended}:5:{i}")),
+            Color::Rgb(r, g, b) => Some(format!("{extended}:2::{r}:{g}:{b}")),
+        };
+        parts.extend(color(t.fg, 30, 90, 38));
+        parts.extend(color(t.bg, 40, 100, 48));
+        parts.extend(color(t.underline_color, 0, 0, 58));
+        parts.join(";")
+    }
+
+    /// Answers a DECRQSS request for the setting named by `request`.
+    fn report_setting(&mut self, request: &[u8]) {
+        let value = match request {
+            b"m" => Some(format!("{}m", self.sgr_report())),
+            b"r" => Some(format!(
+                "{};{}r",
+                self.scroll_top + 1,
+                self.scroll_bottom + 1
+            )),
+            b" q" => {
+                let style = match self.cursor_shape {
+                    CursorShape::Block => 2,
+                    CursorShape::Underline => 4,
+                    CursorShape::Beam => 6,
+                };
+                Some(format!("{style} q"))
+            }
+            _ => None,
+        };
+        let reply = match value {
+            Some(value) => format!("\x1bP1$r{value}\x1b\\"),
+            None => "\x1bP0$r\x1b\\".to_string(),
+        };
+        self.responses.extend_from_slice(reply.as_bytes());
+    }
+
     fn sgr(&mut self, params: &Params) {
         let t = &mut self.cursor.template;
         if params.is_empty() {
@@ -1110,6 +1179,27 @@ impl Perform for Screen {
             ),
         }
         self.dirty = true;
+    }
+
+    fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        self.last_printed = None;
+        if intermediates == b"$" && action == 'q' {
+            self.decrqss = Some(Vec::new());
+        }
+    }
+
+    fn put(&mut self, byte: u8) {
+        if let Some(data) = &mut self.decrqss
+            && data.len() < 16
+        {
+            data.push(byte);
+        }
+    }
+
+    fn unhook(&mut self) {
+        if let Some(request) = self.decrqss.take() {
+            self.report_setting(&request);
+        }
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {

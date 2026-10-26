@@ -561,3 +561,35 @@ fn underline_color() {
     // The color doesn't leak into the text color.
     assert_eq!(cell(&t, 0, 0).fg, Color::Default);
 }
+
+#[test]
+fn decrqss_reports_sgr() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1bP$qm\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r0m\x1b\\");
+
+    // Neovim's undercurl probe: set 4:3, then ask.
+    t.feed(b"\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r0;4:3m\x1b\\");
+
+    t.feed(b"\x1b[0;1;3;31;104;38:2::1:2:3;58:5:9m\x1bP$qm\x1b\\");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1bP1$r0;1;3;38:2::1:2:3;104;58:5:9m\x1b\\"
+    );
+}
+
+#[test]
+fn decrqss_reports_other_settings() {
+    let mut t = term(10, 5);
+    t.feed(b"\x1b[2;4r\x1bP$qr\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r2;4r\x1b\\");
+    t.feed(b"\x1b[5 q\x1bP$q q\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r6 q\x1b\\");
+    // Unknown requests are reported as invalid.
+    t.feed(b"\x1bP$qx\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP0$r\x1b\\");
+    // Other DCS strings are ignored.
+    t.feed(b"\x1bPq#0;2;0;0;0\x1b\\");
+    assert!(t.screen_mut().take_responses().is_empty());
+}
