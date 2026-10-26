@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthChar;
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont, point};
 use fontconfig_sys as fc;
 
+use crate::emoji::{self, EmojiFont};
 use crate::terminal::Underline;
 use fontconfig_sys::constants::*;
 
@@ -78,7 +79,8 @@ impl CellMetrics {
     }
 }
 
-/// A rasterized glyph: an 8-bit coverage bitmap and its placement.
+/// A rasterized glyph: an 8-bit coverage bitmap, or premultiplied RGBA
+/// pixels for a color emoji, and its placement.
 #[derive(Debug, Clone)]
 pub struct Glyph {
     pub width: u32,
@@ -88,6 +90,8 @@ pub struct Glyph {
     /// Offset of the bitmap's top edge from the cell's top edge.
     pub top: i32,
     pub data: Vec<u8>,
+    /// `data` is RGBA (4 bytes per pixel) rather than coverage.
+    pub color: bool,
 }
 
 #[derive(Debug)]
@@ -172,6 +176,59 @@ impl Fontconfig {
     }
 }
 
+impl Fontconfig {
+    /// The preferred color emoji font, if one is installed.
+    fn find_color_emoji(&self) -> Option<FontFile> {
+        // SAFETY: as in `find`.
+        unsafe {
+            let pattern = fc::FcPatternCreate();
+            if pattern.is_null() {
+                return None;
+            }
+            fc::FcPatternAddString(pattern, FC_FAMILY.as_ptr(), c"emoji".as_ptr().cast());
+            fc::FcPatternAddBool(pattern, FC_COLOR.as_ptr(), 1);
+            fc::FcConfigSubstitute(self.0, pattern, fc::FcMatchPattern);
+            fc::FcDefaultSubstitute(pattern);
+            let mut result = fc::FcResultNoMatch;
+            let matched = fc::FcFontMatch(self.0, pattern, &mut result);
+            fc::FcPatternDestroy(pattern);
+            if matched.is_null() {
+                return None;
+            }
+            // The match is the closest font, which may not be a color one.
+            let mut color = 0;
+            let mut file: *mut fc::FcChar8 = std::ptr::null_mut();
+            let mut index = 0;
+            let found = fc::FcPatternGetBool(matched, FC_COLOR.as_ptr(), 0, &mut color)
+                == fc::FcResultMatch
+                && color != 0
+                && fc::FcPatternGetString(matched, FC_FILE.as_ptr(), 0, &mut file)
+                    == fc::FcResultMatch;
+            fc::FcPatternGetInteger(matched, FC_INDEX.as_ptr(), 0, &mut index);
+            let font = found.then(|| FontFile {
+                path: PathBuf::from(CStr::from_ptr(file.cast()).to_string_lossy().into_owned()),
+                index: index.max(0) as u32,
+            });
+            fc::FcPatternDestroy(matched);
+            font
+        }
+    }
+}
+
+/// Finds and loads the system's color emoji font.
+pub fn load_emoji_font() -> Option<EmojiFont> {
+    let file = Fontconfig::new()?.find_color_emoji()?;
+    let font = EmojiFont::new(map_file(&file.path).ok()?, file.index & 0xffff);
+    match &font {
+        Some(_) => log::info!("loading emoji font {}", file.path.display()),
+        None => log::info!(
+            "{}: no color bitmaps, emoji stay monochrome",
+            file.path.display()
+        ),
+    }
+    font
+}
+
 impl Drop for Fontconfig {
     fn drop(&mut self) {
         // SAFETY: we own the config.
@@ -191,6 +248,9 @@ pub struct Fonts {
     fallback_families: Vec<String>,
     /// Face covering a character none of the primary faces have.
     fallback: HashMap<char, Option<usize>>,
+    /// The color emoji font, loaded on first use (`None` inside: there is
+    /// none).
+    emoji: Option<Option<EmojiFont>>,
     px: f32,
     pub metrics: CellMetrics,
 }
@@ -207,6 +267,7 @@ impl Fonts {
             styles: [0; 4],
             fallback_families: fallback.to_vec(),
             fallback: HashMap::new(),
+            emoji: None,
             px,
             metrics: CellMetrics::new(1.0, 1.0, 0.0, 0.0),
         };
@@ -321,11 +382,35 @@ impl Fonts {
         face
     }
 
+    /// Draws `text` (a character or an emoji sequence) as a color emoji, if
+    /// it is shown as one and the emoji font has it.
+    fn rasterize_color(&mut self, text: &str, wide: bool) -> Option<Glyph> {
+        if !emoji::wants_color(text) {
+            return None;
+        }
+        let font = self.emoji.get_or_insert_with(load_emoji_font).as_ref()?;
+        let glyph = font.glyph_for(text)?;
+        let m = self.metrics;
+        let slot = m.width * if wide { 2 } else { 1 };
+        let (width, height, data) = font.rasterize(glyph, slot, m.height)?;
+        Some(Glyph {
+            width,
+            height,
+            left: (slot as i32 - width as i32) / 2,
+            top: (m.height as i32 - height as i32) / 2,
+            data,
+            color: true,
+        })
+    }
+
     /// Rasterizes `c` for a one-cell slot, or a two-cell slot when `wide`.
     /// Returns `None` for characters with no visible pixels.
     pub fn rasterize(&mut self, c: char, style: Style, wide: bool) -> Option<Glyph> {
         if c == ' ' {
             return None;
+        }
+        if let Some(glyph) = self.rasterize_color(c.encode_utf8(&mut [0; 4]), wide) {
+            return Some(glyph);
         }
         if let Some(glyph) = box_glyph(c, self.metrics) {
             return Some(glyph);
@@ -384,6 +469,7 @@ impl Fonts {
             left,
             top,
             data,
+            color: false,
         })
     }
 }
@@ -394,6 +480,9 @@ impl Fonts {
     /// that character is drawn; otherwise the marks are drawn over the
     /// first character, centered in the slot.
     pub fn rasterize_cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<Glyph> {
+        if let Some(glyph) = self.rasterize_color(text, wide) {
+            return Some(glyph);
+        }
         let composed: String = text.nfc().collect();
         let mut chars = composed.chars();
         let base = chars.next()?;
@@ -443,6 +532,7 @@ fn overlay(a: &Glyph, b: &Glyph) -> Glyph {
         left,
         top,
         data,
+        color: false,
     }
 }
 
@@ -506,6 +596,7 @@ pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<G
         left: 0,
         top: top as i32,
         data,
+        color: false,
     })
 }
 
@@ -639,6 +730,7 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
         left: 0,
         top: 0,
         data,
+        color: false,
     })
 }
 
@@ -892,6 +984,7 @@ mod tests {
             left: 0,
             top: 5,
             data: vec![10, 20],
+            color: false,
         };
         let b = Glyph {
             width: 1,
@@ -899,6 +992,7 @@ mod tests {
             left: 1,
             top: 3,
             data: vec![30, 40],
+            color: false,
         };
         let c = overlay(&a, &b);
         assert_eq!((c.left, c.top, c.width, c.height), (0, 3, 2, 3));

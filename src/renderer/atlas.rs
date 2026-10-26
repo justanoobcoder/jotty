@@ -73,31 +73,41 @@ enum GlyphKey {
     Underline(Underline, u32),
 }
 
-/// Placement of glyphs in the atlas image, and which glyphs it holds.
+/// Placement of glyphs in the atlas images, and which glyphs they hold.
+/// There are two images: coverage for text, and RGBA for color emoji.
 #[derive(Debug)]
 pub struct Atlas {
     packer: Packer,
+    color_packer: Packer,
     glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
     /// The atlas filled up and was cleared since the last `take_overflowed`.
     overflowed: bool,
 }
 
 impl Atlas {
-    pub fn new(size: u32) -> Self {
+    /// Square atlas images of `size` (coverage) and `color_size` (RGBA)
+    /// pixels.
+    pub fn new(size: u32, color_size: u32) -> Self {
         Atlas {
             packer: Packer::new(size, size),
+            color_packer: Packer::new(color_size, color_size),
             glyphs: HashMap::new(),
             overflowed: false,
         }
     }
 
-    pub fn size(&self) -> u32 {
-        self.packer.size().0
+    fn packer(&mut self, color: bool) -> &mut Packer {
+        if color {
+            &mut self.color_packer
+        } else {
+            &mut self.packer
+        }
     }
 
     /// Forgets all glyphs, after a font size change.
     pub fn clear(&mut self) {
         self.packer.clear();
+        self.color_packer.clear();
         self.glyphs.clear();
     }
 
@@ -108,7 +118,8 @@ impl Atlas {
     }
 
     /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
-    /// hands each new bitmap to `store` with its position in the atlas.
+    /// hands each new bitmap to `store` with its position in its atlas
+    /// image (the color one when `glyph.color`).
     pub fn cache<'a, S: FnMut(u32, u32, &Glyph)>(
         &'a mut self,
         fonts: &'a mut Fonts,
@@ -145,18 +156,18 @@ impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
 
     fn place(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
         let atlas = &mut *self.atlas;
-        let (x, y) = match atlas.packer.alloc(glyph.width, glyph.height) {
+        let (x, y) = match atlas.packer(glyph.color).alloc(glyph.width, glyph.height) {
             Some(pos) => pos,
             None => {
                 // Start over; glyphs placed earlier this frame are stale,
                 // so the caller redraws once more.
                 atlas.clear();
                 atlas.overflowed = true;
-                atlas.packer.alloc(glyph.width, glyph.height)?
+                atlas.packer(glyph.color).alloc(glyph.width, glyph.height)?
             }
         };
         (self.store)(x, y, glyph);
-        let size = atlas.size() as f32;
+        let size = atlas.packer(glyph.color).size().0 as f32;
         Some(GlyphInfo {
             uv: [
                 x as f32 / size,
@@ -168,6 +179,7 @@ impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
             height: glyph.height,
             left: glyph.left,
             top: glyph.top,
+            color: glyph.color,
         })
     }
 }

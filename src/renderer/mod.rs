@@ -199,6 +199,8 @@ pub struct GlyphInfo {
     pub height: u32,
     pub left: i32,
     pub top: i32,
+    /// In the color (RGBA) atlas: drawn as is, not tinted.
+    pub color: bool,
 }
 
 pub trait GlyphCache {
@@ -223,7 +225,7 @@ pub struct Batch {
 
 impl Batch {
     /// Adds a quad covering `[x, y, width, height]`; `mode` 0 is a solid
-    /// color, 1 samples the glyph atlas at `uv`.
+    /// color, 1 samples the glyph atlas at `uv`, 2 the color atlas.
     fn quad(&mut self, [x, y, w, h]: [f32; 4], uv: [f32; 4], color: Rgb, alpha: f32, mode: f32) {
         let [r, g, b] = color.to_f32();
         let [u0, v0, u1, v1] = uv;
@@ -250,14 +252,17 @@ impl Batch {
         self.quad([x, y, w, h], [0.0; 4], color, alpha, 0.0);
     }
 
+    /// A glyph at a cell's top-left corner; mode 1 tints a coverage
+    /// bitmap with `color`, mode 2 draws a color emoji.
     pub fn glyph(&mut self, x: f32, y: f32, glyph: &GlyphInfo, color: Rgb) {
         let (w, h) = (glyph.width as f32, glyph.height as f32);
+        let mode = if glyph.color { 2.0 } else { 1.0 };
         self.quad(
             [x + glyph.left as f32, y + glyph.top as f32, w, h],
             glyph.uv,
             color,
             1.0,
-            1.0,
+            mode,
         );
     }
 
@@ -539,6 +544,7 @@ mod tests {
                 height: 1,
                 left: 0,
                 top: 0,
+                color: false,
             })
         }
 
@@ -554,6 +560,7 @@ mod tests {
                 height: 1,
                 left: 0,
                 top: 0,
+                color: false,
             })
         }
     }

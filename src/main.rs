@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod emoji;
 mod font;
 mod ime;
 mod input;

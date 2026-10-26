@@ -20,6 +20,8 @@ use crate::font::{CellMetrics, Fonts, Glyph};
 
 /// Smaller than the GL atlas: saving memory is the point of this renderer.
 const ATLAS_SIZE: u32 = 1024;
+/// The color emoji atlas: room for a few hundred emoji at common sizes.
+const COLOR_ATLAS_SIZE: u32 = 512;
 
 pub struct Renderer {
     surface: WlSurface,
@@ -33,6 +35,9 @@ pub struct Renderer {
     atlas: Atlas,
     /// The atlas image, one coverage byte per pixel.
     atlas_pixels: Vec<u8>,
+    /// The color atlas, premultiplied BGRA like the buffers; allocated when
+    /// the first emoji is drawn.
+    color_pixels: Vec<u8>,
     pub fonts: Fonts,
     pub theme: Theme,
     size: (u32, u32),
@@ -54,8 +59,9 @@ impl Renderer {
             pool,
             buffers: Vec::new(),
             presented: Vec::new(),
-            atlas: Atlas::new(ATLAS_SIZE),
+            atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
             atlas_pixels: vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            color_pixels: Vec::new(),
             fonts,
             theme,
             size,
@@ -86,8 +92,27 @@ impl Renderer {
         let metrics = self.fonts.metrics;
         let theme = self.theme.effective(frame.screen);
         let pixels = &mut self.atlas_pixels;
+        let color_pixels = &mut self.color_pixels;
         let store = |x: u32, y: u32, glyph: &Glyph| {
             let w = glyph.width as usize;
+            if glyph.color {
+                if color_pixels.is_empty() {
+                    color_pixels.resize((COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4) as usize, 0);
+                }
+                for (row, src) in glyph.data.chunks_exact(w * 4).enumerate() {
+                    let start = ((y as usize + row) * COLOR_ATLAS_SIZE as usize + x as usize) * 4;
+                    let dst = &mut color_pixels[start..start + w * 4];
+                    for (d, &[r, g, b, a]) in dst
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(src.as_chunks::<4>().0)
+                    {
+                        *d = [b, g, r, a];
+                    }
+                }
+                return;
+            }
             for (row, src) in glyph.data.chunks_exact(w).enumerate() {
                 let start = (y as usize + row) * ATLAS_SIZE as usize + x as usize;
                 pixels[start..start + w].copy_from_slice(src);
@@ -135,14 +160,11 @@ impl Renderer {
         for (y0, y1) in changed(&bands, &fingerprints, held) {
             rows[y0 as usize..y1 as usize].fill(true);
         }
-        paint(
-            &batch,
-            &self.atlas_pixels,
-            canvas,
-            (w, h),
-            background,
-            &rows,
-        );
+        let atlases = Atlases {
+            coverage: &self.atlas_pixels,
+            color: &self.color_pixels,
+        };
+        paint(&batch, &atlases, canvas, (w, h), background, &rows);
         buffer
             .attach_to(&self.surface)
             .map_err(|e| format!("wl_shm attach: {e:?}"))?;
@@ -220,12 +242,19 @@ fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
     ranges
 }
 
+/// The atlas images: coverage (`ATLAS_SIZE`²) and color emoji
+/// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed).
+struct Atlases<'a> {
+    coverage: &'a [u8],
+    color: &'a [u8],
+}
+
 /// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
 /// padding) marked in `rows`: clears them to `clear` and draws the parts of
-/// the quads of `batch` on them, sampling glyphs from `atlas`.
+/// the quads of `batch` on them, sampling glyphs from `atlases`.
 fn paint(
     batch: &Batch,
-    atlas: &[u8],
+    atlases: &Atlases,
     canvas: &mut [u8],
     size: (u32, u32),
     clear: [u8; 4],
@@ -251,9 +280,17 @@ fn paint(
         let [x1, y1] = [last[0], last[1]].map(|v| v.round() as i64);
         let color = premultiply([first[4], first[5], first[6]], 1.0);
         let alpha = (first[7] * 255.0).round() as u32;
-        let glyph = first[8] > 0.5;
+        let mode = first[8].round() as u8;
+        if mode == 2 && atlases.color.is_empty() {
+            continue;
+        }
         // Glyphs are drawn 1:1, so a pixel maps to one atlas texel.
-        let [u0, v0] = [first[2], first[3]].map(|t| (t * ATLAS_SIZE as f32).round() as i64);
+        let size = if mode == 2 {
+            COLOR_ATLAS_SIZE
+        } else {
+            ATLAS_SIZE
+        } as i64;
+        let [u0, v0] = [first[2], first[3]].map(|t| (t * size as f32).round() as i64);
 
         for y in y0.max(0)..y1.min(height) {
             if !rows[y as usize] {
@@ -261,15 +298,27 @@ fn paint(
             }
             let row = (y * width) as usize * 4;
             for x in x0.max(0)..x1.min(width) {
-                let a = if glyph {
-                    let texel = (v0 + y - y0) * ATLAS_SIZE as i64 + u0 + x - x0;
-                    alpha * u32::from(atlas[texel as usize]) / 255
-                } else {
-                    alpha
-                };
-                blend(&mut canvas[row + x as usize * 4..][..4], color, a);
+                let pixel = &mut canvas[row + x as usize * 4..][..4];
+                let texel = ((v0 + y - y0) * size + u0 + x - x0) as usize;
+                match mode {
+                    0 => blend(pixel, color, alpha),
+                    1 => blend(
+                        pixel,
+                        color,
+                        alpha * u32::from(atlases.coverage[texel]) / 255,
+                    ),
+                    _ => blend_premultiplied(pixel, &atlases.color[texel * 4..][..4]),
+                }
             }
         }
+    }
+}
+
+/// Draws a premultiplied color over a premultiplied pixel.
+fn blend_premultiplied(pixel: &mut [u8], src: &[u8]) {
+    let keep = 255 - u32::from(src[3]);
+    for (dst, &s) in pixel.iter_mut().zip(src) {
+        *dst = (u32::from(s) + (u32::from(*dst) * keep + 127) / 255).min(255) as u8;
     }
 }
 
@@ -300,6 +349,13 @@ mod tests {
         canvas[i..i + 4].try_into().unwrap()
     }
 
+    fn atlases(coverage: &[u8]) -> Atlases<'_> {
+        Atlases {
+            coverage,
+            color: &[],
+        }
+    }
+
     fn atlas_with(texels: &[(u32, u32, u8)]) -> Vec<u8> {
         let mut atlas = vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize];
         for &(x, y, v) in texels {
@@ -321,7 +377,7 @@ mod tests {
         let mut canvas = vec![0; 4 * 4 * 3];
         paint(
             &batch,
-            &atlas_with(&[]),
+            &atlases(&atlas_with(&[])),
             &mut canvas,
             (4, 3),
             CLEAR,
@@ -340,7 +396,7 @@ mod tests {
         let mut canvas = vec![0; 4];
         paint(
             &batch,
-            &atlas_with(&[]),
+            &atlases(&atlas_with(&[])),
             &mut canvas,
             (1, 1),
             [0; 4],
@@ -360,11 +416,19 @@ mod tests {
             height: 1,
             left: 1,
             top: 0,
+            color: false,
         };
         let mut batch = Batch::default();
         batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
         let mut canvas = vec![0; 4 * 3];
-        paint(&batch, &atlas, &mut canvas, (3, 1), [0, 0, 0, 255], &[true]);
+        paint(
+            &batch,
+            &atlases(&atlas),
+            &mut canvas,
+            (3, 1),
+            [0, 0, 0, 255],
+            &[true],
+        );
         assert_eq!(pixel(&canvas, 3, 0, 0), [0, 0, 0, 255]);
         assert_eq!(pixel(&canvas, 3, 1, 0), [255, 255, 255, 255]);
         assert_eq!(pixel(&canvas, 3, 2, 0), [128, 128, 128, 255]);
@@ -377,7 +441,7 @@ mod tests {
         let mut canvas = vec![7; 4 * 3];
         paint(
             &batch,
-            &atlas_with(&[]),
+            &atlases(&atlas_with(&[])),
             &mut canvas,
             (1, 3),
             CLEAR,
@@ -417,6 +481,39 @@ mod tests {
     }
 
     #[test]
+    fn color_glyphs_blend_premultiplied() {
+        let mut color = vec![0; (COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4) as usize];
+        // Half-transparent blue (premultiplied BGRA), then opaque red.
+        color[..8].copy_from_slice(&[128, 0, 0, 128, 0, 0, 255, 255]);
+        let size = COLOR_ATLAS_SIZE as f32;
+        let glyph = GlyphInfo {
+            uv: [0.0, 0.0, 2.0 / size, 1.0 / size],
+            width: 2,
+            height: 1,
+            left: 0,
+            top: 0,
+            color: true,
+        };
+        let mut batch = Batch::default();
+        batch.glyph(0.0, 0.0, &glyph, Rgb(0, 255, 0));
+        let mut canvas = vec![0; 8];
+        let atlases = Atlases {
+            coverage: &[],
+            color: &color,
+        };
+        paint(
+            &batch,
+            &atlases,
+            &mut canvas,
+            (2, 1),
+            [0, 0, 100, 255],
+            &[true],
+        );
+        assert_eq!(pixel(&canvas, 2, 0, 0), [128, 0, 50, 255]);
+        assert_eq!(pixel(&canvas, 2, 1, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
     fn glyphs_partly_off_canvas_are_clipped() {
         let atlas = atlas_with(&[(0, 0, 255), (1, 0, 255)]);
         let size = ATLAS_SIZE as f32;
@@ -426,11 +523,19 @@ mod tests {
             height: 1,
             left: -1,
             top: 0,
+            color: false,
         };
         let mut batch = Batch::default();
         batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
         let mut canvas = vec![0; 4];
-        paint(&batch, &atlas, &mut canvas, (1, 1), [0, 0, 0, 255], &[true]);
+        paint(
+            &batch,
+            &atlases(&atlas),
+            &mut canvas,
+            (1, 1),
+            [0, 0, 0, 255],
+            &[true],
+        );
         assert_eq!(pixel(&canvas, 1, 0, 0), [255, 255, 255, 255]);
     }
 }

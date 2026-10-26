@@ -13,6 +13,8 @@ use crate::font::{CellMetrics, Fonts, Glyph};
 
 const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31D8;
 const ATLAS_SIZE: u32 = 2048;
+/// The color emoji atlas (RGBA).
+const COLOR_ATLAS_SIZE: u32 = 1024;
 
 const VERTEX_SHADER: &str = r#"#version 300 es
 layout(location = 0) in vec2 a_pos;
@@ -38,8 +40,14 @@ in vec2 v_uv;
 in vec4 v_color;
 in float v_mode;
 uniform sampler2D u_atlas;
+uniform sampler2D u_color;
 out vec4 o_color;
 void main() {
+    if (v_mode > 1.5) {
+        // Color emoji, already premultiplied.
+        o_color = texture(u_color, v_uv) * v_color.a;
+        return;
+    }
     float alpha = v_color.a;
     if (v_mode > 0.5) {
         alpha *= texture(u_atlas, v_uv).r;
@@ -145,6 +153,7 @@ pub struct Renderer {
     vbo: glow::Buffer,
     viewport_uniform: Option<glow::UniformLocation>,
     texture: glow::Texture,
+    color_texture: glow::Texture,
     atlas: Atlas,
     egl: Egl,
     pub fonts: Fonts,
@@ -161,6 +170,43 @@ unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::S
             return Err(gl.get_shader_info_log(shader));
         }
         Ok(shader)
+    }
+}
+
+/// Creates an empty `size`×`size` texture on texture unit `unit`.
+/// Glyphs are drawn at integer pixel positions, 1:1, so it is sampled with
+/// `NEAREST`.
+unsafe fn create_texture(
+    gl: &glow::Context,
+    unit: u32,
+    internal_format: u32,
+    format: u32,
+    size: u32,
+) -> Result<glow::Texture, String> {
+    unsafe {
+        let texture = gl.create_texture()?;
+        gl.active_texture(unit);
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            internal_format as i32,
+            size as i32,
+            size as i32,
+            0,
+            format,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(None),
+        );
+        for (param, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
+            (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+        }
+        Ok(texture)
     }
 }
 
@@ -202,6 +248,7 @@ impl Renderer {
             gl.use_program(Some(program));
             let viewport_uniform = gl.get_uniform_location(program, "u_viewport");
             gl.uniform_1_i32(gl.get_uniform_location(program, "u_atlas").as_ref(), 0);
+            gl.uniform_1_i32(gl.get_uniform_location(program, "u_color").as_ref(), 1);
 
             let vao = gl.create_vertex_array()?;
             let vbo = gl.create_buffer()?;
@@ -213,30 +260,15 @@ impl Renderer {
                 gl.vertex_attrib_pointer_f32(index, size, glow::FLOAT, false, stride, offset * 4);
             }
 
-            let texture = gl.create_texture()?;
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::R8 as i32,
-                ATLAS_SIZE as i32,
-                ATLAS_SIZE as i32,
-                0,
-                glow::RED,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            // Glyphs are drawn at integer pixel positions, 1:1.
-            for (param, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
-            }
+            let texture = create_texture(&gl, glow::TEXTURE0, glow::R8, glow::RED, ATLAS_SIZE)?;
+            let color_texture = create_texture(
+                &gl,
+                glow::TEXTURE1,
+                glow::RGBA8,
+                glow::RGBA,
+                COLOR_ATLAS_SIZE,
+            )?;
 
             gl.enable(glow::BLEND);
             gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
@@ -248,7 +280,8 @@ impl Renderer {
                 vbo,
                 viewport_uniform,
                 texture,
-                atlas: Atlas::new(ATLAS_SIZE),
+                color_texture,
+                atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
                 egl,
                 fonts,
                 theme,
@@ -282,8 +315,14 @@ impl Renderer {
         let metrics = self.fonts.metrics;
         let theme = self.theme.effective(frame.screen);
         let gl = &self.gl;
-        let texture = self.texture;
+        let (texture, color_texture) = (self.texture, self.color_texture);
         let upload = |x: u32, y: u32, glyph: &Glyph| unsafe {
+            let (unit, texture, format) = if glyph.color {
+                (glow::TEXTURE1, color_texture, glow::RGBA)
+            } else {
+                (glow::TEXTURE0, texture, glow::RED)
+            };
+            gl.active_texture(unit);
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
@@ -292,7 +331,7 @@ impl Renderer {
                 y as i32,
                 glyph.width as i32,
                 glyph.height as i32,
-                glow::RED,
+                format,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&glyph.data)),
             );
@@ -323,6 +362,8 @@ impl Renderer {
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.color_texture));
             gl.draw_arrays(
                 glow::TRIANGLES,
                 0,
@@ -341,6 +382,7 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.gl.delete_texture(self.texture);
+            self.gl.delete_texture(self.color_texture);
             self.gl.delete_buffer(self.vbo);
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_program(self.program);
