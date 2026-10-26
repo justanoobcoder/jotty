@@ -54,10 +54,10 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | ---------------------- | -------------------------------------------- |
 | Ctrl+Shift+C           | Copy the selection to the clipboard           |
 | Ctrl+Shift+V, Shift+Insert, middle click | Paste the clipboard        |
-| Left drag              | Select text                                   |
+| Left drag              | Select text (Shift+drag in programs that use the mouse) |
 | Shift+PageUp/PageDown  | Scroll the history by a page                  |
 | Shift+Home/End         | Jump to the top or bottom of the history      |
-| Mouse wheel            | Scroll the history (arrow keys in full-screen programs) |
+| Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
 
 The configuration lives in `$XDG_CONFIG_HOME/jotty/config.toml`. See

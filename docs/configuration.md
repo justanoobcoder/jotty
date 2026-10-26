@@ -177,6 +177,10 @@ Key bindings are fixed:
 | Shift+Home / Shift+End | Top / bottom of the history |
 | Ctrl+= (or Ctrl++), Ctrl+-, Ctrl+0 | Font larger, smaller, reset |
 
+When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
+clicks, drags and the wheel go to it. Hold **Shift** to select text,
+scroll the history, or paste with the middle button in jotty instead.
+
 Any other key goes to the program. Typing, pasting or committing input-method
 text scrolls back to the bottom.
 

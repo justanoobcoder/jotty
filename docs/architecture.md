@@ -100,6 +100,14 @@ sequences:
 
 Key repeat is done client-side by SCTK's calloop timer.
 
+Pointer events go through the same split. When the program has enabled
+mouse reporting (the terminal tracks DECSET 9/1000/1002/1003 and 1006) and
+Shift isn't held, `app.rs` maps the pointer position to a cell and
+`encode_mouse` turns the event into an SGR (`CSI < b;x;y M/m`) or legacy
+(`CSI M` + three bytes) report. Motion is reported once per cell, the
+wheel once per notch (buttons 64–67), and a release always follows a
+reported press. Otherwise the pointer selects text and scrolls the history.
+
 ## Input method (`ime.rs`, `app.rs`)
 
 jotty binds `zwp_text_input_manager_v3` and creates one `zwp_text_input_v3`

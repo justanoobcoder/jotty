@@ -29,9 +29,12 @@ nothing surprises you.
 
 - **No reflow on resize.** Making the window narrower cuts off long lines
   instead of re-wrapping them, and making it wider doesn't un-wrap them.
-- **No mouse reporting** (modes 1000/1002/1003/1006). Mouse clicks in vim,
-  htop or tmux are not sent to them. The wheel sends arrow keys on the
-  alternate screen, which scrolls most pagers and editors.
+- Mouse reporting supports X10 (`?9`), normal (`?1000`), button-motion
+  (`?1002`) and any-motion (`?1003`) tracking in the SGR (`?1006`) and
+  legacy encodings. Not supported: the UTF-8 (`?1005`) and urxvt (`?1015`)
+  encodings, highlight tracking (`?1001`), and pixel positions (`?1016`).
+  In the legacy encoding, positions past column or row 223 can't be
+  reported, so those events are dropped.
 - With `TERM=xterm-256color` (when jotty's terminfo entry isn't installed,
   or set explicitly), Neovim detects curly and colored underlines by
   querying jotty (DECRQSS). That query doesn't survive relays such as
@@ -40,7 +43,9 @@ nothing surprises you.
   [configuration](configuration.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
 - The terminfo entry must stay under 4096 bytes compiled (unibilium, used
-  by Neovim, rejects larger files). The Nix build checks this.
+  by Neovim, rejects larger files). The Nix build checks this. To fit, it
+  leaves out the names of Ctrl+Alt navigation keys (`kUP7`, ...); the keys
+  still work, but ncurses programs don't recognize them by name.
 - Not implemented: synchronized output (mode 2026), the kitty keyboard
   protocol and `modifyOtherKeys`, OSC 8 hyperlinks, OSC 52 clipboard access,
   OSC 4/10/11 color queries, sixel/kitty graphics, blinking text, DECCOLM, and
