@@ -76,7 +76,8 @@ impl Default for WindowConfig {
 pub struct TerminalConfig {
     /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
     pub shell: Option<String>,
-    /// Value of `$TERM` for the child process.
+    /// Value of `$TERM` for the child process. `"auto"` uses jotty's own
+    /// terminfo entry when it is installed, `xterm-256color` otherwise.
     pub term: String,
     /// Number of lines kept in the scrollback history.
     pub scrollback: usize,
@@ -88,7 +89,7 @@ impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             shell: None,
-            term: "xterm-256color".into(),
+            term: "auto".into(),
             scrollback: 10_000,
             bold_is_bright: true,
         }

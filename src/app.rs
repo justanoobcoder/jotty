@@ -204,7 +204,9 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         width: size.0 as u16,
         height: size.1 as u16,
     };
-    let pty = Pty::spawn(&program, &args, &config.terminal.term, window_size)
+    let term = crate::terminfo::resolve(&config.terminal.term, &crate::terminfo::search_dirs());
+    log::info!("TERM={} (terminfo: {:?})", term.name, term.terminfo);
+    let pty = Pty::spawn(&program, &args, &term, window_size)
         .map_err(|e| format!("cannot run {program:?}: {e}"))?;
     let reader = File::from(pty.fd().try_clone_to_owned()?);
     loop_handle

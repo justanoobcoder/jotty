@@ -10,6 +10,7 @@ mod pty;
 mod renderer;
 mod selection;
 mod terminal;
+mod terminfo;
 
 use std::process::ExitCode;
 

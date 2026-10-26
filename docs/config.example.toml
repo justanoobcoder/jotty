@@ -35,8 +35,9 @@ lines = 24
 [terminal]
 # Program to run. When unset: $SHELL, then /bin/sh.
 # shell = "/run/current-system/sw/bin/fish"
-# Value of $TERM in the child.
-term = "xterm-256color"
+# Value of $TERM in the child. "auto" uses jotty's terminfo entry ("jotty")
+# when it is installed and "xterm-256color" otherwise.
+term = "auto"
 # Lines of scrollback history.
 scrollback = 10000
 # Draw bold text in the first eight colors with their bright variants.

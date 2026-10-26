@@ -7,6 +7,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
+use crate::terminfo::Term;
+
 /// Terminal size in cells and pixels, as reported to the child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowSize {
@@ -59,7 +61,7 @@ fn set_flag(
 
 impl Pty {
     /// Spawns `program` with `args` on a new pseudo-terminal.
-    pub fn spawn(program: &str, args: &[String], term: &str, size: WindowSize) -> io::Result<Pty> {
+    pub fn spawn(program: &str, args: &[String], term: &Term, size: WindowSize) -> io::Result<Pty> {
         let (mut master, mut slave) = (0, 0);
         let winsize = size.to_winsize();
         // SAFETY: openpty writes two descriptors into the provided pointers.
@@ -94,7 +96,7 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave))
-            .env("TERM", term)
+            .env("TERM", &term.name)
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", "jotty")
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
@@ -119,6 +121,9 @@ impl Pty {
                 }
                 Ok(())
             });
+        }
+        if let Some(dir) = &term.terminfo {
+            command.env("TERMINFO", dir);
         }
         let child = command.spawn()?;
 
@@ -232,14 +237,29 @@ mod tests {
         String::from_utf8_lossy(&out).into_owned()
     }
 
+    fn xterm() -> Term {
+        Term {
+            name: "xterm-256color".into(),
+            terminfo: None,
+        }
+    }
+
     fn sh(script: &str) -> Pty {
-        Pty::spawn(
-            "/bin/sh",
-            &["-c".into(), script.into()],
-            "xterm-256color",
-            SIZE,
-        )
-        .unwrap()
+        sh_with(script, &xterm())
+    }
+
+    fn sh_with(script: &str, term: &Term) -> Pty {
+        Pty::spawn("/bin/sh", &["-c".into(), script.into()], term, SIZE).unwrap()
+    }
+
+    #[test]
+    fn exports_terminfo_location() {
+        let term = Term {
+            name: "jotty".into(),
+            terminfo: Some("/some/terminfo".into()),
+        };
+        let mut pty = sh_with("echo \"$TERM:$TERMINFO\"", &term);
+        assert!(read_to_end(&mut pty).contains("jotty:/some/terminfo"));
     }
 
     #[test]
@@ -298,6 +318,6 @@ mod tests {
 
     #[test]
     fn spawn_failure_is_an_error() {
-        assert!(Pty::spawn("/nonexistent/program", &[], "xterm", SIZE).is_err());
+        assert!(Pty::spawn("/nonexistent/program", &[], &xterm(), SIZE).is_err());
     }
 }
