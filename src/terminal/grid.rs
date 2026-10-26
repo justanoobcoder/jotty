@@ -250,6 +250,188 @@ impl Grid {
     pub fn clear_history(&mut self) {
         self.history.clear();
     }
+
+    /// Re-wraps the history and screen to `cols` columns and resizes the
+    /// screen to `rows`. Soft-wrapped rows are joined into lines first, so
+    /// text flows to the new width. `points` are (screen row, column)
+    /// positions, such as the cursor, moved along with the text; the first
+    /// one stays on screen.
+    pub fn reflow(&mut self, cols: usize, rows: usize, points: &mut [(usize, usize)]) {
+        let history_len = self.history.len();
+        // Blank rows below the content and the points carry nothing.
+        let last_content = self
+            .rows
+            .iter()
+            .rposition(|r| r.mark.is_some() || r.cells.iter().any(|c| *c != Cell::default()));
+        let keep = points
+            .iter()
+            .map(|p| p.0)
+            .chain(last_content)
+            .max()
+            .map_or(0, |r| r + 1)
+            .min(self.rows.len());
+        let old: Vec<Row> = self
+            .history
+            .drain(..)
+            .chain(self.rows.drain(..keep))
+            .collect();
+
+        // Join soft-wrapped rows into lines, remembering where each old
+        // row starts: (line, offset).
+        let mut lines: Vec<Line> = Vec::new();
+        let mut starts = Vec::with_capacity(old.len());
+        let mut open = false;
+        for row in old {
+            if !open {
+                lines.push(Line::default());
+            }
+            let index = lines.len() - 1;
+            let line = &mut lines[index];
+            // A wide character that didn't fit at the end of the previous
+            // row left its last column blank.
+            if open
+                && row
+                    .cells
+                    .first()
+                    .is_some_and(|c| c.flags.contains(Flags::WIDE))
+                && line.cells.last() == Some(&Cell::default())
+            {
+                line.cells.pop();
+            }
+            starts.push((index, line.cells.len()));
+            if let Some(mark) = row.mark {
+                line.marks.push((line.cells.len(), mark));
+            }
+            let mut cells = row.cells;
+            if !row.wrapped {
+                let len = cells
+                    .iter()
+                    .rposition(|c| *c != Cell::default())
+                    .map_or(0, |i| i + 1);
+                cells.truncate(len);
+            }
+            line.cells.extend(cells);
+            open = row.wrapped;
+        }
+
+        // Where each point is: (line, offset).
+        let targets: Vec<Option<(usize, usize)>> = points
+            .iter()
+            .map(|&(row, col)| {
+                let (line, start) = *starts.get(history_len + row)?;
+                Some((line, start + col))
+            })
+            .collect();
+
+        let mut out: Vec<Row> = Vec::new();
+        let mut moved: Vec<Option<usize>> = vec![None; points.len()];
+        for (index, line) in lines.iter().enumerate() {
+            let first = out.len();
+            let layout = line.layout(cols);
+            let offsets = targets
+                .iter()
+                .flatten()
+                .filter(|t| t.0 == index)
+                .map(|t| t.1)
+                .chain(line.marks.iter().map(|m| m.0));
+            let needed = offsets
+                .map(|o| layout.position(o) + 1)
+                .max()
+                .unwrap_or(0)
+                .max(layout.end);
+            let count = needed.div_ceil(cols).max(1);
+            for i in 0..count {
+                let mut row = Row::new(cols, &Cell::default());
+                row.wrapped = i + 1 < count;
+                out.push(row);
+            }
+            for (cell, &pos) in line.cells.iter().zip(&layout.positions) {
+                out[first + pos / cols].cells[pos % cols] = *cell;
+            }
+            for &(offset, mark) in &line.marks {
+                let pos = layout.position(offset);
+                out[first + pos / cols].mark = Some(mark);
+            }
+            for (target, slot) in targets.iter().zip(&mut moved) {
+                if let Some((_, offset)) = target.filter(|t| t.0 == index) {
+                    let pos = layout.position(offset);
+                    *slot = Some((first + pos / cols) * cols + pos % cols);
+                }
+            }
+        }
+
+        // The screen shows the last rows, unless that would hide the first
+        // point (the cursor).
+        let total = out.len();
+        let mut start = total.saturating_sub(rows);
+        if let Some(Some(pos)) = moved.first() {
+            start = start.min(pos / cols);
+        }
+        let mut screen: Vec<Row> = out.drain(start..).take(rows).collect();
+        while screen.len() < rows {
+            screen.push(Row::new(cols, &Cell::default()));
+        }
+        for (point, pos) in points.iter_mut().zip(moved) {
+            if let Some(pos) = pos {
+                let row = (pos / cols).saturating_sub(start).min(rows - 1);
+                *point = (row, pos % cols);
+            } else {
+                *point = (point.0.min(rows - 1), point.1.min(cols - 1));
+            }
+        }
+        let drop = out.len().saturating_sub(self.max_history);
+        self.history = out.into_iter().skip(drop).collect();
+        self.rows = screen;
+        self.cols = cols;
+    }
+}
+
+/// A logical line: soft-wrapped rows joined together.
+#[derive(Default)]
+struct Line {
+    cells: Vec<Cell>,
+    /// Shell-integration marks by cell offset.
+    marks: Vec<(usize, Mark)>,
+}
+
+/// Where a line's cells go when wrapped to some width.
+struct Layout {
+    /// Linear position (row × columns + column) of each cell.
+    positions: Vec<usize>,
+    /// Position just past the last cell.
+    end: usize,
+    len: usize,
+}
+
+impl Line {
+    fn layout(&self, cols: usize) -> Layout {
+        let mut positions = Vec::with_capacity(self.cells.len());
+        let mut pos = 0;
+        for cell in &self.cells {
+            // A wide character never straddles two rows.
+            if cell.flags.contains(Flags::WIDE) && cols > 1 && pos % cols == cols - 1 {
+                pos += 1;
+            }
+            positions.push(pos);
+            pos += 1;
+        }
+        Layout {
+            positions,
+            end: pos,
+            len: self.cells.len(),
+        }
+    }
+}
+
+impl Layout {
+    /// The new position of cell `offset`; past the end, positions continue
+    /// linearly (the cursor can be beyond the text).
+    fn position(&self, offset: usize) -> usize {
+        match self.positions.get(offset) {
+            Some(&pos) => pos,
+            None => self.end + (offset - self.len),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -477,24 +477,29 @@ impl Screen {
             return;
         }
 
-        let primary_row = if self.alt_active {
-            self.saved[0].map_or(0, |s| s.cursor.row)
+        if cols != self.cols {
+            self.reflow_primary(cols, rows);
         } else {
-            self.cursor.row
-        };
-        let pushed = self.primary.resize(cols, rows, primary_row);
+            let primary_row = if self.alt_active {
+                self.saved[0].map_or(0, |s| s.cursor.row)
+            } else {
+                self.cursor.row
+            };
+            let pushed = self.primary.resize(cols, rows, primary_row);
+            if !self.alt_active {
+                self.cursor.row = self.cursor.row.saturating_sub(pushed);
+            }
+            self.prompt_end = self
+                .prompt_end
+                .and_then(|(r, c)| Some((r.checked_sub(pushed)?, c)));
+        }
+        // Full-screen programs redraw on resize; their screen is cut off
+        // or padded, not reflowed.
         let alt_row = if self.alt_active { self.cursor.row } else { 0 };
         self.alternate.resize(cols, rows, alt_row);
         // The alternate screen has no history; rows pushed there are dropped.
         self.alternate.clear_history();
-
-        if !self.alt_active {
-            self.cursor.row = self.cursor.row.saturating_sub(pushed);
-        }
-        self.prompt_end = self
-            .prompt_end
-            .and_then(|(r, c)| Some((r.checked_sub(pushed)?, c)))
-            .filter(|&(r, c)| r < rows && c < cols);
+        self.prompt_end = self.prompt_end.filter(|&(r, c)| r < rows && c < cols);
 
         self.cols = cols;
         self.rows = rows;
@@ -510,6 +515,35 @@ impl Screen {
         self.tabs = default_tabs(cols);
         self.display_offset = 0;
         self.dirty = true;
+    }
+
+    /// Re-wraps the primary screen and its history to `cols` columns,
+    /// moving the cursor, the saved cursor and the prompt marker with the
+    /// text.
+    fn reflow_primary(&mut self, cols: usize, rows: usize) {
+        let mut points = Vec::new();
+        if !self.alt_active {
+            points.push((self.cursor.row, self.cursor.col));
+        }
+        let saved = self.saved[0].map(|s| s.cursor);
+        points.extend(saved.map(|c| (c.row, c.col)));
+        points.extend(self.prompt_end);
+        self.primary.reflow(cols, rows, &mut points);
+
+        let mut points = points.into_iter();
+        if !self.alt_active {
+            let (row, col) = points.next().unwrap();
+            self.cursor.row = row;
+            self.cursor.col = col;
+        }
+        if let Some(saved) = &mut self.saved[0] {
+            let (row, col) = points.next().unwrap();
+            saved.cursor.row = row;
+            saved.cursor.col = col;
+        }
+        if self.prompt_end.is_some() {
+            self.prompt_end = points.next();
+        }
     }
 
     // ---- Cursor movement --------------------------------------------------

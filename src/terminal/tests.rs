@@ -354,9 +354,11 @@ fn resize_keeps_cursor_line_visible() {
     t.screen_mut().resize(10, 2);
     assert_eq!(lines(&t), ["3", "4"]);
     assert_eq!(t.screen().cursor(), (1, 1));
+    // Reflowing brings history back into the taller screen.
     t.screen_mut().resize(3, 3);
     assert_eq!(t.screen().cols(), 3);
-    assert_eq!(lines(&t), ["3", "4", ""]);
+    assert_eq!(lines(&t), ["2", "3", "4"]);
+    assert_eq!(t.screen().cursor(), (2, 1));
     t.feed(b"abcd");
     assert_eq!(lines(&t), ["3", "4ab", "cd"]);
 }
@@ -489,6 +491,69 @@ fn mode_reports() {
         t.screen_mut().take_responses(),
         b"\x1b[?2026;1$y\x1b[?25;2$y\x1b[?9999;0$y\x1b[4;2$y"
     );
+}
+
+#[test]
+fn narrowing_rewraps_lines() {
+    let mut t = term(10, 4);
+    t.feed(b"abcdefgh\r\nxy");
+    t.screen_mut().resize(4, 4);
+    assert_eq!(lines(&t), ["abcd", "efgh", "xy", ""]);
+    assert!(t.screen().grid().rows[0].wrapped);
+    assert!(!t.screen().grid().rows[1].wrapped);
+    assert_eq!(t.screen().cursor(), (2, 2));
+}
+
+#[test]
+fn widening_joins_wrapped_rows() {
+    let mut t = term(4, 4);
+    t.feed(b"abcdefgh\r\nxy");
+    assert_eq!(lines(&t), ["abcd", "efgh", "xy", ""]);
+    t.screen_mut().resize(10, 4);
+    assert_eq!(lines(&t), ["abcdefgh", "xy", "", ""]);
+    assert_eq!(t.screen().cursor(), (1, 2));
+}
+
+#[test]
+fn reflow_moves_rows_through_history() {
+    let mut t = term(6, 2);
+    t.feed(b"aaaaaa\r\nbb\r\ncc");
+    // "aaaaaa" is in history; narrowing wraps it to two rows.
+    t.screen_mut().resize(3, 2);
+    let history: Vec<_> = t.screen().grid().history.iter().map(Row::text).collect();
+    assert_eq!(history, ["aaa", "aaa"]);
+    assert_eq!(lines(&t), ["bb", "cc"]);
+    t.screen_mut().resize(6, 2);
+    let history: Vec<_> = t.screen().grid().history.iter().map(Row::text).collect();
+    assert_eq!(history, ["aaaaaa"]);
+}
+
+#[test]
+fn reflow_keeps_wide_characters_whole() {
+    let mut t = term(6, 3);
+    t.feed("ab中文".as_bytes());
+    t.screen_mut().resize(3, 3);
+    assert_eq!(lines(&t), ["ab", "中", "文"]);
+    t.screen_mut().resize(6, 3);
+    assert_eq!(lines(&t), ["ab中文", "", ""]);
+}
+
+#[test]
+fn reflow_keeps_the_cursor_after_the_prompt() {
+    let mut t = term(10, 3);
+    t.feed(b"$ \x1b]133;B\x07");
+    t.screen_mut().resize(5, 3);
+    assert_eq!(t.screen().cursor(), (0, 2));
+    assert_eq!(t.screen().input_start(), 2);
+}
+
+#[test]
+fn reflow_carries_marks() {
+    let mut t = term(4, 6);
+    t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07abcdef\r\n\x1b]133;A\x07");
+    t.screen_mut().resize(8, 6);
+    assert_eq!(lines(&t), ["$ ls", "abcdef", "", "", "", ""]);
+    assert_eq!(t.screen().command_output(1), Some((1, 1)));
 }
 
 #[test]
