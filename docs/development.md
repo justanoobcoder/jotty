@@ -34,6 +34,21 @@ nix flake check     # builds the package (with tests), clippy, rustfmt
 nix fmt             # formats flake.nix
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
+
+| Job | Runs |
+| --- | --- |
+| Format | `cargo fmt --check` and `nix fmt -- --check flake.nix` |
+| Clippy | `cargo clippy --all-targets -- -D warnings` |
+| Build and test | `cargo build --release` and `cargo test` on Ubuntu, with fonts installed so the font and emoji tests run |
+| Minimum Rust version | `cargo build` with Rust 1.88, the `rust-version` in `Cargo.toml` |
+| Nix flake check | `nix flake check`: the package with its tests, clippy and rustfmt in the sandbox, and the terminfo size check |
+
+Warnings fail every job. When raising `rust-version`, update the
+toolchain in the minimum-version job too.
+
 ## Tests
 
 The tests don't need a compositor, GPU or display:
