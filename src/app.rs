@@ -65,6 +65,8 @@ use crate::terminal::{MouseMode, Terminal};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+/// Two clicks on the same cell within this many milliseconds are a double click.
+const DOUBLE_CLICK_MS: u32 = 400;
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
@@ -121,6 +123,8 @@ pub struct App {
     mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
     selecting: bool,
+    /// Time and cell of the last left click, to detect double clicks.
+    last_click: Option<(u32, Point)>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
 
@@ -274,6 +278,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         mouse_cell: None,
         selection: None,
         selecting: false,
+        last_click: None,
         data_device: None,
         copy_source: None,
         text_input: None,
@@ -540,6 +545,26 @@ impl App {
             line: row as isize - self.term.screen().display_offset() as isize,
             col,
         }
+    }
+
+    /// A selection of the whole command output under `point`, for a
+    /// double click, if that is enabled.
+    fn output_selection(&self, point: Point) -> Option<Selection> {
+        if !self.config.terminal.double_click_selects_output {
+            return None;
+        }
+        let screen = self.term.screen();
+        let (first, last) = screen.command_output(point.line)?;
+        let end = screen.row_at(last)?.cells.len().saturating_sub(1);
+        let mut selection = Selection::new(Point {
+            line: first,
+            col: 0,
+        });
+        selection.update(Point {
+            line: last,
+            col: end,
+        });
+        Some(selection)
     }
 
     /// Whether pointer events go to the program: it asked for them, and
@@ -1137,11 +1162,21 @@ impl PointerHandler for App {
                 PointerEventKind::Press {
                     button: BTN_LEFT,
                     serial,
-                    ..
+                    time,
                 } => {
                     self.last_serial = *serial;
-                    self.selection = Some(Selection::new(self.point_at(event.position)));
-                    self.selecting = true;
+                    let point = self.point_at(event.position);
+                    let double = self.last_click.is_some_and(|(last, at)| {
+                        at == point && time.wrapping_sub(last) <= DOUBLE_CLICK_MS
+                    });
+                    // A third click starts over instead of being another double.
+                    self.last_click = (!double).then_some((*time, point));
+                    if let Some(selection) = self.output_selection(point).filter(|_| double) {
+                        self.selection = Some(selection);
+                    } else {
+                        self.selection = Some(Selection::new(point));
+                        self.selecting = true;
+                    }
                     self.request_redraw();
                 }
                 PointerEventKind::Release {
