@@ -188,6 +188,8 @@ pub struct Screen {
     default_cursor_color: (u8, u8, u8),
     /// Colors set by the program with OSC 4, 10 and 11.
     colors: ColorOverrides,
+    /// Hyperlink targets (OSC 8); a cell's `link` is an index + 1.
+    links: Vec<String>,
     /// The configured colors, reported by OSC 4, 10 and 11 queries.
     default_colors: DefaultColors,
     /// Where the last character was printed, if nothing else happened
@@ -282,6 +284,7 @@ impl Screen {
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
+            links: Vec::new(),
             default_colors: DefaultColors::default(),
             last_printed: None,
             title: None,
@@ -445,6 +448,28 @@ impl Screen {
     /// The cursor color requested by the program with OSC 12, if any.
     pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
         self.cursor_color
+    }
+
+    /// The target of hyperlink `id` (a cell's `link`).
+    pub fn link(&self, id: u16) -> Option<&str> {
+        let index = usize::from(id).checked_sub(1)?;
+        self.links.get(index).map(String::as_str)
+    }
+
+    /// Starts (`uri` non-empty) or ends a hyperlink (OSC 8). Identical
+    /// targets share an id; when all ids are used, new links are ignored.
+    fn set_link(&mut self, uri: &str) {
+        self.cursor.template.link = if uri.is_empty() {
+            0
+        } else if let Some(i) = self.links.iter().rposition(|l| l == uri) {
+            (i + 1) as u16
+        } else if self.links.len() < usize::from(u16::MAX) {
+            self.links.push(uri.to_string());
+            self.links.len() as u16
+        } else {
+            log::debug!("too many hyperlinks; ignoring {uri}");
+            0
+        };
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
@@ -1103,14 +1128,19 @@ impl Screen {
 
     fn sgr(&mut self, params: &Params) {
         let t = &mut self.cursor.template;
+        // A hyperlink (OSC 8) is not an attribute; resets keep it.
+        let reset = Cell {
+            link: t.link,
+            ..Cell::default()
+        };
         if params.is_empty() {
-            *t = Cell::default();
+            *t = reset;
             return;
         }
         let mut iter = params.iter();
         while let Some(param) = iter.next() {
             match param[0] {
-                0 => *t = Cell::default(),
+                0 => *t = reset,
                 1 => t.flags.insert(Flags::BOLD),
                 2 => t.flags.insert(Flags::DIM),
                 3 => t.flags.insert(Flags::ITALIC),
@@ -1462,6 +1492,15 @@ impl Perform for Screen {
                 for (i, spec) in specs.iter().enumerate().take(3 - first) {
                     self.dynamic_color(first + i, spec, bell_terminated);
                 }
+            }
+            // OSC 8 ; params ; URI. The URI may itself contain ';'.
+            [b"8", _, uri @ ..] => {
+                let uri = uri
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                self.set_link(&uri);
             }
             [b"110", ..] => {
                 self.colors.foreground = None;

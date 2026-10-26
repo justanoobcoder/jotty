@@ -73,6 +73,8 @@ pub struct Cell {
     pub underline: Underline,
     /// Underline color (SGR 58); `Default` means the text color.
     pub underline_color: Color,
+    /// Hyperlink (OSC 8) id, see `Screen::link`; 0 for none.
+    pub link: u16,
 }
 
 impl Default for Cell {
@@ -84,6 +86,7 @@ impl Default for Cell {
             flags: Flags::empty(),
             underline: Underline::None,
             underline_color: Color::Default,
+            link: 0,
         }
     }
 }
@@ -514,8 +517,10 @@ mod tests {
             flags: Flags::BOLD,
             underline: Underline::Curly,
             underline_color: Color::Indexed(3),
+            link: 1,
         };
         let blank = Cell::blank(&template);
+        assert_eq!(blank.link, 0);
         assert_eq!(blank.c, ' ');
         assert_eq!(blank.fg, Color::Default);
         assert_eq!(blank.bg, Color::Indexed(2));

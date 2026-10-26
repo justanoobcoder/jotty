@@ -557,6 +557,27 @@ fn reflow_carries_marks() {
 }
 
 #[test]
+fn hyperlinks_mark_cells() {
+    let mut t = term(20, 1);
+    t.feed(b"a\x1b]8;;https://x.org/a;b\x1b\\link\x1b[0m!\x1b]8;;\x1b\\b");
+    let s = t.screen();
+    let id = cell(&t, 0, 1).link;
+    assert_ne!(id, 0);
+    assert_eq!(s.link(id), Some("https://x.org/a;b"));
+    // SGR reset keeps the link; OSC 8 with an empty URI ends it.
+    assert_eq!(cell(&t, 0, 5).link, id);
+    assert_eq!(cell(&t, 0, 0).link, 0);
+    assert_eq!(cell(&t, 0, 6).link, 0);
+}
+
+#[test]
+fn identical_hyperlinks_share_an_id() {
+    let mut t = term(20, 1);
+    t.feed(b"\x1b]8;id=1;file:///a\x07x\x1b]8;;\x07 \x1b]8;;file:///a\x07y");
+    assert_eq!(cell(&t, 0, 0).link, cell(&t, 0, 2).link);
+}
+
+#[test]
 fn split_input_across_feeds() {
     let mut t = term(10, 1);
     let bytes = "\x1b[31m中".as_bytes();
