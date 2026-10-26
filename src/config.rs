@@ -322,6 +322,15 @@ mod tests {
         assert_eq!(config.colors.cursor(), config.colors.foreground);
     }
 
+    /// The documented example must stay valid and match the defaults.
+    #[test]
+    fn example_config_matches_defaults() {
+        let example = Config::parse(include_str!("../docs/config.example.toml")).unwrap();
+        let mut expected = Config::default();
+        expected.colors.palette = DEFAULT_PALETTE.to_vec();
+        assert_eq!(example, expected);
+    }
+
     #[test]
     fn missing_explicit_file_is_an_error() {
         let err = Config::load(Some(Path::new("/nonexistent/jotty.toml"))).unwrap_err();

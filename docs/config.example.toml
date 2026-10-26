@@ -1,0 +1,50 @@
+# jotty configuration, showing every option with its default value.
+#
+# Copy to ~/.config/jotty/config.toml (or $XDG_CONFIG_HOME/jotty/config.toml)
+# and keep only the lines you change. Unknown keys are rejected.
+
+[font]
+# Family name as known to fontconfig (`fc-list : family`), or a generic
+# name such as "monospace".
+family = "monospace"
+# Size in points at 96 DPI; multiplied by the output's scale factor.
+size = 11.0
+# Families tried, in order, for characters the main font lacks. After these,
+# fontconfig picks any installed font that has the character.
+fallback = []
+
+[window]
+title = "jotty"
+# Application ID, used by compositors for window rules.
+app_id = "jotty"
+# Space around the text, in logical pixels.
+padding = 4
+# Background opacity from 0.0 to 1.0 (needs a compositor that blends).
+opacity = 1.0
+# Initial size in cells (the compositor may override it).
+columns = 80
+lines = 24
+
+[terminal]
+# Program to run. When unset: $SHELL, then /bin/sh.
+# shell = "/run/current-system/sw/bin/fish"
+# Value of $TERM in the child.
+term = "xterm-256color"
+# Lines of scrollback history.
+scrollback = 10000
+# Draw bold text in the first eight colors with their bright variants.
+bold_is_bright = true
+
+[colors]
+foreground = "#dcdcdc"
+background = "#181818"
+# Cursor color; defaults to the foreground color when unset.
+# cursor = "#dcdcdc"
+# The 16 ANSI colors: black, red, green, yellow, blue, magenta, cyan, white,
+# then their bright variants. A shorter list overrides only the first entries.
+palette = [
+    "#242424", "#e06c75", "#98c379", "#e5c07b",
+    "#61afef", "#c678dd", "#56b6c2", "#c8c8c8",
+    "#5c6370", "#ff7a85", "#b5e890", "#ffd68a",
+    "#7ec7ff", "#de93f2", "#6ed3df", "#ffffff",
+]
