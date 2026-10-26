@@ -52,9 +52,15 @@ impl Selection {
         let (start, end) = self.range();
         let mut out = String::new();
         for line in start.line..=end.line {
-            let Some(row) = screen.row_at(line) else { continue };
+            let Some(row) = screen.row_at(line) else {
+                continue;
+            };
             let first = if line == start.line { start.col } else { 0 };
-            let last = if line == end.line { end.col + 1 } else { row.cells.len() };
+            let last = if line == end.line {
+                end.col + 1
+            } else {
+                row.cells.len()
+            };
             let mut text: String = row
                 .cells
                 .iter()

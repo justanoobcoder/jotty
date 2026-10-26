@@ -42,7 +42,12 @@ fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-fn set_flag(fd: BorrowedFd<'_>, get: libc::c_int, set: libc::c_int, flag: libc::c_int) -> io::Result<()> {
+fn set_flag(
+    fd: BorrowedFd<'_>,
+    get: libc::c_int,
+    set: libc::c_int,
+    flag: libc::c_int,
+) -> io::Result<()> {
     let fd = fd.as_raw_fd();
     // SAFETY: fcntl on a valid, owned descriptor.
     unsafe {
@@ -68,9 +73,20 @@ impl Pty {
             )
         })?;
         // SAFETY: openpty succeeded, so both descriptors are valid and ours.
-        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        set_flag(master.as_fd(), libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC)?;
-        set_flag(slave.as_fd(), libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC)?;
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        set_flag(
+            master.as_fd(),
+            libc::F_GETFD,
+            libc::F_SETFD,
+            libc::FD_CLOEXEC,
+        )?;
+        set_flag(
+            slave.as_fd(),
+            libc::F_GETFD,
+            libc::F_SETFD,
+            libc::FD_CLOEXEC,
+        )?;
 
         let mut command = Command::new(program);
         command
@@ -91,7 +107,14 @@ impl Pty {
                 check(libc::setsid())?;
                 check(libc::ioctl(0, libc::TIOCSCTTY, 0))?;
                 // Undo signal dispositions a parent may have changed.
-                for signal in [libc::SIGCHLD, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGPIPE] {
+                for signal in [
+                    libc::SIGCHLD,
+                    libc::SIGHUP,
+                    libc::SIGINT,
+                    libc::SIGQUIT,
+                    libc::SIGTERM,
+                    libc::SIGPIPE,
+                ] {
                     libc::signal(signal, libc::SIG_DFL);
                 }
                 Ok(())
@@ -99,7 +122,12 @@ impl Pty {
         }
         let child = command.spawn()?;
 
-        set_flag(master.as_fd(), libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK)?;
+        set_flag(
+            master.as_fd(),
+            libc::F_GETFL,
+            libc::F_SETFL,
+            libc::O_NONBLOCK,
+        )?;
         Ok(Pty {
             master: File::from(master),
             child,
@@ -205,7 +233,13 @@ mod tests {
     }
 
     fn sh(script: &str) -> Pty {
-        Pty::spawn("/bin/sh", &["-c".into(), script.into()], "xterm-256color", SIZE).unwrap()
+        Pty::spawn(
+            "/bin/sh",
+            &["-c".into(), script.into()],
+            "xterm-256color",
+            SIZE,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -223,7 +257,12 @@ mod tests {
     #[test]
     fn resize_is_visible_to_child() {
         let mut pty = sh("read _; stty size");
-        pty.resize(WindowSize { cols: 100, rows: 30, ..SIZE }).unwrap();
+        pty.resize(WindowSize {
+            cols: 100,
+            rows: 30,
+            ..SIZE
+        })
+        .unwrap();
         pty.write(b"\n").unwrap();
         assert!(read_to_end(&mut pty).contains("30 100"));
     }

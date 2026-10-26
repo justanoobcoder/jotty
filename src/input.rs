@@ -138,10 +138,11 @@ fn encode_text(keysym: Keysym, text: &str, mods: Modifiers) -> Option<Vec<u8>> {
     }
     let mut chars = text.chars();
     let (first, single) = (chars.next()?, chars.next().is_none());
-    if mods.ctrl && single {
-        if let Some(control) = control_byte(first, keysym) {
-            return Some(with_alt(mods, &[control]));
-        }
+    if mods.ctrl
+        && single
+        && let Some(control) = control_byte(first, keysym)
+    {
+        return Some(with_alt(mods, &[control]));
     }
     Some(with_alt(mods, text.as_bytes()))
 }
@@ -197,8 +198,15 @@ mod tests {
     };
     const CTRL: Modifiers = Modifiers { ctrl: true, ..NONE };
     const ALT: Modifiers = Modifiers { alt: true, ..NONE };
-    const SHIFT: Modifiers = Modifiers { shift: true, ..NONE };
-    const CTRL_SHIFT: Modifiers = Modifiers { ctrl: true, shift: true, ..NONE };
+    const SHIFT: Modifiers = Modifiers {
+        shift: true,
+        ..NONE
+    };
+    const CTRL_SHIFT: Modifiers = Modifiers {
+        ctrl: true,
+        shift: true,
+        ..NONE
+    };
 
     fn enc(keysym: Keysym, text: Option<&str>, mods: Modifiers) -> Vec<u8> {
         encode_key(keysym, text, mods, KeyModes::default()).unwrap()
@@ -213,8 +221,14 @@ mod tests {
 
     #[test]
     fn no_text_no_bytes() {
-        assert_eq!(encode_key(Keysym::Shift_L, None, SHIFT, KeyModes::default()), None);
-        assert_eq!(encode_key(Keysym::a, Some(""), NONE, KeyModes::default()), None);
+        assert_eq!(
+            encode_key(Keysym::Shift_L, None, SHIFT, KeyModes::default()),
+            None
+        );
+        assert_eq!(
+            encode_key(Keysym::a, Some(""), NONE, KeyModes::default()),
+            None
+        );
     }
 
     #[test]
@@ -230,7 +244,18 @@ mod tests {
     fn alt_prefixes_escape() {
         assert_eq!(enc(Keysym::b, Some("b"), ALT), b"\x1bb");
         assert_eq!(enc(Keysym::BackSpace, None, ALT), b"\x1b\x7f");
-        assert_eq!(enc(Keysym::x, Some("x"), Modifiers { alt: true, ctrl: true, ..NONE }), b"\x1b\x18");
+        assert_eq!(
+            enc(
+                Keysym::x,
+                Some("x"),
+                Modifiers {
+                    alt: true,
+                    ctrl: true,
+                    ..NONE
+                }
+            ),
+            b"\x1b\x18"
+        );
     }
 
     #[test]
@@ -246,11 +271,20 @@ mod tests {
     #[test]
     fn cursor_keys_follow_mode() {
         assert_eq!(enc(Keysym::Up, None, NONE), b"\x1b[A");
-        let app = KeyModes { app_cursor: true, ..KeyModes::default() };
+        let app = KeyModes {
+            app_cursor: true,
+            ..KeyModes::default()
+        };
         assert_eq!(encode_key(Keysym::Up, None, NONE, app).unwrap(), b"\x1bOA");
-        assert_eq!(encode_key(Keysym::Home, None, NONE, app).unwrap(), b"\x1bOH");
+        assert_eq!(
+            encode_key(Keysym::Home, None, NONE, app).unwrap(),
+            b"\x1bOH"
+        );
         // Modified keys always use the CSI form.
-        assert_eq!(encode_key(Keysym::Left, None, CTRL, app).unwrap(), b"\x1b[1;5D");
+        assert_eq!(
+            encode_key(Keysym::Left, None, CTRL, app).unwrap(),
+            b"\x1b[1;5D"
+        );
         assert_eq!(enc(Keysym::Right, None, CTRL_SHIFT), b"\x1b[1;6C");
     }
 
@@ -266,9 +300,15 @@ mod tests {
 
     #[test]
     fn keypad_enter() {
-        let app = KeyModes { app_keypad: true, ..KeyModes::default() };
+        let app = KeyModes {
+            app_keypad: true,
+            ..KeyModes::default()
+        };
         assert_eq!(enc(Keysym::KP_Enter, None, NONE), b"\r");
-        assert_eq!(encode_key(Keysym::KP_Enter, None, NONE, app).unwrap(), b"\x1bOM");
+        assert_eq!(
+            encode_key(Keysym::KP_Enter, None, NONE, app).unwrap(),
+            b"\x1bOM"
+        );
     }
 
     #[test]
@@ -289,6 +329,9 @@ mod tests {
     #[test]
     fn paste_encoding() {
         assert_eq!(encode_paste("a\nb\r\nc", false), b"a\rb\rc");
-        assert_eq!(encode_paste("x\x1b[201~y", true), b"\x1b[200~x[201~y\x1b[201~");
+        assert_eq!(
+            encode_paste("x\x1b[201~y", true),
+            b"\x1b[200~x[201~y\x1b[201~"
+        );
     }
 }

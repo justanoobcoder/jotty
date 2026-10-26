@@ -83,14 +83,18 @@ mod tests {
             command: None,
         });
         assert_eq!(run(&["-c", "/tmp/x.toml"]), Ok(expected));
-        assert!(matches!(run(&["--config=/a"]), Ok(Parsed::Run(o)) if o.config == Some("/a".into())));
+        assert!(
+            matches!(run(&["--config=/a"]), Ok(Parsed::Run(o)) if o.config == Some("/a".into()))
+        );
         assert!(run(&["--config"]).is_err());
     }
 
     #[test]
     fn command_takes_the_rest() {
         let parsed = run(&["-c", "c.toml", "-e", "vim", "-c", "q"]).unwrap();
-        let Parsed::Run(options) = parsed else { panic!() };
+        let Parsed::Run(options) = parsed else {
+            panic!()
+        };
         assert_eq!(options.command.unwrap(), ["vim", "-c", "q"]);
         assert_eq!(options.config, Some("c.toml".into()));
         assert!(run(&["-e"]).is_err());

@@ -68,7 +68,9 @@ mod tests {
         let mut placed = Vec::new();
         for i in 0..40 {
             let (w, h) = (5 + i % 7, 8 + i % 5);
-            let Some((x, y)) = packer.alloc(w, h) else { break };
+            let Some((x, y)) = packer.alloc(w, h) else {
+                break;
+            };
             assert!(x + w <= 64 && y + h <= 64);
             let rect = (x, y, w, h);
             assert!(placed.iter().all(|&r| !overlaps(r, rect)));

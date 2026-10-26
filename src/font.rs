@@ -58,7 +58,9 @@ impl CellMetrics {
         let width = advance.round().max(1.0) as u32;
         let height = (ascent - descent + line_gap).ceil().max(1.0) as u32;
         // Split the line gap evenly above and below the glyphs.
-        let baseline = ((line_gap / 2.0) + ascent).round().clamp(0.0, height as f32 - 1.0) as u32;
+        let baseline = ((line_gap / 2.0) + ascent)
+            .round()
+            .clamp(0.0, height as f32 - 1.0) as u32;
         let stroke = (height as f32 / 16.0).round().max(1.0) as u32;
         let underline = (baseline + stroke).min(height - stroke);
         CellMetrics {
@@ -202,7 +204,10 @@ impl Fonts {
         };
         let regular = fonts.find_and_load(family, Style::Regular, None)?;
         fonts.styles = [regular; 4];
-        for (slot, style) in [Style::Bold, Style::Italic, Style::BoldItalic].into_iter().enumerate() {
+        for (slot, style) in [Style::Bold, Style::Italic, Style::BoldItalic]
+            .into_iter()
+            .enumerate()
+        {
             match fonts.find_and_load(family, style, None) {
                 Ok(face) => fonts.styles[slot + 1] = face,
                 Err(e) => log::warn!("{e}; using the regular face for {style:?}"),
@@ -212,7 +217,12 @@ impl Fonts {
         Ok(fonts)
     }
 
-    fn find_and_load(&mut self, family: &str, style: Style, c: Option<char>) -> Result<usize, FontError> {
+    fn find_and_load(
+        &mut self,
+        family: &str,
+        style: Style,
+        c: Option<char>,
+    ) -> Result<usize, FontError> {
         let file = self
             .fontconfig
             .find(family, style, c)
@@ -224,15 +234,24 @@ impl Fonts {
         if let Some(&face) = self.loaded.get(&(file.clone(), style)) {
             return Ok(face);
         }
-        log::info!("loading font {} (index {})", file.path.display(), file.index);
-        let data = std::fs::read(&file.path).map_err(|_| FontError::Load(file.path.clone(), "cannot read file"))?;
+        log::info!(
+            "loading font {} (index {})",
+            file.path.display(),
+            file.index
+        );
+        let data = std::fs::read(&file.path)
+            .map_err(|_| FontError::Load(file.path.clone(), "cannot read file"))?;
         // fontconfig puts the named instance of a variable font in the high
         // 16 bits; only the face index matters here (the default instance
         // is used).
         let mut face = FontVec::try_from_vec_and_index(data, file.index & 0xffff)
             .map_err(|_| FontError::Load(file.path.clone(), "invalid font"))?;
         // Variable fonts default to an arbitrary instance (often the lightest).
-        let weight = if matches!(style, Style::Bold | Style::BoldItalic) { 700.0 } else { 400.0 };
+        let weight = if matches!(style, Style::Bold | Style::BoldItalic) {
+            700.0
+        } else {
+            400.0
+        };
         face.set_variation(b"wght", weight);
         self.faces.push(face);
         let index = self.faces.len() - 1;
@@ -249,7 +268,12 @@ impl Fonts {
             .find(|&c| has_glyph(face, c))
             .map(|c| scaled.h_advance(face.glyph_id(c)))
             .unwrap_or(px * 0.6);
-        self.metrics = CellMetrics::new(advance, scaled.ascent(), scaled.descent(), scaled.line_gap());
+        self.metrics = CellMetrics::new(
+            advance,
+            scaled.ascent(),
+            scaled.descent(),
+            scaled.line_gap(),
+        );
     }
 
     /// The face used to draw `c` in `style`.
@@ -265,7 +289,12 @@ impl Fonts {
         if let Some(&face) = self.fallback.get(&c) {
             return face;
         }
-        let families: Vec<String> = self.fallback_families.iter().cloned().chain([String::new()]).collect();
+        let families: Vec<String> = self
+            .fallback_families
+            .iter()
+            .cloned()
+            .chain([String::new()])
+            .collect();
         let face = families.iter().find_map(|family| {
             let face = self.find_and_load(family, Style::Regular, Some(c)).ok()?;
             has_glyph(&self.faces[face], c).then_some(face)
@@ -288,9 +317,10 @@ impl Fonts {
         let index = self.face_for(c, style).unwrap_or(self.styles[0]);
         let face = &self.faces[index];
         // Place the baseline where the cell's is, so bounds are cell-relative.
-        let glyph = face
-            .glyph_id(c)
-            .with_scale_and_position(px_scale(face, self.px), point(0.0, self.metrics.baseline as f32));
+        let glyph = face.glyph_id(c).with_scale_and_position(
+            px_scale(face, self.px),
+            point(0.0, self.metrics.baseline as f32),
+        );
         let outline = face.outline_glyph(glyph)?;
         let bounds = outline.px_bounds();
         let (width, height) = (bounds.width() as u32, bounds.height() as u32);
@@ -372,7 +402,13 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
             fill(center(down, w), cy, center(down, w) + down, h, 255);
         }
         if left > 0 {
-            fill(0, center(left, h), cx + heaviest, center(left, h) + left, 255);
+            fill(
+                0,
+                center(left, h),
+                cx + heaviest,
+                center(left, h) + left,
+                255,
+            );
         }
         if right > 0 {
             fill(cx, center(right, h), w, center(right, h) + right, 255);

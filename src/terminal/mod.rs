@@ -261,7 +261,10 @@ impl Screen {
         let grid = self.grid();
         if line < 0 {
             let back = line.unsigned_abs();
-            grid.history.len().checked_sub(back).map(|i| &grid.history[i])
+            grid.history
+                .len()
+                .checked_sub(back)
+                .map(|i| &grid.history[i])
         } else {
             grid.rows.get(line as usize)
         }
@@ -907,7 +910,11 @@ impl Perform for Screen {
             ([], 'n') => match raw(0) {
                 5 => self.responses.extend_from_slice(b"\x1b[0n"),
                 6 => {
-                    let top = if self.modes.origin { self.scroll_top } else { 0 };
+                    let top = if self.modes.origin {
+                        self.scroll_top
+                    } else {
+                        0
+                    };
                     let (row, col) = self.cursor();
                     let report = format!("\x1b[{};{}R", row - top + 1, col + 1);
                     self.responses.extend_from_slice(report.as_bytes());
@@ -1015,7 +1022,10 @@ impl Perform for Screen {
                 Some(b'A' | b'C' | b'D') => self.prompt_end = None,
                 _ => {}
             },
-            _ => log::debug!("unhandled OSC {:?}", params.first().map(|p| String::from_utf8_lossy(p))),
+            _ => log::debug!(
+                "unhandled OSC {:?}",
+                params.first().map(|p| String::from_utf8_lossy(p))
+            ),
         }
     }
 }

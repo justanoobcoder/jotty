@@ -63,12 +63,21 @@ impl Egl {
     /// # Safety
     /// `display_ptr` must be a live `wl_display` and `surface` a live
     /// `wl_surface` on it, both outliving the returned value.
-    unsafe fn new(display_ptr: *mut c_void, surface: ObjectId, width: i32, height: i32) -> Result<Egl, String> {
+    unsafe fn new(
+        display_ptr: *mut c_void,
+        surface: ObjectId,
+        width: i32,
+        height: i32,
+    ) -> Result<Egl, String> {
         let api = &egl::API;
-        let display = unsafe { api.get_platform_display(PLATFORM_WAYLAND_KHR, display_ptr, &[egl::ATTRIB_NONE]) }
-            .map_err(|e| format!("eglGetPlatformDisplay: {e}"))?;
-        api.initialize(display).map_err(|e| format!("eglInitialize: {e}"))?;
-        api.bind_api(egl::OPENGL_ES_API).map_err(|e| format!("eglBindAPI: {e}"))?;
+        let display = unsafe {
+            api.get_platform_display(PLATFORM_WAYLAND_KHR, display_ptr, &[egl::ATTRIB_NONE])
+        }
+        .map_err(|e| format!("eglGetPlatformDisplay: {e}"))?;
+        api.initialize(display)
+            .map_err(|e| format!("eglInitialize: {e}"))?;
+        api.bind_api(egl::OPENGL_ES_API)
+            .map_err(|e| format!("eglBindAPI: {e}"))?;
 
         let config_attribs = [
             egl::SURFACE_TYPE,
@@ -90,12 +99,20 @@ impl Egl {
             .map_err(|e| format!("eglChooseConfig: {e}"))?
             .ok_or("no EGL config supports OpenGL ES 3 with alpha")?;
         let context = api
-            .create_context(display, config, None, &[egl::CONTEXT_MAJOR_VERSION, 3, egl::NONE])
+            .create_context(
+                display,
+                config,
+                None,
+                &[egl::CONTEXT_MAJOR_VERSION, 3, egl::NONE],
+            )
             .map_err(|e| format!("eglCreateContext: {e}"))?;
 
-        let window = WlEglSurface::new(surface, width.max(1), height.max(1)).map_err(|e| format!("wl_egl_window: {e}"))?;
-        let surface = unsafe { api.create_window_surface(display, config, window.ptr() as egl::NativeWindowType, None) }
-            .map_err(|e| format!("eglCreateWindowSurface: {e}"))?;
+        let window = WlEglSurface::new(surface, width.max(1), height.max(1))
+            .map_err(|e| format!("wl_egl_window: {e}"))?;
+        let surface = unsafe {
+            api.create_window_surface(display, config, window.ptr() as egl::NativeWindowType, None)
+        }
+        .map_err(|e| format!("eglCreateWindowSurface: {e}"))?;
         api.make_current(display, Some(surface), Some(surface), Some(context))
             .map_err(|e| format!("eglMakeCurrent: {e}"))?;
         // Never block in eglSwapBuffers; frames are paced by frame callbacks.
@@ -155,7 +172,8 @@ impl GlyphCache for Uploader<'_> {
                 }
             };
             unsafe {
-                self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
                 self.gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
                     0,
@@ -228,10 +246,14 @@ impl Renderer {
         let egl = unsafe { Egl::new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
-                egl.api.get_proc_address(name).map_or(std::ptr::null(), |f| f as *const c_void)
+                egl.api
+                    .get_proc_address(name)
+                    .map_or(std::ptr::null(), |f| f as *const c_void)
             })
         };
-        log::info!("OpenGL: {}", unsafe { gl.get_parameter_string(glow::VERSION) });
+        log::info!("OpenGL: {}", unsafe {
+            gl.get_parameter_string(glow::VERSION)
+        });
 
         unsafe {
             let program = gl.create_program()?;
@@ -315,7 +337,9 @@ impl Renderer {
     pub fn resize(&mut self, size: (u32, u32)) {
         if size != self.size {
             self.size = size;
-            self.egl.window.resize(size.0.max(1) as i32, size.1.max(1) as i32, 0, 0);
+            self.egl
+                .window
+                .resize(size.0.max(1) as i32, size.1.max(1) as i32, 0, 0);
         }
     }
 
@@ -352,11 +376,18 @@ impl Renderer {
             gl.uniform_2_f32(self.viewport_uniform.as_ref(), w as f32, h as f32);
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            let bytes = std::slice::from_raw_parts(batch.vertices.as_ptr().cast::<u8>(), batch.vertices.len() * 4);
+            let bytes = std::slice::from_raw_parts(
+                batch.vertices.as_ptr().cast::<u8>(),
+                batch.vertices.len() * 4,
+            );
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
-            gl.draw_arrays(glow::TRIANGLES, 0, (batch.vertices.len() / VERTEX_FLOATS) as i32);
+            gl.draw_arrays(
+                glow::TRIANGLES,
+                0,
+                (batch.vertices.len() / VERTEX_FLOATS) as i32,
+            );
         }
         self.egl
             .api

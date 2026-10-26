@@ -219,9 +219,7 @@ impl Config {
         };
         match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text).map_err(|e| ConfigError::Parse(path, e)),
-            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::default())
-            }
+            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ConfigError::Io(path, e)),
         }
     }

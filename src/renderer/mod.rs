@@ -59,7 +59,9 @@ impl Theme {
     pub fn cell_colors(&self, cell: &Cell, selected: bool, block_cursor: bool) -> (Rgb, Rgb) {
         let mut fg = match cell.fg {
             Color::Default => self.foreground,
-            Color::Indexed(i @ 0..=7) if self.bold_is_bright && cell.flags.contains(Flags::BOLD) => {
+            Color::Indexed(i @ 0..=7)
+                if self.bold_is_bright && cell.flags.contains(Flags::BOLD) =>
+            {
                 self.indexed(i + 8)
             }
             Color::Indexed(i) => self.indexed(i),
@@ -120,7 +122,9 @@ pub struct Batch {
 }
 
 impl Batch {
-    fn quad(&mut self, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], color: Rgb, alpha: f32, mode: f32) {
+    /// Adds a quad covering `[x, y, width, height]`; `mode` 0 is a solid
+    /// color, 1 samples the glyph atlas at `uv`.
+    fn quad(&mut self, [x, y, w, h]: [f32; 4], uv: [f32; 4], color: Rgb, mode: f32) {
         let [r, g, b] = color.to_f32();
         let [u0, v0, u1, v1] = uv;
         let corners = [
@@ -132,17 +136,23 @@ impl Batch {
             (x, y + h, u0, v1),
         ];
         for (px, py, u, v) in corners {
-            self.vertices.extend_from_slice(&[px, py, u, v, r, g, b, alpha, mode]);
+            self.vertices
+                .extend_from_slice(&[px, py, u, v, r, g, b, 1.0, mode]);
         }
     }
 
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
-        self.quad(x, y, w, h, [0.0; 4], color, 1.0, 0.0);
+        self.quad([x, y, w, h], [0.0; 4], color, 0.0);
     }
 
     pub fn glyph(&mut self, x: f32, y: f32, glyph: &GlyphInfo, color: Rgb) {
         let (w, h) = (glyph.width as f32, glyph.height as f32);
-        self.quad(x + glyph.left as f32, y + glyph.top as f32, w, h, glyph.uv, color, 1.0, 1.0);
+        self.quad(
+            [x + glyph.left as f32, y + glyph.top as f32, w, h],
+            glyph.uv,
+            color,
+            1.0,
+        );
     }
 
     #[cfg(test)]
@@ -166,7 +176,10 @@ pub struct Frame<'a> {
 }
 
 fn style_of(cell: &Cell) -> Style {
-    Style::new(cell.flags.contains(Flags::BOLD), cell.flags.contains(Flags::ITALIC))
+    Style::new(
+        cell.flags.contains(Flags::BOLD),
+        cell.flags.contains(Flags::ITALIC),
+    )
 }
 
 pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl GlyphCache) -> Batch {
@@ -191,8 +204,14 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             if cell.flags.contains(Flags::WIDE_SPACER) {
                 continue;
             }
-            let span = if cell.flags.contains(Flags::WIDE) { 2.0 } else { 1.0 };
-            let selected = frame.selection.is_some_and(|s| s.contains(Point { line, col: x }));
+            let span = if cell.flags.contains(Flags::WIDE) {
+                2.0
+            } else {
+                1.0
+            };
+            let selected = frame
+                .selection
+                .is_some_and(|s| s.contains(Point { line, col: x }));
             let is_cursor = block_cursor && y == cursor_row && x == cursor_col;
             let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor);
             let px = ox + x as f32 * cw;
@@ -200,10 +219,11 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             if bg != theme.background {
                 back.rect(px, py, cw * span, ch, bg);
             }
-            if cell.c != ' ' && !cell.flags.contains(Flags::HIDDEN) {
-                if let Some(glyph) = glyphs.glyph(cell.c, style_of(&cell)) {
-                    front.glyph(px, py, &glyph, fg);
-                }
+            if cell.c != ' '
+                && !cell.flags.contains(Flags::HIDDEN)
+                && let Some(glyph) = glyphs.glyph(cell.c, style_of(&cell))
+            {
+                front.glyph(px, py, &glyph, fg);
             }
             if cell.flags.contains(Flags::UNDERLINE) {
                 front.rect(px, py + m.underline as f32, cw * span, stroke, fg);
@@ -221,7 +241,9 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         let beam = (stroke * 2.0).max(1.0).min(cw);
         match (frame.focused, screen.cursor_shape) {
             (true, CursorShape::Beam) => front.rect(px, py, beam, ch, theme.cursor),
-            (true, CursorShape::Underline) => front.rect(px, py + ch - beam, cw, beam, theme.cursor),
+            (true, CursorShape::Underline) => {
+                front.rect(px, py + ch - beam, cw, beam, theme.cursor)
+            }
             _ => {
                 // Hollow block for an unfocused window.
                 front.rect(px, py, cw, stroke, theme.cursor);
@@ -241,7 +263,14 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
 }
 
 /// Draws the preedit at the cursor, over the grid, clipped at the line end.
-fn draw_preedit(batch: &mut Batch, preedit: &Preedit, frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl GlyphCache) {
+fn draw_preedit(
+    batch: &mut Batch,
+    preedit: &Preedit,
+    frame: &Frame,
+    theme: &Theme,
+    m: CellMetrics,
+    glyphs: &mut impl GlyphCache,
+) {
     let screen = frame.screen;
     let (row, start) = screen.cursor();
     let (cw, ch) = (m.width as f32, m.height as f32);
@@ -266,10 +295,19 @@ fn draw_preedit(batch: &mut Batch, preedit: &Preedit, frame: &Frame, theme: &The
         if let Some(glyph) = glyphs.glyph(c, Style::Regular) {
             batch.glyph(col_x(col), py, &glyph, theme.foreground);
         }
-        batch.rect(col_x(col), py + m.underline as f32, w, m.stroke as f32, theme.foreground);
+        batch.rect(
+            col_x(col),
+            py + m.underline as f32,
+            w,
+            m.stroke as f32,
+            theme.foreground,
+        );
         col += width;
     }
-    if preedit.cursor.is_some_and(|(begin, _)| begin >= preedit.text.len()) {
+    if preedit
+        .cursor
+        .is_some_and(|(begin, _)| begin >= preedit.text.len())
+    {
         cursor_col = Some(col);
     }
     if let Some(col) = cursor_col.filter(|&c| c < screen.cols()) {
@@ -346,13 +384,22 @@ mod tests {
             fg: Color::Indexed(1),
             ..Cell::default()
         };
-        assert_eq!(t.cell_colors(&cell, false, false), (t.palette[1], t.background));
+        assert_eq!(
+            t.cell_colors(&cell, false, false),
+            (t.palette[1], t.background)
+        );
         cell.flags.insert(Flags::BOLD);
         assert_eq!(t.cell_colors(&cell, false, false).0, t.palette[9]);
         cell.flags.insert(Flags::INVERSE);
-        assert_eq!(t.cell_colors(&cell, false, false), (t.background, t.palette[9]));
+        assert_eq!(
+            t.cell_colors(&cell, false, false),
+            (t.background, t.palette[9])
+        );
         // Selecting inverted text un-inverts it.
-        assert_eq!(t.cell_colors(&cell, true, false), (t.palette[9], t.background));
+        assert_eq!(
+            t.cell_colors(&cell, true, false),
+            (t.palette[9], t.background)
+        );
 
         let hidden = Cell {
             flags: Flags::HIDDEN,
@@ -454,7 +501,14 @@ mod tests {
         f.preedit = Some(&preedit);
         let mut glyphs = FakeGlyphs::default();
         let batch = build(&f, &theme(), METRICS, &mut glyphs);
-        assert_eq!(glyphs.0.iter().filter(|(c, _)| *c == '日' || *c == '本').count(), 2);
+        assert_eq!(
+            glyphs
+                .0
+                .iter()
+                .filter(|(c, _)| *c == '日' || *c == '本')
+                .count(),
+            2
+        );
         // Per character: background, glyph, underline; plus the beam.
         let beam = quad_at(&batch, batch.quads() - 1);
         assert_eq!(beam.0, (40.0, 0.0));

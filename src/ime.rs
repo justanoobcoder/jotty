@@ -49,7 +49,11 @@ impl Surrounding {
         if self.text.len() <= max {
             return;
         }
-        let mut end = self.text.len().min(self.cursor + max / 2).max(max.min(self.text.len()));
+        let mut end = self
+            .text
+            .len()
+            .min(self.cursor + max / 2)
+            .max(max.min(self.text.len()));
         while !self.text.is_char_boundary(end) {
             end -= 1;
         }
@@ -108,7 +112,7 @@ pub struct ImeState {
 impl ImeState {
     pub fn set_preedit(&mut self, text: Option<String>, begin: i32, end: i32) {
         self.pending_preedit = text.filter(|t| !t.is_empty()).map(|text| {
-            let cursor = (begin >= 0 && end >= 0).then(|| (begin as usize, end as usize));
+            let cursor = (begin >= 0 && end >= 0).then_some((begin as usize, end as usize));
             Preedit { text, cursor }
         });
     }

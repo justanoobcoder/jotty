@@ -134,7 +134,9 @@ pub struct Grid {
 impl Grid {
     pub fn new(cols: usize, rows: usize, max_history: usize) -> Self {
         Grid {
-            rows: (0..rows).map(|_| Row::new(cols, &Cell::default())).collect(),
+            rows: (0..rows)
+                .map(|_| Row::new(cols, &Cell::default()))
+                .collect(),
             history: VecDeque::new(),
             max_history,
             cols,

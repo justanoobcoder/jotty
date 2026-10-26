@@ -207,14 +207,23 @@ fn sgr_attributes() {
     let mut t = term(10, 1);
     t.feed(b"\x1b[1;3;4;31;42ma\x1b[22;39mb\x1b[0mc");
     let a = cell(&t, 0, 0);
-    assert!(a.flags.contains(Flags::BOLD | Flags::ITALIC | Flags::UNDERLINE));
+    assert!(
+        a.flags
+            .contains(Flags::BOLD | Flags::ITALIC | Flags::UNDERLINE)
+    );
     assert_eq!(a.fg, Color::Indexed(1));
     assert_eq!(a.bg, Color::Indexed(2));
     let b = cell(&t, 0, 1);
     assert!(!b.flags.contains(Flags::BOLD));
     assert!(b.flags.contains(Flags::ITALIC));
     assert_eq!(b.fg, Color::Default);
-    assert_eq!(cell(&t, 0, 2), Cell { c: 'c', ..Cell::default() });
+    assert_eq!(
+        cell(&t, 0, 2),
+        Cell {
+            c: 'c',
+            ..Cell::default()
+        }
+    );
 }
 
 #[test]
@@ -420,7 +429,7 @@ fn garbage_does_not_panic() {
         seed ^= seed << 5;
         // Bias towards escape-sequence building blocks.
         let pool = b"\x1b[;?0123456789HJKLMPX@ABCDrmhl\r\n\x08\t\x1bM(0";
-        bytes.push(if seed % 3 == 0 {
+        bytes.push(if seed.is_multiple_of(3) {
             (seed >> 8) as u8
         } else {
             pool[(seed >> 8) as usize % pool.len()]

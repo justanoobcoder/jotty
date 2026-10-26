@@ -8,22 +8,30 @@ use std::io::{self, Read, Write};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
-use smithay_client_toolkit::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
+use smithay_client_toolkit::data_device_manager::data_source::{
+    CopyPasteSource, DataSourceHandler,
+};
 use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WritePipe};
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
-use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
+use smithay_client_toolkit::reexports::calloop::{
+    EventLoop, Interest, LoopHandle, Mode, PostAction,
+};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
+use smithay_client_toolkit::shell::xdg::window::{
+    Window, WindowConfigure, WindowDecorations, WindowHandler,
+};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
@@ -103,7 +111,8 @@ pub struct App {
 }
 
 pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn Error>> {
-    let conn = Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
+    let conn =
+        Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
     let (globals, event_queue) = registry_queue_init::<App>(&conn)?;
     let qh = event_queue.handle();
     let mut event_loop: EventLoop<App> = EventLoop::try_new()?;
@@ -112,7 +121,8 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         .insert(loop_handle.clone())
         .map_err(|e| format!("cannot watch the Wayland socket: {e}"))?;
 
-    let compositor = CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
+    let compositor =
+        CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
     let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|e| format!("xdg_wm_base: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
@@ -121,7 +131,11 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         .map_err(|e| log::warn!("text-input-v3 unavailable, no input method support: {e}"))
         .ok();
 
-    let fonts = Fonts::new(&config.font.family, &config.font.fallback, points_to_px(config.font.size, 1.0))?;
+    let fonts = Fonts::new(
+        &config.font.family,
+        &config.font.fallback,
+        points_to_px(config.font.size, 1.0),
+    )?;
     let cell = fonts.metrics;
     let pad = config.window.padding;
     let cols = u32::from(config.window.columns);
@@ -154,7 +168,11 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
             (program, command)
         }
         None => (
-            config.terminal.shell.clone().unwrap_or_else(crate::pty::default_shell),
+            config
+                .terminal
+                .shell
+                .clone()
+                .unwrap_or_else(crate::pty::default_shell),
             Vec::new(),
         ),
     };
@@ -168,10 +186,13 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         .map_err(|e| format!("cannot run {program:?}: {e}"))?;
     let reader = File::from(pty.fd().try_clone_to_owned()?);
     loop_handle
-        .insert_source(Generic::new(reader, Interest::READ, Mode::Level), |_, _, app| {
-            app.read_pty();
-            Ok(PostAction::Continue)
-        })
+        .insert_source(
+            Generic::new(reader, Interest::READ, Mode::Level),
+            |_, _, app| {
+                app.read_pty();
+                Ok(PostAction::Continue)
+            },
+        )
         .map_err(|e| format!("cannot watch the pty: {e}"))?;
 
     let term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
@@ -272,7 +293,8 @@ impl App {
 
     fn set_font_points(&mut self, points: f32) {
         self.font_points = points.clamp(4.0, 200.0);
-        self.renderer.set_font_size(points_to_px(self.font_points, self.scale as f32));
+        self.renderer
+            .set_font_size(points_to_px(self.font_points, self.scale as f32));
         self.apply_size();
     }
 
@@ -390,7 +412,9 @@ impl App {
             app_cursor: modes.app_cursor,
             app_keypad: modes.app_keypad,
         };
-        if let Some(bytes) = input::encode_key(event.keysym, event.utf8.as_deref(), self.modifiers, modes) {
+        if let Some(bytes) =
+            input::encode_key(event.keysym, event.utf8.as_deref(), self.modifiers, modes)
+        {
             self.scroll_to_bottom();
             self.send(&bytes);
         }
@@ -428,7 +452,9 @@ impl App {
         let cell = self.renderer.cell();
         let screen = self.term.screen();
         let col = ((x * scale - pad) / f64::from(cell.width)).floor().max(0.0) as usize;
-        let row = ((y * scale - pad) / f64::from(cell.height)).floor().max(0.0) as usize;
+        let row = ((y * scale - pad) / f64::from(cell.height))
+            .floor()
+            .max(0.0) as usize;
         Point {
             line: row.min(screen.rows() - 1) as isize - screen.display_offset() as isize,
             col: col.min(screen.cols() - 1),
@@ -492,7 +518,11 @@ impl App {
             self.paste_text(&text);
             return;
         }
-        let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().selection_offer()) else {
+        let Some(offer) = self
+            .data_device
+            .as_ref()
+            .and_then(|d| d.data().selection_offer())
+        else {
             return;
         };
         let mime = offer.with_mime_types(|offered| {
@@ -525,7 +555,12 @@ impl App {
                     data.extend_from_slice(&buf[..n]);
                     PostAction::Continue
                 }
-                Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) =>
+                {
                     PostAction::Continue
                 }
                 Err(e) => {
@@ -595,7 +630,8 @@ impl App {
         };
         let screen = self.term.screen();
         let (row, col) = screen.cursor();
-        let surrounding = Surrounding::from_row(&screen.grid().rows[row], screen.input_start(), col);
+        let surrounding =
+            Surrounding::from_row(&screen.grid().rows[row], screen.input_start(), col);
         let cell = self.renderer.cell();
         let (pad, scale) = (self.padding(), self.scale);
         let rect = (
@@ -624,7 +660,13 @@ impl App {
 }
 
 impl CompositorHandler for App {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, factor: i32) {
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        factor: i32,
+    ) {
         let scale = factor.max(1) as u32;
         if scale == self.scale {
             return;
@@ -632,11 +674,19 @@ impl CompositorHandler for App {
         log::info!("scale factor {scale}");
         self.scale = scale;
         self.window.wl_surface().set_buffer_scale(scale as i32);
-        self.renderer.set_font_size(points_to_px(self.font_points, scale as f32));
+        self.renderer
+            .set_font_size(points_to_px(self.font_points, scale as f32));
         self.apply_size();
     }
 
-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
+    fn transform_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: wl_output::Transform,
+    ) {
+    }
 
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
         self.frame_pending = false;
@@ -645,9 +695,23 @@ impl CompositorHandler for App {
         }
     }
 
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for App {
@@ -667,7 +731,14 @@ impl WindowHandler for App {
         self.exit = true;
     }
 
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window, configure: WindowConfigure, _: u32) {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &Window,
+        configure: WindowConfigure,
+        _: u32,
+    ) {
         if let Some(w) = configure.new_size.0 {
             self.size.0 = w.get();
         }
@@ -692,7 +763,13 @@ impl SeatHandler for App {
         }
     }
 
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
         match capability {
             Capability::Keyboard if self.keyboard.is_none() => {
                 let keyboard = self.seat_state.get_keyboard_with_repeat(
@@ -712,9 +789,13 @@ impl SeatHandler for App {
             }
             Capability::Pointer if self.pointer.is_none() => {
                 let surface = self.compositor.create_surface(qh);
-                let pointer = self
-                    .seat_state
-                    .get_pointer_with_theme::<_, ()>(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default());
+                let pointer = self.seat_state.get_pointer_with_theme::<_, ()>(
+                    qh,
+                    &seat,
+                    self.shm.wl_shm(),
+                    surface,
+                    ThemeSpec::default(),
+                );
                 match pointer {
                     Ok(pointer) => self.pointer = Some(pointer),
                     Err(e) => log::warn!("cannot use pointer: {e}"),
@@ -724,7 +805,13 @@ impl SeatHandler for App {
         }
     }
 
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, capability: Capability) {
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
         match capability {
             Capability::Keyboard => {
                 if let Some(keyboard) = self.keyboard.take() {
@@ -764,7 +851,14 @@ impl KeyboardHandler for App {
         }
     }
 
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
         if surface == self.window.wl_surface() {
             self.focused = false;
             if self.term.screen().modes.focus_events {
@@ -774,16 +868,38 @@ impl KeyboardHandler for App {
         }
     }
 
-    fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, serial: u32, event: KeyEvent) {
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        serial: u32,
+        event: KeyEvent,
+    ) {
         self.last_serial = serial;
         self.handle_key(event);
     }
 
-    fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
+    fn repeat_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
         self.handle_key(event);
     }
 
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
 
     fn update_modifiers(
         &mut self,
@@ -800,7 +916,13 @@ impl KeyboardHandler for App {
 }
 
 impl PointerHandler for App {
-    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(
+        &mut self,
+        conn: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
         for event in events {
             if &event.surface != self.window.wl_surface() {
                 continue;
@@ -821,20 +943,30 @@ impl PointerHandler for App {
                         self.request_redraw();
                     }
                 }
-                PointerEventKind::Press { button: BTN_LEFT, serial, .. } => {
+                PointerEventKind::Press {
+                    button: BTN_LEFT,
+                    serial,
+                    ..
+                } => {
                     self.last_serial = *serial;
                     self.selection = Some(Selection::new(self.point_at(event.position)));
                     self.selecting = true;
                     self.request_redraw();
                 }
-                PointerEventKind::Release { button: BTN_LEFT, .. } => {
+                PointerEventKind::Release {
+                    button: BTN_LEFT, ..
+                } => {
                     self.selecting = false;
                     if self.selection.is_some_and(|s| s.is_empty()) {
                         self.selection = None;
                     }
                     self.request_redraw();
                 }
-                PointerEventKind::Press { button: BTN_MIDDLE, serial, .. } => {
+                PointerEventKind::Press {
+                    button: BTN_MIDDLE,
+                    serial,
+                    ..
+                } => {
                     self.last_serial = *serial;
                     self.paste();
                 }
@@ -852,7 +984,16 @@ impl ShmHandler for App {
 }
 
 impl DataDeviceHandler for App {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64, _: &wl_surface::WlSurface) {}
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _: f64,
+        _: f64,
+        _: &wl_surface::WlSurface,
+    ) {
+    }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 
@@ -865,16 +1006,48 @@ impl DataDeviceHandler for App {
 }
 
 impl DataOfferHandler for App {
-    fn source_actions(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn source_actions(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
 
-    fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn selected_action(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
 }
 
 impl DataSourceHandler for App {
-    fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
+    fn accept_mime(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataSource,
+        _: Option<String>,
+    ) {
+    }
 
-    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource, _: String, mut pipe: WritePipe) {
-        let Some((_, text)) = self.copy_source.as_ref().filter(|(s, _)| s.inner() == source) else {
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &WlDataSource,
+        _: String,
+        mut pipe: WritePipe,
+    ) {
+        let Some((_, text)) = self
+            .copy_source
+            .as_ref()
+            .filter(|(s, _)| s.inner() == source)
+        else {
             return;
         };
         let text = text.clone();
@@ -887,7 +1060,11 @@ impl DataSourceHandler for App {
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
-        if self.copy_source.as_ref().is_some_and(|(s, _)| s.inner() == source) {
+        if self
+            .copy_source
+            .as_ref()
+            .is_some_and(|(s, _)| s.inner() == source)
+        {
             self.copy_source = None;
         }
     }
@@ -903,7 +1080,14 @@ impl DataSourceHandler for App {
 struct TextInputManagerData;
 
 impl Dispatch2<ZwpTextInputManagerV3, App> for TextInputManagerData {
-    fn event(&self, _: &mut App, _: &ZwpTextInputManagerV3, _: <ZwpTextInputManagerV3 as Proxy>::Event, _: &Connection, _: &QueueHandle<App>) {
+    fn event(
+        &self,
+        _: &mut App,
+        _: &ZwpTextInputManagerV3,
+        _: <ZwpTextInputManagerV3 as Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
         // The manager has no events.
     }
 }
@@ -912,7 +1096,14 @@ impl Dispatch2<ZwpTextInputManagerV3, App> for TextInputManagerData {
 struct TextInputData;
 
 impl Dispatch2<ZwpTextInputV3, App> for TextInputData {
-    fn event(&self, app: &mut App, text_input: &ZwpTextInputV3, event: zwp_text_input_v3::Event, _: &Connection, _: &QueueHandle<App>) {
+    fn event(
+        &self,
+        app: &mut App,
+        text_input: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
         app.text_input_event(text_input, event);
     }
 }
@@ -927,4 +1118,3 @@ impl ProvidesRegistryState for App {
 
 delegate_registry!(App);
 delegate_dispatch2!(App);
-
