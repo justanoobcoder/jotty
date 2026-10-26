@@ -38,6 +38,7 @@ on the CPU.
 | `text.rs` | The text of a logical line with the cell of each character | no |
 | `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
+| `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |

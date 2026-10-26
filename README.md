@@ -69,6 +69,7 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
 | Ctrl+Shift+F           | Search the scrollback                         |
+| Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |
 | Ctrl+Shift+N           | New window in the current directory           |
 | Ctrl+click             | Open a link, URL, image or video file (Ctrl+hover underlines it) |
 

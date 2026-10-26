@@ -92,9 +92,12 @@ nothing surprises you.
   bar or border.
 - **Fractional scaling** needs both `wp-fractional-scale-v1` and
   `wp-viewporter`; without them, jotty renders at the next integer scale.
-- No block (rectangular) selection. The selection is kept while output goes
-  elsewhere, but cleared when its text changes or it scrolls out of the
-  history.
+- Block (rectangular) selection is only available in vi mode, not with the
+  mouse. The selection is kept while output goes elsewhere, but cleared
+  when its text changes or it scrolls out of the history.
+- Vi mode has motions, visual modes, yank and search, but not vim's text
+  objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
+  screen.
 - While a program has mouse reporting on, Ctrl+click goes to the program;
   hold Shift as well to open a link.
 - Relative file paths are resolved in the directory the foreground program

@@ -217,6 +217,7 @@ Actions you don't list keep their defaults.
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
+| `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
 | `new_window` | `ctrl+shift+n` | Open another jotty in the current directory of the shell (or whatever runs in the terminal), with the same `--config` file |
 
 A combo is modifiers and a key joined by `+`:
@@ -282,6 +283,33 @@ the query has an uppercase letter, and finds text that wraps across rows.
 | Backspace | Delete the last character of the query |
 | Enter | Close the bar and keep the match selected (and as the primary selection) |
 | Escape | Close the bar and clear the selection |
+
+### Vi mode
+
+`vi_mode` (Ctrl+Shift+Space) puts a block cursor on the screen, at the
+terminal's cursor, to move around the screen and scrollback with vim keys,
+select text and yank it to the clipboard. A label in the top-right corner
+shows the mode (`VI`, `VISUAL`, `V-LINE`, `V-BLOCK`). Keys don't reach the
+program while vi mode is on; output keeps arriving, and the cursor stays on
+its text as it scrolls.
+
+| Keys | Do |
+| --- | --- |
+| `h` `j` `k` `l`, arrows | Move by a character or line; a count repeats (`5j`) |
+| `w` `b` `e`, `W` `B` `E` | Next word, previous word, end of word (`W`: words separated only by blanks) |
+| `0` `^` `$` | Start of the line, first non-blank, last non-blank |
+| `gg` `G` | Top of the scrollback, bottom of the screen |
+| `H` `M` `L` | Top, middle, bottom of the view |
+| Ctrl+U / Ctrl+D, Ctrl+B / Ctrl+F | Half a page, a page up or down |
+| `v` `V` Ctrl+V | Visual mode by character, line, or block; the same key again ends it |
+| `o` | In visual mode: go to the other end of the selection |
+| `y` | Yank the selection to the clipboard; `yy` (`3yy`) yanks lines |
+| `/` `?` | Search down or up from the cursor; Enter jumps to the match |
+| `n` `N` | Next match of the last search, in its direction or the other way (wrapping around) |
+| Escape | Leave visual mode, then vi mode (also `i`, `q`, Ctrl+C) |
+
+Key bindings still work in vi mode, so Ctrl+Shift+C copies the visual
+selection too.
 
 ### Mouse
 

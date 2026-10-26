@@ -100,6 +100,9 @@ search = ["ctrl+shift+f"]
 # Open another jotty in the current directory of the shell (or whatever
 # runs in the terminal), with the same config file.
 new_window = ["ctrl+shift+n"]
+# Vi mode: move a cursor over the screen and scrollback with vim keys,
+# select (v, V, Ctrl+V), yank (y), search (/, ?, n, N); Escape leaves.
+vi_mode = ["ctrl+shift+space"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set
