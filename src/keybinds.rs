@@ -31,10 +31,12 @@ pub enum Action {
     FontReset,
     /// Search the scrollback.
     Search,
+    /// Open another jotty in the current working directory.
+    NewWindow,
 }
 
 impl Action {
-    const ALL: [(&'static str, Action); 13] = [
+    const ALL: [(&'static str, Action); 14] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -48,6 +50,7 @@ impl Action {
         ("font_smaller", Action::FontSmaller),
         ("font_reset", Action::FontReset),
         ("search", Action::Search),
+        ("new_window", Action::NewWindow),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -68,6 +71,7 @@ impl Action {
             Action::FontSmaller => &["ctrl+minus", "ctrl+kp_subtract"],
             Action::FontReset => &["ctrl+0", "ctrl+kp_0"],
             Action::Search => &["ctrl+shift+f"],
+            Action::NewWindow => &["ctrl+shift+n"],
         }
     }
 }

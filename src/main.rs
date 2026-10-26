@@ -55,7 +55,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match app::run(config, options.command) {
+    match app::run(config, options.config, options.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("jotty: {e}");

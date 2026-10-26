@@ -4,6 +4,7 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
@@ -186,6 +187,8 @@ pub struct App {
     selecting: bool,
     /// Scrollback search in progress.
     search: Option<Search>,
+    /// The `--config` file, passed on to new windows.
+    config_path: Option<PathBuf>,
     links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
@@ -206,7 +209,13 @@ pub struct App {
     ime_cursor_rect: (i32, i32, i32, i32),
 }
 
-pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn Error>> {
+/// Runs a window. `config_path` is the config file given on the command
+/// line, which new windows also use.
+pub fn run(
+    config: Config,
+    config_path: Option<PathBuf>,
+    command: Option<Vec<String>>,
+) -> Result<(), Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
     let (globals, event_queue) = registry_queue_init::<App>(&conn)?;
@@ -419,6 +428,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         selection: None,
         selecting: false,
         search: None,
+        config_path,
         links,
         hovered_link: None,
         pointer_inside: false,
@@ -817,6 +827,7 @@ impl App {
                 self.search = Some(Search::default());
                 self.request_redraw();
             }
+            Action::NewWindow => self.new_window(),
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -906,6 +917,36 @@ impl App {
         }
         self.hovered_link = link;
         self.request_redraw();
+    }
+
+    /// Starts another jotty in the current directory of the program in the
+    /// foreground, with the same config file.
+    fn new_window(&self) {
+        let program = match std::env::current_exe() {
+            Ok(program) => program,
+            Err(e) => return log::warn!("cannot find jotty's executable: {e}"),
+        };
+        let mut command = std::process::Command::new(program);
+        if let Some(path) = &self.config_path {
+            // The new window starts elsewhere; a relative path would break.
+            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            command.arg("--config").arg(path);
+        }
+        if let Some(dir) = self.pty.foreground_cwd() {
+            log::info!("opening a new window in {}", dir.display());
+            command.current_dir(dir);
+        }
+        // Its own process group: a hangup sent to ours (when the terminal
+        // that started this jotty closes) must not take it down.
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).stdin(std::process::Stdio::null());
+        match command.spawn() {
+            // Reap it when it exits so it doesn't linger as a zombie.
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => log::warn!("cannot start a new window: {e}"),
+        }
     }
 
     /// Opens a link with its launcher (its file kind's, or else
