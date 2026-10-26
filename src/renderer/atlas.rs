@@ -67,6 +67,8 @@ impl Packer {
 enum GlyphKey {
     /// A character in a style, for a one- or two-cell slot.
     Char(char, Style, bool),
+    /// A grapheme cluster, by a hash of its text, in a style and slot.
+    Cluster(u64, Style, bool),
     /// An underline spanning a number of cells.
     Underline(Underline, u32),
 }
@@ -174,6 +176,14 @@ impl<S: FnMut(u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
     fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
         self.cached(GlyphKey::Char(c, style, wide), |fonts| {
             fonts.rasterize(c, style, wide)
+        })
+    }
+
+    fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo> {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let hash = BuildHasherDefault::<DefaultHasher>::default().hash_one(text);
+        self.cached(GlyphKey::Cluster(hash, style, wide), |fonts| {
+            fonts.rasterize_cluster(text, style, wide)
         })
     }
 

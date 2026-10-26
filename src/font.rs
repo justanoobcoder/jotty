@@ -5,6 +5,7 @@ use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use unicode_normalization::UnicodeNormalization;
 use unicode_width::UnicodeWidthChar;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont, point};
@@ -384,6 +385,64 @@ impl Fonts {
             top,
             data,
         })
+    }
+}
+
+impl Fonts {
+    /// Rasterizes a grapheme cluster: a character with combining marks.
+    /// When Unicode composes it into one character (`e` + U+0301 is `é`),
+    /// that character is drawn; otherwise the marks are drawn over the
+    /// first character, centered in the slot.
+    pub fn rasterize_cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<Glyph> {
+        let composed: String = text.nfc().collect();
+        let mut chars = composed.chars();
+        let base = chars.next()?;
+        let mut glyph = self.rasterize(base, style, wide);
+        let slot = self.metrics.width * if wide { 2 } else { 1 };
+        // Marks only: joiners and variation selectors have no ink of
+        // their own.
+        for mark in chars.filter(|&c| c.width() == Some(0) && !is_joiner_or_selector(c)) {
+            if let Some(mut mark) = self.rasterize(mark, style, false) {
+                mark.left = (slot as i32 - mark.width as i32) / 2;
+                glyph = Some(match glyph {
+                    Some(base) => overlay(&base, &mark),
+                    None => mark,
+                });
+            }
+        }
+        glyph
+    }
+}
+
+/// ZWJ, ZWNJ and variation selectors.
+fn is_joiner_or_selector(c: char) -> bool {
+    matches!(c, '\u{200c}' | '\u{200d}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+}
+
+/// Combines two glyph bitmaps, positioned by their offsets, into one.
+fn overlay(a: &Glyph, b: &Glyph) -> Glyph {
+    let left = a.left.min(b.left);
+    let top = a.top.min(b.top);
+    let right = (a.left + a.width as i32).max(b.left + b.width as i32);
+    let bottom = (a.top + a.height as i32).max(b.top + b.height as i32);
+    let (width, height) = ((right - left) as u32, (bottom - top) as u32);
+    let mut data = vec![0u8; (width * height) as usize];
+    for g in [a, b] {
+        let (dx, dy) = ((g.left - left) as u32, (g.top - top) as u32);
+        for y in 0..g.height {
+            for x in 0..g.width {
+                let src = g.data[(y * g.width + x) as usize];
+                let dst = &mut data[((y + dy) * width + x + dx) as usize];
+                *dst = (*dst).max(src);
+            }
+        }
+    }
+    Glyph {
+        width,
+        height,
+        left,
+        top,
+        data,
     }
 }
 
@@ -823,6 +882,27 @@ mod tests {
         assert_eq!(coverage(&left, m.width - 1, 0), 0);
         assert_eq!(box_glyph('▒', m).unwrap().data[0], 128);
         assert!(box_glyph('a', m).is_none());
+    }
+
+    #[test]
+    fn overlay_unites_bitmaps() {
+        let a = Glyph {
+            width: 2,
+            height: 1,
+            left: 0,
+            top: 5,
+            data: vec![10, 20],
+        };
+        let b = Glyph {
+            width: 1,
+            height: 2,
+            left: 1,
+            top: 3,
+            data: vec![30, 40],
+        };
+        let c = overlay(&a, &b);
+        assert_eq!((c.left, c.top, c.width, c.height), (0, 3, 2, 3));
+        assert_eq!(c.data, [0, 30, 0, 40, 10, 20]);
     }
 
     /// Needs fonts installed; skipped (passes) where none are available,

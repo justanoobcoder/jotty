@@ -207,6 +207,10 @@ pub trait GlyphCache {
 
     /// An underline bitmap of `style` spanning `cells` cells.
     fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo>;
+
+    /// The glyph for a grapheme cluster (a character with combining marks,
+    /// or an emoji sequence).
+    fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo>;
 }
 
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
@@ -342,10 +346,24 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 };
                 back.fill(px, py, cw * span, ch, bg, alpha);
             }
-            if cell.c != ' '
-                && !cell.flags.contains(Flags::HIDDEN)
-                && let Some(glyph) = glyphs.glyph(cell.c, style_of(&cell), span > 1.0)
-            {
+            let glyph = if cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION) {
+                None
+            } else if cell.cluster != 0 {
+                let mut text = String::new();
+                screen.cell_text(&cell, &mut text);
+                // Emoji sequences span several cells; draw them two wide.
+                let wide = span > 1.0
+                    || row
+                        .cells
+                        .get(x + 1)
+                        .is_some_and(|c| c.flags.contains(Flags::CONTINUATION));
+                glyphs.cluster(&text, style_of(&cell), wide)
+            } else if cell.c != ' ' {
+                glyphs.glyph(cell.c, style_of(&cell), span > 1.0)
+            } else {
+                None
+            };
+            if let Some(glyph) = glyph {
                 front.glyph(px, py, &glyph, fg);
             }
             if cell.underline != Underline::None
@@ -524,6 +542,10 @@ mod tests {
             })
         }
 
+        fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo> {
+            self.glyph(text.chars().next()?, style, wide)
+        }
+
         fn glyph(&mut self, c: char, style: Style, _wide: bool) -> Option<GlyphInfo> {
             self.0.push((c, style));
             Some(GlyphInfo {
@@ -534,6 +556,16 @@ mod tests {
                 top: 0,
             })
         }
+    }
+
+    #[test]
+    fn clusters_draw_once_in_their_first_cell() {
+        let mut t = Terminal::new(10, 1, 0);
+        t.feed("e\u{301}🇻🇳x".as_bytes());
+        let mut glyphs = FakeGlyphs::default();
+        build(&frame(t.screen()), &theme(), METRICS, &mut glyphs);
+        let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
+        assert_eq!(drawn, ['e', '🇻', 'x']);
     }
 
     fn theme() -> Theme {

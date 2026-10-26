@@ -39,6 +39,11 @@ impl Flags {
         self.0 & other.0 == other.0
     }
 
+    /// Whether any of the flags in `other` is set.
+    pub const fn intersects(self, other: Flags) -> bool {
+        self.0 & other.0 != 0
+    }
+
     pub fn insert(&mut self, other: Flags) {
         self.0 |= other.0;
     }
