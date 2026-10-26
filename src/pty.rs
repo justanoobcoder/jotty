@@ -1,0 +1,264 @@
+//! Pseudo-terminal: spawns the child process and exchanges bytes with it.
+
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, ExitStatus, Stdio};
+
+/// Terminal size in cells and pixels, as reported to the child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSize {
+    pub cols: u16,
+    pub rows: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl WindowSize {
+    fn to_winsize(self) -> libc::winsize {
+        libc::winsize {
+            ws_row: self.rows,
+            ws_col: self.cols,
+            ws_xpixel: self.width,
+            ws_ypixel: self.height,
+        }
+    }
+}
+
+pub struct Pty {
+    master: File,
+    child: Child,
+    /// Input not yet accepted by the (non-blocking) master.
+    pending: VecDeque<u8>,
+}
+
+fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(ret)
+    }
+}
+
+fn set_flag(fd: BorrowedFd<'_>, get: libc::c_int, set: libc::c_int, flag: libc::c_int) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    // SAFETY: fcntl on a valid, owned descriptor.
+    unsafe {
+        let flags = check(libc::fcntl(fd, get))?;
+        check(libc::fcntl(fd, set, flags | flag))?;
+    }
+    Ok(())
+}
+
+impl Pty {
+    /// Spawns `program` with `args` on a new pseudo-terminal.
+    pub fn spawn(program: &str, args: &[String], term: &str, size: WindowSize) -> io::Result<Pty> {
+        let (mut master, mut slave) = (0, 0);
+        let winsize = size.to_winsize();
+        // SAFETY: openpty writes two descriptors into the provided pointers.
+        check(unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &winsize,
+            )
+        })?;
+        // SAFETY: openpty succeeded, so both descriptors are valid and ours.
+        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        set_flag(master.as_fd(), libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC)?;
+        set_flag(slave.as_fd(), libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC)?;
+
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::from(slave.try_clone()?))
+            .stdout(Stdio::from(slave.try_clone()?))
+            .stderr(Stdio::from(slave))
+            .env("TERM", term)
+            .env("COLORTERM", "truecolor")
+            .env("TERM_PROGRAM", "jotty")
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
+            .env_remove("LINES")
+            .env_remove("COLUMNS");
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                // Become a session leader with the pty as controlling terminal.
+                check(libc::setsid())?;
+                check(libc::ioctl(0, libc::TIOCSCTTY, 0))?;
+                // Undo signal dispositions a parent may have changed.
+                for signal in [libc::SIGCHLD, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGPIPE] {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn()?;
+
+        set_flag(master.as_fd(), libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK)?;
+        Ok(Pty {
+            master: File::from(master),
+            child,
+            pending: VecDeque::new(),
+        })
+    }
+
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.master.as_fd()
+    }
+
+    /// Reads child output. Returns `WouldBlock` when nothing is available.
+    /// Once the child has exited, Linux reports `EIO`.
+    pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.master.read(buf)
+    }
+
+    /// Queues input for the child and writes as much as possible right away.
+    pub fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        self.pending.extend(data);
+        self.flush()
+    }
+
+    /// Writes queued input. Leaves the rest queued if the pty is full.
+    pub fn flush(&mut self) -> io::Result<()> {
+        while !self.pending.is_empty() {
+            let (chunk, _) = self.pending.as_slices();
+            match self.master.write(chunk) {
+                Ok(n) => {
+                    self.pending.drain(..n);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    pub fn resize(&self, size: WindowSize) -> io::Result<()> {
+        let winsize = size.to_winsize();
+        // SAFETY: TIOCSWINSZ reads a winsize struct.
+        check(unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &winsize) })?;
+        Ok(())
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        // Closing the master sends SIGHUP to the session; make sure it goes away.
+        // SAFETY: plain kill(2) on our own child's pid.
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGHUP);
+        }
+        let _ = self.child.try_wait();
+    }
+}
+
+/// The program to run when none is given: `$SHELL`, then `/bin/sh`.
+pub fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    const SIZE: WindowSize = WindowSize {
+        cols: 80,
+        rows: 24,
+        width: 800,
+        height: 480,
+    };
+
+    /// Reads everything until the child closes the pty.
+    fn read_to_end(pty: &mut Pty) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut out = Vec::new();
+        let mut buf = [0; 4096];
+        while Instant::now() < deadline {
+            match pty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(_) => break, // EIO: the child hung up.
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn sh(script: &str) -> Pty {
+        Pty::spawn("/bin/sh", &["-c".into(), script.into()], "xterm-256color", SIZE).unwrap()
+    }
+
+    #[test]
+    fn runs_child_with_environment() {
+        let mut pty = sh("echo \"$TERM $COLORTERM\"");
+        assert!(read_to_end(&mut pty).contains("xterm-256color truecolor"));
+    }
+
+    #[test]
+    fn child_sees_window_size() {
+        let mut pty = sh("stty size");
+        assert!(read_to_end(&mut pty).contains("24 80"));
+    }
+
+    #[test]
+    fn resize_is_visible_to_child() {
+        let mut pty = sh("read _; stty size");
+        pty.resize(WindowSize { cols: 100, rows: 30, ..SIZE }).unwrap();
+        pty.write(b"\n").unwrap();
+        assert!(read_to_end(&mut pty).contains("30 100"));
+    }
+
+    #[test]
+    fn input_reaches_child() {
+        let mut pty = sh("read line; echo \"got:$line\"");
+        pty.write(b"hello\n").unwrap();
+        assert!(!pty.has_pending());
+        assert!(read_to_end(&mut pty).contains("got:hello"));
+    }
+
+    #[test]
+    fn child_has_controlling_terminal() {
+        let mut pty = sh("tty");
+        assert!(read_to_end(&mut pty).contains("/dev/pts/"));
+    }
+
+    #[test]
+    fn reports_exit_status() {
+        let mut pty = sh("exit 3");
+        read_to_end(&mut pty);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = pty.try_wait().unwrap() {
+                assert_eq!(status.code(), Some(3));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn spawn_failure_is_an_error() {
+        assert!(Pty::spawn("/nonexistent/program", &[], "xterm", SIZE).is_err());
+    }
+}
