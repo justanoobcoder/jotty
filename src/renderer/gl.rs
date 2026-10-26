@@ -10,7 +10,8 @@ use wayland_egl::WlEglSurface;
 
 use super::atlas::Packer;
 use super::{Batch, Frame, GlyphCache, GlyphInfo, Theme, VERTEX_FLOATS};
-use crate::font::{CellMetrics, Fonts, Style};
+use crate::font::{CellMetrics, Fonts, Glyph, Style, underline_glyph};
+use crate::terminal::Underline;
 
 const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31D8;
 const ATLAS_SIZE: u32 = 2048;
@@ -138,11 +139,20 @@ impl Drop for Egl {
     }
 }
 
+/// What a cached atlas entry shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GlyphKey {
+    /// A character in a style, for a one- or two-cell slot.
+    Char(char, Style, bool),
+    /// An underline spanning a number of cells.
+    Underline(Underline, u32),
+}
+
 /// Glyph bitmaps packed into one single-channel texture.
 struct Atlas {
     texture: glow::Texture,
     packer: Packer,
-    glyphs: HashMap<(char, Style, bool), Option<GlyphInfo>>,
+    glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
     /// The atlas filled up during this frame and was cleared.
     overflowed: bool,
 }
@@ -154,55 +164,76 @@ struct Uploader<'a> {
     fonts: &'a mut Fonts,
 }
 
-impl GlyphCache for Uploader<'_> {
-    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
-        if let Some(info) = self.atlas.glyphs.get(&(c, style, wide)) {
+impl Uploader<'_> {
+    /// Returns the cached entry for `key`, or creates it with `make`.
+    fn cached(
+        &mut self,
+        key: GlyphKey,
+        make: impl FnOnce(&mut Fonts) -> Option<Glyph>,
+    ) -> Option<GlyphInfo> {
+        if let Some(info) = self.atlas.glyphs.get(&key) {
             return *info;
         }
-        let info = self.fonts.rasterize(c, style, wide).and_then(|glyph| {
-            let (x, y) = match self.atlas.packer.alloc(glyph.width, glyph.height) {
-                Some(pos) => pos,
-                None => {
-                    // Start over; glyphs placed earlier this frame are stale,
-                    // so the caller redraws once more.
-                    self.atlas.packer.clear();
-                    self.atlas.glyphs.clear();
-                    self.atlas.overflowed = true;
-                    self.atlas.packer.alloc(glyph.width, glyph.height)?
-                }
-            };
-            unsafe {
-                self.gl
-                    .bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
-                self.gl.tex_sub_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    x as i32,
-                    y as i32,
-                    glyph.width as i32,
-                    glyph.height as i32,
-                    glow::RED,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&glyph.data)),
-                );
-            }
-            let (aw, ah) = self.atlas.packer.size();
-            let (aw, ah) = (aw as f32, ah as f32);
-            Some(GlyphInfo {
-                uv: [
-                    x as f32 / aw,
-                    y as f32 / ah,
-                    (x + glyph.width) as f32 / aw,
-                    (y + glyph.height) as f32 / ah,
-                ],
-                width: glyph.width,
-                height: glyph.height,
-                left: glyph.left,
-                top: glyph.top,
-            })
-        });
-        self.atlas.glyphs.insert((c, style, wide), info);
+        let info = make(self.fonts).and_then(|glyph| self.upload(&glyph));
+        self.atlas.glyphs.insert(key, info);
         info
+    }
+
+    fn upload(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
+        let (x, y) = match self.atlas.packer.alloc(glyph.width, glyph.height) {
+            Some(pos) => pos,
+            None => {
+                // Start over; glyphs placed earlier this frame are stale,
+                // so the caller redraws once more.
+                self.atlas.packer.clear();
+                self.atlas.glyphs.clear();
+                self.atlas.overflowed = true;
+                self.atlas.packer.alloc(glyph.width, glyph.height)?
+            }
+        };
+        unsafe {
+            self.gl
+                .bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
+            self.gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                x as i32,
+                y as i32,
+                glyph.width as i32,
+                glyph.height as i32,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&glyph.data)),
+            );
+        }
+        let (aw, ah) = self.atlas.packer.size();
+        let (aw, ah) = (aw as f32, ah as f32);
+        Some(GlyphInfo {
+            uv: [
+                x as f32 / aw,
+                y as f32 / ah,
+                (x + glyph.width) as f32 / aw,
+                (y + glyph.height) as f32 / ah,
+            ],
+            width: glyph.width,
+            height: glyph.height,
+            left: glyph.left,
+            top: glyph.top,
+        })
+    }
+}
+
+impl GlyphCache for Uploader<'_> {
+    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
+        self.cached(GlyphKey::Char(c, style, wide), |fonts| {
+            fonts.rasterize(c, style, wide)
+        })
+    }
+
+    fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
+        self.cached(GlyphKey::Underline(style, cells), |fonts| {
+            underline_glyph(style, fonts.metrics, cells)
+        })
     }
 }
 

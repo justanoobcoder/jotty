@@ -9,6 +9,8 @@ use unicode_width::UnicodeWidthChar;
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
 use fontconfig_sys as fc;
+
+use crate::terminal::Underline;
 use fontconfig_sys::constants::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -375,6 +377,98 @@ impl Fonts {
     }
 }
 
+/// Draws an underline of `style` spanning `cells` cells. The bitmap is as
+/// wide as the cells and positioned relative to the cell top; patterns
+/// repeat per cell so neighboring cells join seamlessly.
+pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<Glyph> {
+    let (cw, ch) = (m.width, m.height);
+    let width = cw * cells;
+    let t = m.stroke.max(1);
+    let (top, height) = match style {
+        Underline::None => return None,
+        Underline::Double => (m.underline.min(ch.saturating_sub(3 * t)), 3 * t),
+        Underline::Curly => {
+            let band = curly_band(m);
+            (
+                m.underline.saturating_sub(1).min(ch.saturating_sub(band)),
+                band,
+            )
+        }
+        _ => (m.underline.min(ch.saturating_sub(t)), t),
+    };
+    let mut data = vec![0u8; (width * height) as usize];
+    let mut fill = |x0: u32, x1: u32, y0: u32, y1: u32| {
+        for y in y0..y1.min(height) {
+            for x in x0..x1.min(width) {
+                data[(y * width + x) as usize] = 255;
+            }
+        }
+    };
+    match style {
+        Underline::None => unreachable!(),
+        Underline::Single => fill(0, width, 0, t),
+        Underline::Double => {
+            fill(0, width, 0, t);
+            fill(0, width, 2 * t, 3 * t);
+        }
+        Underline::Dotted => {
+            // Square dots, an even number per cell so the rhythm is regular.
+            let dot = t.max(2);
+            let per_cell = (cw / (2 * dot)).max(1);
+            for cell in 0..cells {
+                for i in 0..per_cell {
+                    let x = cell * cw + (2 * i + 1) * cw / (2 * per_cell) - dot / 2;
+                    fill(x, x + dot, 0, t);
+                }
+            }
+        }
+        Underline::Dashed => {
+            // One dash per cell, with a gap split over both ends.
+            for cell in 0..cells {
+                let gap = cw / 6;
+                fill(cell * cw + gap, (cell + 1) * cw - gap, 0, t);
+            }
+        }
+        Underline::Curly => draw_wave(&mut data, width, height, cw, t),
+    }
+    Some(Glyph {
+        width,
+        height,
+        left: 0,
+        top: top as i32,
+        data,
+    })
+}
+
+/// Amplitude of the curly underline, in pixels.
+fn curly_amplitude(m: CellMetrics) -> f32 {
+    (m.height as f32 / 14.0).max(1.2)
+}
+
+/// Height of the bitmap holding the curly underline.
+fn curly_band(m: CellMetrics) -> u32 {
+    (2.0 * curly_amplitude(m) + m.stroke.max(1) as f32).ceil() as u32 + 1
+}
+
+/// A sine wave with one period per cell, antialiased by the distance of
+/// each pixel center to the curve.
+fn draw_wave(data: &mut [u8], width: u32, height: u32, period: u32, thickness: u32) {
+    let amplitude = (height as f32 - 1.0 - thickness as f32) / 2.0;
+    let mid = height as f32 / 2.0;
+    let k = std::f32::consts::TAU / period as f32;
+    for x in 0..width {
+        let px = x as f32 + 0.5;
+        let y_curve = mid - amplitude * (k * px).cos();
+        let slope = amplitude * k * (k * px).sin();
+        let scale = (1.0 + slope * slope).sqrt();
+        for y in 0..height {
+            let distance = ((y as f32 + 0.5) - y_curve).abs() / scale;
+            let coverage = (thickness as f32 / 2.0 + 0.5 - distance).clamp(0.0, 1.0);
+            data[(y * width + x) as usize] = (coverage * 255.0).round() as u8;
+        }
+    }
+}
+
 /// Line weights of the four arms (up, down, left, right) of a box-drawing
 /// character: 0 none, 1 light, 2 heavy.
 fn box_arms(c: char) -> Option<[u8; 4]> {
@@ -578,6 +672,79 @@ mod tests {
         assert!((0..w).any(|x| coverage(&corner, x, h - 1) > 0));
         assert!((0..h).all(|y| coverage(&corner, 0, y) == 0));
         assert!((0..w).all(|x| coverage(&corner, x, 0) == 0));
+    }
+
+    fn columns_with_ink(glyph: &Glyph) -> Vec<u32> {
+        (0..glyph.width)
+            .filter(|&x| (0..glyph.height).any(|y| coverage(glyph, x, y) > 0))
+            .collect()
+    }
+
+    #[test]
+    fn underlines_fit_in_the_cell() {
+        let m = CellMetrics::new(9.0, 17.0, -5.0, 0.0);
+        use Underline::*;
+        for style in [Single, Double, Curly, Dotted, Dashed] {
+            for cells in [1, 2] {
+                let g = underline_glyph(style, m, cells).unwrap();
+                assert_eq!(g.width, m.width * cells, "{style:?}");
+                assert!(
+                    g.top >= 0 && g.top as u32 + g.height <= m.height,
+                    "{style:?} {g:?}"
+                );
+                assert!(g.data.iter().any(|&c| c > 0), "{style:?}");
+            }
+        }
+        assert!(underline_glyph(None, m, 1).is_none());
+    }
+
+    #[test]
+    fn solid_underlines_cover_every_column() {
+        let m = CellMetrics::new(9.0, 17.0, -5.0, 0.0);
+        for style in [Underline::Single, Underline::Double, Underline::Curly] {
+            let g = underline_glyph(style, m, 2).unwrap();
+            assert_eq!(columns_with_ink(&g).len() as u32, g.width, "{style:?}");
+        }
+        let double = underline_glyph(Underline::Double, m, 1).unwrap();
+        let rows: Vec<_> = (0..double.height)
+            .map(|y| coverage(&double, 0, y))
+            .collect();
+        assert_eq!(rows, [255, 0, 255]);
+    }
+
+    #[test]
+    fn broken_underlines_have_gaps_and_repeat_per_cell() {
+        let m = CellMetrics::new(12.0, 17.0, -5.0, 0.0);
+        for style in [Underline::Dotted, Underline::Dashed] {
+            let one = underline_glyph(style, m, 1).unwrap();
+            let two = underline_glyph(style, m, 2).unwrap();
+            let inked = columns_with_ink(&one);
+            assert!(
+                !inked.is_empty() && (inked.len() as u32) < one.width,
+                "{style:?}"
+            );
+            // The second cell repeats the first.
+            let shifted: Vec<_> = columns_with_ink(&two)
+                .into_iter()
+                .filter(|&x| x >= m.width)
+                .map(|x| x - m.width)
+                .collect();
+            assert_eq!(shifted, inked, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn curly_wave_joins_across_cells() {
+        let m = CellMetrics::new(10.0, 18.0, -4.0, 0.0);
+        let g = underline_glyph(Underline::Curly, m, 2).unwrap();
+        let column = |x: u32| {
+            (0..g.height)
+                .map(|y| coverage(&g, x, y))
+                .collect::<Vec<_>>()
+        };
+        // Same phase at the start of each cell, and it actually waves.
+        assert_eq!(column(0), column(m.width));
+        assert_ne!(column(0), column(m.width / 2));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::config::{Config, Rgb};
 use crate::font::{CellMetrics, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
-use crate::terminal::{Cell, Color, CursorShape, Flags, Screen};
+use crate::terminal::{Cell, Color, CursorShape, Flags, Screen, Underline};
 
 pub use gl::Renderer;
 
@@ -139,6 +139,9 @@ pub struct GlyphInfo {
 pub trait GlyphCache {
     /// The glyph for `c` in a one-cell slot, or a two-cell slot when `wide`.
     fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo>;
+
+    /// An underline bitmap of `style` spanning `cells` cells.
+    fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo>;
 }
 
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
@@ -276,8 +279,15 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             {
                 front.glyph(px, py, &glyph, fg);
             }
-            if cell.flags.contains(Flags::UNDERLINE) {
-                front.rect(px, py + m.underline as f32, cw * span, stroke, fg);
+            if cell.underline != Underline::None
+                && let Some(glyph) = glyphs.underline(cell.underline, span as u32)
+            {
+                let color = match cell.underline_color {
+                    Color::Default => fg,
+                    Color::Indexed(i) => theme.indexed(i),
+                    Color::Rgb(r, g, b) => Rgb(r, g, b),
+                };
+                front.glyph(px, py, &glyph, color);
             }
             if cell.flags.contains(Flags::STRIKE) {
                 let mid = (m.baseline as f32 * 0.65).round();
@@ -381,11 +391,23 @@ mod tests {
         stroke: 1,
     };
 
-    /// Records requested glyphs; every glyph is a 1×1 bitmap at the cell origin.
+    /// Records requested glyphs and underlines; every glyph is a 1×1 bitmap
+    /// at the cell origin.
     #[derive(Default)]
-    struct FakeGlyphs(Vec<(char, Style)>);
+    struct FakeGlyphs(Vec<(char, Style)>, Vec<(Underline, u32)>);
 
     impl GlyphCache for FakeGlyphs {
+        fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
+            self.1.push((style, cells));
+            Some(GlyphInfo {
+                uv: [0.0; 4],
+                width: cells,
+                height: 1,
+                left: 0,
+                top: 0,
+            })
+        }
+
         fn glyph(&mut self, c: char, style: Style, _wide: bool) -> Option<GlyphInfo> {
             self.0.push((c, style));
             Some(GlyphInfo {
@@ -586,10 +608,35 @@ mod tests {
         let mut glyphs = FakeGlyphs::default();
         let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.0, [('x', Style::BoldItalic)]);
-        // Glyph and underline.
+        assert_eq!(glyphs.1, [(Underline::Single, 1)]);
+        // Glyph and underline, the underline in the text color.
         assert_eq!(batch.quads(), 2);
-        let ((_, y), _, _) = quad_at(&batch, 1);
-        assert_eq!(y, METRICS.underline as f32);
+        assert_eq!(quad_at(&batch, 1).2, 1.0);
+        assert_eq!(quad_at(&batch, 1).1, quad_at(&batch, 0).1);
+    }
+
+    #[test]
+    fn curly_underline_with_color() {
+        let mut term = Terminal::new(6, 1, 0);
+        // Neovim's diagnostic style, on a narrow and a wide character.
+        term.feed("\x1b[?25l\x1b[4:3;58:2::255:0:0ma中".as_bytes());
+        let mut glyphs = FakeGlyphs::default();
+        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        assert_eq!(glyphs.1, [(Underline::Curly, 1), (Underline::Curly, 2)]);
+        // Each cell: glyph, then its underline in red.
+        assert_eq!(quad_at(&batch, 1).1, Rgb(255, 0, 0).to_f32());
+        assert_eq!(quad_at(&batch, 3).1, Rgb(255, 0, 0).to_f32());
+
+        // An indexed underline color resolves through the palette.
+        let mut term = Terminal::new(6, 1, 0);
+        term.feed(b"\x1b[?25l\x1b[4;58;5;4ma");
+        let batch = build(
+            &frame(term.screen()),
+            &theme(),
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(quad_at(&batch, 1).1, theme().palette[4].to_f32());
     }
 
     #[test]
