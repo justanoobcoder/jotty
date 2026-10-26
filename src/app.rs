@@ -548,7 +548,8 @@ impl App {
     }
 
     /// A selection of the whole command output under `point`, for a
-    /// double click, if that is enabled.
+    /// double click, if that is enabled. Otherwise a double click selects
+    /// a word.
     fn output_selection(&self, point: Point) -> Option<Selection> {
         if !self.config.terminal.double_click_selects_output {
             return None;
@@ -556,15 +557,16 @@ impl App {
         let screen = self.term.screen();
         let (first, last) = screen.command_output(point.line)?;
         let end = screen.row_at(last)?.cells.len().saturating_sub(1);
-        let mut selection = Selection::new(Point {
-            line: first,
-            col: 0,
-        });
-        selection.update(Point {
-            line: last,
-            col: end,
-        });
-        Some(selection)
+        Some(Selection::span(
+            Point {
+                line: first,
+                col: 0,
+            },
+            Point {
+                line: last,
+                col: end,
+            },
+        ))
     }
 
     /// Whether pointer events go to the program: it asked for them, and
@@ -1171,7 +1173,13 @@ impl PointerHandler for App {
                     });
                     // A third click starts over instead of being another double.
                     self.last_click = (!double).then_some((*time, point));
-                    if let Some(selection) = self.output_selection(point).filter(|_| double) {
+                    let expanded = double
+                        .then(|| {
+                            self.output_selection(point)
+                                .or_else(|| Selection::word(self.term.screen(), point))
+                        })
+                        .flatten();
+                    if let Some(selection) = expanded {
                         self.selection = Some(selection);
                     } else {
                         self.selection = Some(Selection::new(point));
