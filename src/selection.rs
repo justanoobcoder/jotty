@@ -93,7 +93,7 @@ fn word_bounds(screen: &Screen, at: Point) -> Option<(Point, Point)> {
 
 /// First and last cell of the line under `at`, including the rows it
 /// soft-wraps onto.
-fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
+pub fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
     let mut first = at.line;
     while screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
         first -= 1;
@@ -124,6 +124,9 @@ pub enum Unit {
     Cell,
     Word,
     Line,
+    /// Made with the keyboard (vi mode): never empty, and dragging doesn't
+    /// change it.
+    Fixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,9 @@ pub struct Selection {
     /// What the click itself selected (a word, a line, or command output);
     /// dragging extends from it and never shrinks below it.
     origin: (Point, Point),
+    /// A rectangle: the columns between the two corners on every line,
+    /// rather than running text.
+    block: bool,
 }
 
 impl Selection {
@@ -143,6 +149,7 @@ impl Selection {
             head: at,
             unit: Unit::Cell,
             origin: (at, at),
+            block: false,
         }
     }
 
@@ -154,6 +161,15 @@ impl Selection {
             head: end,
             unit,
             origin: (start, end),
+            block: false,
+        }
+    }
+
+    /// A rectangle with corners `a` and `b`, made with the keyboard.
+    pub fn block(a: Point, b: Point) -> Self {
+        Selection {
+            block: true,
+            ..Selection::span(a, b, Unit::Fixed)
         }
     }
 
@@ -179,6 +195,7 @@ impl Selection {
     pub fn extend(&mut self, screen: &Screen, to: Point) {
         let (start, end) = match self.unit {
             Unit::Cell => return self.update(to),
+            Unit::Fixed => return,
             Unit::Word => word_bounds(screen, to).unwrap_or((to, to)),
             Unit::Line => line_bounds(screen, to),
         };
@@ -246,12 +263,40 @@ impl Selection {
 
     pub fn contains(&self, p: Point) -> bool {
         let (start, end) = self.range();
+        if self.block {
+            let (left, right) = self.columns();
+            return (start.line..=end.line).contains(&p.line) && (left..=right).contains(&p.col);
+        }
         !self.is_empty() && start <= p && p <= end
+    }
+
+    /// The first and last column of a block selection.
+    fn columns(&self) -> (usize, usize) {
+        let (a, b) = (self.anchor.col, self.head.col);
+        (a.min(b), a.max(b))
     }
 
     pub fn text(&self, screen: &Screen) -> String {
         let (start, end) = self.range();
         let mut out = String::new();
+        if self.block {
+            let (left, right) = self.columns();
+            for line in start.line..=end.line {
+                let mut text = String::new();
+                if let Some(row) = screen.row_at(line) {
+                    for cell in row.cells.iter().take(right + 1).skip(left) {
+                        if !cell.flags.contains(Flags::WIDE_SPACER) {
+                            screen.cell_text(cell, &mut text);
+                        }
+                    }
+                }
+                out.push_str(text.trim_end_matches(' '));
+                if line != end.line {
+                    out.push('\n');
+                }
+            }
+            return out;
+        }
         for line in start.line..=end.line {
             let Some(row) = screen.row_at(line) else {
                 continue;
@@ -464,6 +509,19 @@ mod tests {
         let mut s = Selection::new(p(0, 0));
         s.update(p(0, 10));
         assert_eq!(s.text(t.screen()), "ca\u{301}fe\u{301} 🇻🇳!");
+    }
+
+    #[test]
+    fn block_selection() {
+        let mut t = Terminal::new(10, 3, 10);
+        t.feed(b"abcdef\r\nghijkl\r\nmn");
+        let s = Selection::block(p(2, 3), p(0, 1));
+        assert_eq!(s.text(t.screen()), "bcd\nhij\nn");
+        assert!(s.contains(p(1, 2)));
+        assert!(!s.contains(p(1, 4)));
+        assert!(!s.contains(p(1, 0)));
+        // A single cell is still selected.
+        assert!(!Selection::block(p(0, 0), p(0, 0)).is_empty());
     }
 
     #[test]
