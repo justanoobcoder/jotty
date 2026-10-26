@@ -1,4 +1,12 @@
-//! Shelf packing of glyph bitmaps into a single texture.
+//! The glyph atlas: glyph bitmaps packed into one single-channel image,
+//! rasterized on demand while a frame is built. Where the pixels live (a GL
+//! texture or plain memory) is up to the renderer.
+
+use std::collections::HashMap;
+
+use super::{GlyphCache, GlyphInfo};
+use crate::font::{Fonts, Glyph, Style, underline_glyph};
+use crate::terminal::Underline;
 
 /// Packs rectangles left to right into rows ("shelves") as tall as their
 /// tallest member. Good enough for glyphs, which are of similar height.
@@ -51,6 +59,128 @@ impl Packer {
 
     pub fn clear(&mut self) {
         *self = Packer::new(self.width, self.height);
+    }
+}
+
+/// What a cached atlas entry shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GlyphKey {
+    /// A character in a style, for a one- or two-cell slot.
+    Char(char, Style, bool),
+    /// An underline spanning a number of cells.
+    Underline(Underline, u32),
+}
+
+/// Placement of glyphs in the atlas image, and which glyphs it holds.
+#[derive(Debug)]
+pub struct Atlas {
+    packer: Packer,
+    glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
+    /// The atlas filled up and was cleared since the last `take_overflowed`.
+    overflowed: bool,
+}
+
+impl Atlas {
+    pub fn new(size: u32) -> Self {
+        Atlas {
+            packer: Packer::new(size, size),
+            glyphs: HashMap::new(),
+            overflowed: false,
+        }
+    }
+
+    pub fn size(&self) -> u32 {
+        self.packer.size().0
+    }
+
+    /// Forgets all glyphs, after a font size change.
+    pub fn clear(&mut self) {
+        self.packer.clear();
+        self.glyphs.clear();
+    }
+
+    /// Whether the atlas overflowed since the last call. Glyphs placed
+    /// before that are stale, so the frame must be drawn again.
+    pub fn take_overflowed(&mut self) -> bool {
+        std::mem::take(&mut self.overflowed)
+    }
+
+    /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
+    /// hands each new bitmap to `store` with its position in the atlas.
+    pub fn cache<'a, S: FnMut(u32, u32, &Glyph)>(
+        &'a mut self,
+        fonts: &'a mut Fonts,
+        store: S,
+    ) -> Cache<'a, S> {
+        Cache {
+            atlas: self,
+            fonts,
+            store,
+        }
+    }
+}
+
+pub struct Cache<'a, S> {
+    atlas: &'a mut Atlas,
+    fonts: &'a mut Fonts,
+    store: S,
+}
+
+impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
+    /// Returns the cached entry for `key`, or creates it with `make`.
+    fn cached(
+        &mut self,
+        key: GlyphKey,
+        make: impl FnOnce(&mut Fonts) -> Option<Glyph>,
+    ) -> Option<GlyphInfo> {
+        if let Some(info) = self.atlas.glyphs.get(&key) {
+            return *info;
+        }
+        let info = make(self.fonts).and_then(|glyph| self.place(&glyph));
+        self.atlas.glyphs.insert(key, info);
+        info
+    }
+
+    fn place(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
+        let atlas = &mut *self.atlas;
+        let (x, y) = match atlas.packer.alloc(glyph.width, glyph.height) {
+            Some(pos) => pos,
+            None => {
+                // Start over; glyphs placed earlier this frame are stale,
+                // so the caller redraws once more.
+                atlas.clear();
+                atlas.overflowed = true;
+                atlas.packer.alloc(glyph.width, glyph.height)?
+            }
+        };
+        (self.store)(x, y, glyph);
+        let size = atlas.size() as f32;
+        Some(GlyphInfo {
+            uv: [
+                x as f32 / size,
+                y as f32 / size,
+                (x + glyph.width) as f32 / size,
+                (y + glyph.height) as f32 / size,
+            ],
+            width: glyph.width,
+            height: glyph.height,
+            left: glyph.left,
+            top: glyph.top,
+        })
+    }
+}
+
+impl<S: FnMut(u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
+    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
+        self.cached(GlyphKey::Char(c, style, wide), |fonts| {
+            fonts.rasterize(c, style, wide)
+        })
+    }
+
+    fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
+        self.cached(GlyphKey::Underline(style, cells), |fonts| {
+            underline_glyph(style, fonts.metrics, cells)
+        })
     }
 }
 

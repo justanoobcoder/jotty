@@ -1,6 +1,5 @@
 //! OpenGL ES 3 rendering on a Wayland EGL surface.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use glow::HasContext;
@@ -8,10 +7,9 @@ use khronos_egl as egl;
 use wayland_client::backend::ObjectId;
 use wayland_egl::WlEglSurface;
 
-use super::atlas::Packer;
-use super::{Batch, Frame, GlyphCache, GlyphInfo, Theme, VERTEX_FLOATS};
-use crate::font::{CellMetrics, Fonts, Glyph, Style, underline_glyph};
-use crate::terminal::Underline;
+use super::atlas::Atlas;
+use super::{Batch, Frame, Theme, VERTEX_FLOATS};
+use crate::font::{CellMetrics, Fonts, Glyph};
 
 const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31D8;
 const ATLAS_SIZE: u32 = 2048;
@@ -139,104 +137,6 @@ impl Drop for Egl {
     }
 }
 
-/// What a cached atlas entry shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum GlyphKey {
-    /// A character in a style, for a one- or two-cell slot.
-    Char(char, Style, bool),
-    /// An underline spanning a number of cells.
-    Underline(Underline, u32),
-}
-
-/// Glyph bitmaps packed into one single-channel texture.
-struct Atlas {
-    texture: glow::Texture,
-    packer: Packer,
-    glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
-    /// The atlas filled up during this frame and was cleared.
-    overflowed: bool,
-}
-
-/// Rasterizes and uploads glyphs on demand while a frame is built.
-struct Uploader<'a> {
-    gl: &'a glow::Context,
-    atlas: &'a mut Atlas,
-    fonts: &'a mut Fonts,
-}
-
-impl Uploader<'_> {
-    /// Returns the cached entry for `key`, or creates it with `make`.
-    fn cached(
-        &mut self,
-        key: GlyphKey,
-        make: impl FnOnce(&mut Fonts) -> Option<Glyph>,
-    ) -> Option<GlyphInfo> {
-        if let Some(info) = self.atlas.glyphs.get(&key) {
-            return *info;
-        }
-        let info = make(self.fonts).and_then(|glyph| self.upload(&glyph));
-        self.atlas.glyphs.insert(key, info);
-        info
-    }
-
-    fn upload(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
-        let (x, y) = match self.atlas.packer.alloc(glyph.width, glyph.height) {
-            Some(pos) => pos,
-            None => {
-                // Start over; glyphs placed earlier this frame are stale,
-                // so the caller redraws once more.
-                self.atlas.packer.clear();
-                self.atlas.glyphs.clear();
-                self.atlas.overflowed = true;
-                self.atlas.packer.alloc(glyph.width, glyph.height)?
-            }
-        };
-        unsafe {
-            self.gl
-                .bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
-            self.gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                x as i32,
-                y as i32,
-                glyph.width as i32,
-                glyph.height as i32,
-                glow::RED,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&glyph.data)),
-            );
-        }
-        let (aw, ah) = self.atlas.packer.size();
-        let (aw, ah) = (aw as f32, ah as f32);
-        Some(GlyphInfo {
-            uv: [
-                x as f32 / aw,
-                y as f32 / ah,
-                (x + glyph.width) as f32 / aw,
-                (y + glyph.height) as f32 / ah,
-            ],
-            width: glyph.width,
-            height: glyph.height,
-            left: glyph.left,
-            top: glyph.top,
-        })
-    }
-}
-
-impl GlyphCache for Uploader<'_> {
-    fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
-        self.cached(GlyphKey::Char(c, style, wide), |fonts| {
-            fonts.rasterize(c, style, wide)
-        })
-    }
-
-    fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
-        self.cached(GlyphKey::Underline(style, cells), |fonts| {
-            underline_glyph(style, fonts.metrics, cells)
-        })
-    }
-}
-
 pub struct Renderer {
     // Field order matters: GL objects must go before the EGL context.
     gl: glow::Context,
@@ -244,6 +144,7 @@ pub struct Renderer {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     viewport_uniform: Option<glow::UniformLocation>,
+    texture: glow::Texture,
     atlas: Atlas,
     egl: Egl,
     pub fonts: Fonts,
@@ -346,12 +247,8 @@ impl Renderer {
                 vao,
                 vbo,
                 viewport_uniform,
-                atlas: Atlas {
-                    texture,
-                    packer: Packer::new(ATLAS_SIZE, ATLAS_SIZE),
-                    glyphs: HashMap::new(),
-                    overflowed: false,
-                },
+                texture,
+                atlas: Atlas::new(ATLAS_SIZE),
                 egl,
                 fonts,
                 theme,
@@ -376,25 +273,36 @@ impl Renderer {
 
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
-        self.atlas.packer.clear();
-        self.atlas.glyphs.clear();
+        self.atlas.clear();
     }
 
     /// Draws and presents a frame (this commits the surface). Returns
     /// whether another frame is needed because the glyph atlas overflowed.
     pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
-        self.atlas.overflowed = false;
         let metrics = self.fonts.metrics;
-        let batch: Batch = {
-            let mut uploader = Uploader {
-                gl: &self.gl,
-                atlas: &mut self.atlas,
-                fonts: &mut self.fonts,
-            };
-            super::build(frame, &self.theme, metrics, &mut uploader)
-        };
-
         let gl = &self.gl;
+        let texture = self.texture;
+        let upload = |x: u32, y: u32, glyph: &Glyph| unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                x as i32,
+                y as i32,
+                glyph.width as i32,
+                glyph.height as i32,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&glyph.data)),
+            );
+        };
+        let batch: Batch = super::build(
+            frame,
+            &self.theme,
+            metrics,
+            &mut self.atlas.cache(&mut self.fonts, upload),
+        );
+
         let (w, h) = self.size;
         let [r, g, b] = self.theme.background.to_f32();
         let a = self.theme.opacity;
@@ -413,7 +321,7 @@ impl Renderer {
             );
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas.texture));
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.draw_arrays(
                 glow::TRIANGLES,
                 0,
@@ -424,14 +332,14 @@ impl Renderer {
             .api
             .swap_buffers(self.egl.display, self.egl.surface)
             .map_err(|e| format!("eglSwapBuffers: {e}"))?;
-        Ok(self.atlas.overflowed)
+        Ok(self.atlas.take_overflowed())
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
-            self.gl.delete_texture(self.atlas.texture);
+            self.gl.delete_texture(self.texture);
             self.gl.delete_buffer(self.vbo);
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_program(self.program);
