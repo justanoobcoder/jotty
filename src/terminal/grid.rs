@@ -18,7 +18,6 @@ impl Flags {
     pub const BOLD: Flags = Flags(1 << 0);
     pub const DIM: Flags = Flags(1 << 1);
     pub const ITALIC: Flags = Flags(1 << 2);
-    pub const UNDERLINE: Flags = Flags(1 << 3);
     pub const BLINK: Flags = Flags(1 << 4);
     pub const INVERSE: Flags = Flags(1 << 5);
     pub const HIDDEN: Flags = Flags(1 << 6);
@@ -53,12 +52,27 @@ impl std::ops::BitOr for Flags {
     }
 }
 
+/// Underline style, as set by SGR 4 and its `4:n` sub-parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Underline {
+    #[default]
+    None,
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub c: char,
     pub fg: Color,
     pub bg: Color,
     pub flags: Flags,
+    pub underline: Underline,
+    /// Underline color (SGR 58); `Default` means the text color.
+    pub underline_color: Color,
 }
 
 impl Default for Cell {
@@ -68,6 +82,8 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             flags: Flags::empty(),
+            underline: Underline::None,
+            underline_color: Color::Default,
         }
     }
 }
@@ -295,11 +311,14 @@ mod tests {
             fg: Color::Indexed(1),
             bg: Color::Indexed(2),
             flags: Flags::BOLD,
+            underline: Underline::Curly,
+            underline_color: Color::Indexed(3),
         };
         let blank = Cell::blank(&template);
         assert_eq!(blank.c, ' ');
         assert_eq!(blank.fg, Color::Default);
         assert_eq!(blank.bg, Color::Indexed(2));
         assert_eq!(blank.flags, Flags::empty());
+        assert_eq!(blank.underline, Underline::None);
     }
 }

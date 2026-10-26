@@ -9,7 +9,7 @@ pub mod grid;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
-pub use grid::{Cell, Color, Flags, Grid, Row};
+pub use grid::{Cell, Color, Flags, Grid, Row, Underline};
 
 pub struct Terminal {
     parser: vte::Parser,
@@ -796,21 +796,27 @@ impl Screen {
                 1 => t.flags.insert(Flags::BOLD),
                 2 => t.flags.insert(Flags::DIM),
                 3 => t.flags.insert(Flags::ITALIC),
-                4 => match param.get(1) {
-                    Some(0) => t.flags.remove(Flags::UNDERLINE),
-                    _ => t.flags.insert(Flags::UNDERLINE),
-                },
+                4 => {
+                    t.underline = match param.get(1) {
+                        Some(0) => Underline::None,
+                        Some(2) => Underline::Double,
+                        Some(3) => Underline::Curly,
+                        Some(4) => Underline::Dotted,
+                        Some(5) => Underline::Dashed,
+                        _ => Underline::Single,
+                    }
+                }
                 5 | 6 => t.flags.insert(Flags::BLINK),
                 7 => t.flags.insert(Flags::INVERSE),
                 8 => t.flags.insert(Flags::HIDDEN),
                 9 => t.flags.insert(Flags::STRIKE),
-                21 => t.flags.insert(Flags::UNDERLINE),
+                21 => t.underline = Underline::Double,
                 22 => {
                     t.flags.remove(Flags::BOLD);
                     t.flags.remove(Flags::DIM);
                 }
                 23 => t.flags.remove(Flags::ITALIC),
-                24 => t.flags.remove(Flags::UNDERLINE),
+                24 => t.underline = Underline::None,
                 25 => t.flags.remove(Flags::BLINK),
                 27 => t.flags.remove(Flags::INVERSE),
                 28 => t.flags.remove(Flags::HIDDEN),
@@ -829,10 +835,12 @@ impl Screen {
                     }
                 }
                 49 => t.bg = Color::Default,
-                // Underline color is parsed so its arguments are skipped.
                 58 => {
-                    extended_color(param, &mut iter);
+                    if let Some(color) = extended_color(param, &mut iter) {
+                        t.underline_color = color;
+                    }
                 }
+                59 => t.underline_color = Color::Default,
                 n @ 90..=97 => t.fg = Color::Indexed((n - 90 + 8) as u8),
                 n @ 100..=107 => t.bg = Color::Indexed((n - 100 + 8) as u8),
                 n => log::debug!("unhandled SGR {n}"),

@@ -207,10 +207,7 @@ fn sgr_attributes() {
     let mut t = term(10, 1);
     t.feed(b"\x1b[1;3;4;31;42ma\x1b[22;39mb\x1b[0mc");
     let a = cell(&t, 0, 0);
-    assert!(
-        a.flags
-            .contains(Flags::BOLD | Flags::ITALIC | Flags::UNDERLINE)
-    );
+    assert!(a.flags.contains(Flags::BOLD | Flags::ITALIC));
     assert_eq!(a.fg, Color::Indexed(1));
     assert_eq!(a.bg, Color::Indexed(2));
     let b = cell(&t, 0, 1);
@@ -538,4 +535,29 @@ fn color_specifications() {
     assert_eq!(parse_color(b"rgb:1/2/3/4"), None);
     assert_eq!(parse_color(b"#12345"), None);
     assert_eq!(parse_color(b"red"), None);
+}
+
+#[test]
+fn underline_styles() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b[4ma\x1b[4:3mb\x1b[4:2mc\x1b[21md\x1b[4:4me\x1b[4:5mf\x1b[4:0mg\x1b[4m\x1b[24mh");
+    let styles: Vec<_> = (0..8).map(|c| cell(&t, 0, c).underline).collect();
+    use Underline::*;
+    assert_eq!(
+        styles,
+        [Single, Curly, Double, Double, Dotted, Dashed, None, None]
+    );
+}
+
+#[test]
+fn underline_color() {
+    let mut t = term(10, 1);
+    // Neovim's colon form, the semicolon form, then reset.
+    t.feed(b"\x1b[4:3;58:2::255:0:0ma\x1b[58;5;4mb\x1b[59mc\x1b[0md");
+    assert_eq!(cell(&t, 0, 0).underline_color, Color::Rgb(255, 0, 0));
+    assert_eq!(cell(&t, 0, 1).underline_color, Color::Indexed(4));
+    assert_eq!(cell(&t, 0, 2).underline_color, Color::Default);
+    assert_eq!(cell(&t, 0, 3).underline, Underline::None);
+    // The color doesn't leak into the text color.
+    assert_eq!(cell(&t, 0, 0).fg, Color::Default);
 }
