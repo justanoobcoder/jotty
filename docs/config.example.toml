@@ -93,3 +93,13 @@ scroll_to_bottom = ["shift+end"]
 font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add"]
 font_smaller = ["ctrl+minus", "ctrl+kp_subtract"]
 font_reset = ["ctrl+0", "ctrl+kp_0"]
+
+[url]
+# Ctrl+click opens the link under the pointer: a hyperlink a program set
+# (OSC 8), or a URL in the text. Holding Ctrl underlines it first.
+# The command that opens a link; the link is added as the last argument.
+launcher = ["xdg-open"]
+# Regular expressions (Rust regex syntax) for more kinds of links, matched
+# against the line under the pointer. The matched text goes to the launcher.
+# regex = ['\bJIRA-\d+\b']
+regex = []

@@ -390,6 +390,7 @@ dependencies = [
  "khronos-egl",
  "libc",
  "log",
+ "regex",
  "serde",
  "smithay-client-toolkit",
  "toml",

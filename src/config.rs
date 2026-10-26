@@ -18,6 +18,25 @@ pub struct Config {
     pub colors: ColorConfig,
     /// Key bindings for jotty's actions; see `keybinds.rs`.
     pub keybinds: Keybinds,
+    pub url: UrlConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UrlConfig {
+    /// Command that opens a link; the link is appended as its last argument.
+    pub launcher: Vec<String>,
+    /// Regular expressions for more kinds of links, besides URLs.
+    pub regex: Vec<String>,
+}
+
+impl Default for UrlConfig {
+    fn default() -> Self {
+        Self {
+            launcher: vec!["xdg-open".into()],
+            regex: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

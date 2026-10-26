@@ -275,6 +275,8 @@ pub struct Frame<'a> {
     pub focused: bool,
     /// Grid origin in physical pixels.
     pub origin: (u32, u32),
+    /// First and last cell of a link to underline (Ctrl is held over it).
+    pub link: Option<(Point, Point)>,
 }
 
 fn style_of(cell: &Cell) -> Style {
@@ -353,6 +355,14 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                     Color::Rgb(r, g, b) => Rgb(r, g, b),
                 };
                 front.glyph(px, py, &glyph, color);
+            }
+            let point = Point { line, col: x };
+            if cell.underline == Underline::None
+                && frame
+                    .link
+                    .is_some_and(|(start, end)| start <= point && point <= end)
+            {
+                front.rect(px, py + m.underline as f32, cw * span, stroke, fg);
             }
             if cell.flags.contains(Flags::STRIKE) {
                 let mid = (m.baseline as f32 * 0.65).round();
@@ -510,6 +520,7 @@ mod tests {
             preedit: None,
             focused: true,
             origin: (0, 0),
+            link: None,
         }
     }
 

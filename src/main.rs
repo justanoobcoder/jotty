@@ -7,6 +7,7 @@ mod font;
 mod ime;
 mod input;
 mod keybinds;
+mod links;
 mod pty;
 mod renderer;
 mod selection;

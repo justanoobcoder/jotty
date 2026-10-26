@@ -75,6 +75,7 @@ use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
 use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::Action;
+use crate::links::{Detector, Link};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::selection::{Point, Selection, Unit};
@@ -163,6 +164,11 @@ pub struct App {
     mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
     selecting: bool,
+    links: Detector,
+    /// The link under the pointer while Ctrl is held, drawn underlined.
+    hovered_link: Option<Link>,
+    pointer_inside: bool,
+    conn: Connection,
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
@@ -258,6 +264,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     };
     window.commit();
 
+    let links = Detector::new(&config.url.regex).map_err(|e| format!("invalid url.regex: {e}"))?;
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
     let gpu = match config.window.renderer {
@@ -380,6 +387,10 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         mouse_cell: None,
         selection: None,
         selecting: false,
+        links,
+        hovered_link: None,
+        pointer_inside: false,
+        conn: conn.clone(),
         last_click: None,
         data_device: None,
         copy_source: None,
@@ -522,6 +533,9 @@ impl App {
             self.ring_bell();
         }
         if dirty {
+            if self.hovered_link.is_some() {
+                self.update_hovered_link();
+            }
             let screen = self.term.screen();
             if let (Some(selection), Some((rows, scrolled, alt))) = (&mut self.selection, selected)
             {
@@ -609,6 +623,7 @@ impl App {
             preedit: self.ime.preedit.as_ref(),
             focused: self.focused,
             origin: (pad, pad),
+            link: self.hovered_link.as_ref().map(|l| (l.start, l.end)),
         };
         match self.renderer.draw(&frame) {
             Ok(again) => self.dirty |= again,
@@ -736,6 +751,53 @@ impl App {
             },
             Unit::Word,
         ))
+    }
+
+    /// Underlines the link under the pointer while Ctrl is held, and shows
+    /// a hand pointer over it.
+    fn update_hovered_link(&mut self) {
+        let link = if self.modifiers.ctrl && self.pointer_inside && !self.reporting_mouse() {
+            self.links
+                .link_at(self.term.screen(), self.point_at(self.pointer_pos))
+        } else {
+            None
+        };
+        if link == self.hovered_link {
+            return;
+        }
+        let icon = if link.is_some() {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Text
+        };
+        if let Some(pointer) = &self.pointer
+            && let Err(e) = pointer.set_cursor(&self.conn, icon)
+        {
+            log::debug!("cannot set cursor: {e}");
+        }
+        self.hovered_link = link;
+        self.request_redraw();
+    }
+
+    /// Opens a link with the configured launcher, without waiting for it.
+    fn open_link(&self, target: &str) {
+        let Some((program, args)) = self.config.url.launcher.split_first() else {
+            return;
+        };
+        log::info!("opening {target}");
+        let child = std::process::Command::new(program)
+            .args(args)
+            .arg(target)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        match child {
+            // Reap it in the background so it doesn't linger as a zombie.
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => log::warn!("cannot run {program}: {e}"),
+        }
     }
 
     /// Whether pointer events go to the program: it asked for them, and
@@ -1308,6 +1370,7 @@ impl KeyboardHandler for App {
     ) {
         self.modifiers = modifiers;
         self.layout = layout;
+        self.update_hovered_link();
     }
 
     fn update_keymap(
@@ -1343,13 +1406,24 @@ impl PointerHandler for App {
                 continue;
             }
             self.pointer_pos = event.position;
+            if matches!(event.kind, PointerEventKind::Motion { .. })
+                && (self.modifiers.ctrl || self.hovered_link.is_some())
+            {
+                self.update_hovered_link();
+            }
             match &event.kind {
                 PointerEventKind::Enter { .. } => {
+                    self.pointer_inside = true;
                     if let Some(pointer) = &self.pointer
                         && let Err(e) = pointer.set_cursor(conn, CursorIcon::Text)
                     {
                         log::debug!("cannot set cursor: {e}");
                     }
+                    self.update_hovered_link();
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.pointer_inside = false;
+                    self.update_hovered_link();
                 }
                 PointerEventKind::Motion { .. } if self.reporting_mouse() => {
                     self.report_mouse(MouseAction::Motion(self.mouse_button), event.position);
@@ -1389,6 +1463,16 @@ impl PointerHandler for App {
                     ..
                 } if self.reporting_mouse() => {
                     self.report_wheel(vertical, horizontal, event.position)
+                }
+                PointerEventKind::Press {
+                    button: BTN_LEFT,
+                    serial,
+                    ..
+                } if self.hovered_link.is_some() => {
+                    self.last_serial = *serial;
+                    if let Some(link) = &self.hovered_link {
+                        self.open_link(&link.target);
+                    }
                 }
                 PointerEventKind::Press {
                     button: BTN_LEFT,
