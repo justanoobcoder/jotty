@@ -47,6 +47,7 @@ The tests don't need a compositor, GPU or display:
 | `ime.rs` | Surrounding text from rows (including wide and multibyte characters), byte limits, delete-to-keys, event ordering |
 | `renderer/mod.rs` | Color resolution, cursor styles, decorations, selection and preedit drawing, through a fake glyph cache |
 | `renderer/atlas.rs` | Packing without overlap |
+| `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, clipping |
 | `font.rs` | Cell metrics, box drawing, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
 | `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text |
 
@@ -92,8 +93,9 @@ connected.
 - `RUST_LOG=debug` logs every escape sequence jotty doesn't handle.
 - `WAYLAND_DEBUG=1` traces all Wayland messages. Combine it with `grep
   text_input` to debug the input method.
-- To force software rendering on NixOS with an NVIDIA GPU, set
-  `LIBGL_ALWAYS_SOFTWARE=1` and
+- To test the CPU renderer, set `renderer = "cpu"` in `[window]`. To test
+  the GL renderer on Mesa's software rasterizer instead (on NixOS with an
+  NVIDIA GPU), set `LIBGL_ALWAYS_SOFTWARE=1` and
   `__EGL_VENDOR_LIBRARY_FILENAMES=/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json`.
 - To see what jotty receives from a program, record its output with
   `script -q /tmp/log` in another terminal, or run `cat -v` inside jotty.

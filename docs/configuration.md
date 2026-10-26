@@ -52,6 +52,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `opacity` | float | `1.0` | Background opacity, 0.0–1.0. Text, the cursor and the selection stay opaque. |
 | `transparent_cell_backgrounds` | bool | `false` | Also apply `opacity` to cells with an explicit background color. |
 | `blur` | bool | `false` | Blur what is behind the window, if the compositor supports `ext-background-effect-v1`. |
+| `renderer` | string | `"gpu"` | `"gpu"` draws with OpenGL ES; `"cpu"` draws in software. See [Renderer](#renderer). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
 
@@ -78,6 +79,26 @@ text readable over busy wallpapers. It needs the `ext-background-effect-v1`
 protocol; without it, jotty logs a warning and stays unblurred. When
 `opacity` is 1.0, jotty marks the window opaque so the compositor can skip
 drawing what is behind it.
+
+### Renderer
+
+`renderer = "gpu"` draws with OpenGL ES 3 through EGL. Loading OpenGL loads
+the GPU driver into the process, which costs about 100 MiB of memory with
+the NVIDIA driver, plus as much again for Mesa if both are installed (EGL
+loads every installed driver before picking one).
+
+`renderer = "cpu"` draws into shared-memory buffers on the CPU, as foot does.
+No GPU driver is loaded, so jotty uses about 20 MiB. A terminal is a grid of
+text, so drawing it on the CPU is fast enough for typing and most output.
+It redraws the whole window every frame, though, so on a large high-DPI
+window, fast-scrolling output costs more CPU than with `"gpu"`.
+
+If the GPU renderer can't start (no EGL or OpenGL ES 3), jotty logs a
+warning and uses the CPU renderer.
+
+To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
+`__EGL_VENDOR_LIBRARY_FILENAMES=/run/opengl-driver/share/glvnd/egl_vendor.d/10_nvidia.json`
+(NixOS path).
 
 ## `[terminal]`
 

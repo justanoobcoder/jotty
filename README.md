@@ -10,9 +10,11 @@ A minimal terminal emulator for Wayland, written in Rust.
   fcitx5 or IBus can show preedit text inline, commit text, and delete text
   around the cursor (useful for Vietnamese, Chinese, Japanese, Korean, and so
   on).
-- **GPU rendering.** It draws with OpenGL ES 3 on an EGL surface: one draw
-  call per frame, glyphs cached in a texture atlas, and frames paced by the
-  compositor's frame callbacks.
+- **GPU or CPU rendering.** By default it draws with OpenGL ES 3 on an EGL
+  surface: one draw call per frame, glyphs cached in a texture atlas, and
+  frames paced by the compositor's frame callbacks. With
+  `renderer = "cpu"` it draws in software instead, using about 20 MiB of
+  memory instead of the 100+ MiB a GPU driver takes.
 - **Minimal.** About 6k lines of Rust, one TOML config file, no tabs or
   splits. Use your compositor or tmux for those.
 

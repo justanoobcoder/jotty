@@ -2,7 +2,8 @@
 
 jotty is a single-threaded, event-driven program. One `calloop` event loop
 waits on the Wayland socket and the PTY. The terminal state is plain data,
-and the renderer turns it into vertices once per frame.
+and the renderer turns it into quads once per frame, drawn with OpenGL ES or
+on the CPU.
 
 ```
              ┌────────────── calloop event loop (app.rs) ───────────────┐
@@ -13,7 +14,8 @@ and the renderer turns it into vertices once per frame.
              │                         ▼                                │
              │                terminal/ (vte parser → Screen)           │
              │                         │ dirty                          │
-             │  frame callback ──► renderer/ build() ──► gl.rs ──► EGL  │
+             │  frame callback ──► renderer/ build() ─┬► gl.rs ──► EGL  │
+             │                                        └► software ► shm │
              │                         ▲                                │
              │                     font.rs (fontconfig + ab_glyph)      │
              └──────────────────────────────────────────────────────────┘
@@ -34,9 +36,10 @@ and the renderer turns it into vertices once per frame.
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
 | `selection.rs` | Text selection in history-aware coordinates | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), box drawing | no |
-| `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection | no |
-| `renderer/atlas.rs` | Shelf packing for the glyph texture | no |
+| `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |
+| `renderer/atlas.rs` | Glyph atlas: shelf packing and the on-demand glyph cache | no |
 | `renderer/gl.rs` | EGL context, shaders, atlas texture, draw and swap | yes |
+| `renderer/software.rs` | CPU drawing of the batch into `wl_shm` buffers | `wl_shm` only; drawing is unit-tested |
 | `app.rs` | Wayland objects and handlers, the event loop, gluing everything | yes |
 
 Everything except `renderer/gl.rs` and `app.rs` is unit-tested without a
@@ -149,7 +152,8 @@ cursor matters.
 
 ## Rendering (`renderer/`, `font.rs`)
 
-Rendering has two stages, and only the second touches the GPU.
+Rendering has two stages. The first is the same for both backends; the
+second draws with the GPU (`renderer = "gpu"`) or the CPU (`"cpu"`).
 
 **1. Building the frame** (`renderer::build`) walks the visible rows (from
 history when scrolled back) and emits quads into a `Batch`: cell backgrounds
@@ -162,8 +166,9 @@ repeat once per cell, so a curly underline is a continuous wave. Colors are reso
 ramp, bold-is-bright, dim, inverse, hidden, selection and block cursor.
 
 Glyphs come through the `GlyphCache` trait. Tests pass in a fake
-implementation; at run time `gl.rs` provides one that rasterizes on first use
-and uploads into the atlas.
+implementation; at run time `atlas::Atlas` provides one that rasterizes on
+first use, places the bitmap in the atlas, and hands it to the backend to
+store (a texture upload, or a copy into memory).
 
 **2. Drawing** (`renderer::gl`) uploads the batch into one vertex buffer and
 issues one `glDrawArrays`. A vertex has position, texture coordinate, color,
@@ -175,11 +180,22 @@ compositor blends the window: the clear color is the background at
 single-channel (`R8`) texture sampled with `NEAREST`, since glyphs sit on
 whole pixels. When it fills up, it is cleared and the frame is redrawn.
 
+**2b. Drawing on the CPU** (`renderer::software`) paints the same batch
+into an ARGB8888 `wl_shm` buffer: it clears to the background, then fills
+each quad, blending glyph coverage from a 1024×1024 atlas in memory. Quads
+are axis-aligned and glyphs 1:1, so this is a plain blit with
+premultiplied-alpha blending, and the result matches the GL output pixel
+for pixel. Buffers come from SCTK's `SlotPool`; a buffer the compositor
+still holds is skipped, so usually two alternate. Each frame redraws and
+damages the whole buffer, then attaches and commits it.
+
 **Fonts.** fontconfig picks the regular, bold, italic and bold-italic faces,
 and finds fallback faces per character (excluding color fonts), with the
 results cached. `ab_glyph` (built on `ttf-parser`) rasterizes TrueType, CFF
 and CFF2 outlines; for variable fonts, the `wght` axis is set to 400 or 700.
 Cell size comes from the primary face's advance width and line metrics.
+Font files are memory-mapped rather than read, so a large fallback font
+(Noto Sans CJK is over 30 MB) only takes memory for the parts in use.
 Box-drawing lines and block elements are drawn procedurally to fill the cell
 exactly, so they join without gaps.
 
@@ -195,7 +211,8 @@ The window is an `xdg_toplevel` that asks for server-side decorations. The
 first configure sets the logical size; the grid size is
 `(physical size − 2·padding) / cell size`. Integer output scales come from
 SCTK's `scale_factor_changed`. jotty sets the buffer scale, re-rasterizes the
-font at `size × 96/72 × scale` pixels per em, resizes the EGL window, and
+font at `size × 96/72 × scale` pixels per em, resizes the EGL window (or
+drops the shared-memory buffers of the old size), and
 reports the new grid size to the child with `TIOCSWINSZ`.
 
 For transparency, `app.rs` also sets a whole-surface opaque region when the
