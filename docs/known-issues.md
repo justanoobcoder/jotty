@@ -6,13 +6,17 @@ nothing surprises you.
 ## Text and fonts
 
 - **No combining characters or grapheme clusters.** Zero-width code points
-  are dropped: combining accents (`e` + U+0301), ZWJ emoji sequences,
-  variation selectors. Precomposed text, including all Vietnamese letters as
+  are dropped: combining accents (`e` + U+0301), ZWJ emoji sequences, and
+  variation selectors other than VS16. VS16 (U+FE0F, emoji presentation)
+  widens the preceding character to two cells when it has an emoji form,
+  so prompts such as starship's stay aligned. Precomposed text, including all Vietnamese letters as
   input methods produce them, displays correctly.
 - **No shaping or ligatures.** Each character is drawn on its own, so Arabic,
   Indic scripts and programming ligatures don't render properly.
 - **No color emoji.** Bitmap and color fonts (CBDT/COLR, such as Noto Color
-  Emoji) aren't supported and are skipped during fallback. Emoji appear as
+  Emoji) aren't supported and are skipped during fallback. Emoji-presentation
+  characters are drawn with a monochrome glyph, enlarged to fill their two
+  cells. Emoji appear as
   monochrome glyphs if a font like Noto Emoji or Symbola is installed;
   otherwise they are missing.
 - **Variable fonts** only get their `wght` axis set (400, or 700 for bold).
