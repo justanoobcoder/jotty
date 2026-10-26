@@ -98,10 +98,25 @@ The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 | --- | --- | --- | --- |
 | `foreground` | `"#rrggbb"` | `"#dcdcdc"` | Default text color. |
 | `background` | `"#rrggbb"` | `"#181818"` | Default background color. |
-| `cursor` | `"#rrggbb"` | the foreground | Cursor color. |
+| `cursor` | `"#rrggbb"` | the foreground | Cursor color. Programs can change it at runtime (see below). |
+| `cursor_text` | `"#rrggbb"` | the cell's background | Color of the character under a block cursor. |
 | `selection_foreground` | `"#rrggbb"` | inverse | Text color of selected cells. Unset means the cell's background color. |
 | `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
 | `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
+
+Programs can override the cursor color while they run with OSC 12
+(`printf '\e]12;#ff8800\a'`, also `rgb:ff/88/00`), query it with
+`OSC 12 ; ?`, and restore the configured color with OSC 112. Neovim and some
+shell vi modes use this to show the current mode. A full reset (`reset`,
+`tput reset`) also restores it.
+
+To match foot's `cursor=<text> <cursor>`, set both colors:
+
+```toml
+[colors]
+cursor = "#ebdbb2"       # foot's second value
+cursor_text = "#282828"  # foot's first value
+```
 
 Colors 16–255 are the standard xterm 6×6×6 cube and 24-step grayscale ramp.
 

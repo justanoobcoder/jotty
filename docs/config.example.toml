@@ -47,6 +47,9 @@ foreground = "#dcdcdc"
 background = "#181818"
 # Cursor color; defaults to the foreground color when unset.
 # cursor = "#dcdcdc"
+# Color of the character under a block cursor; defaults to the background
+# color of that cell.
+# cursor_text = "#181818"
 # Selection colors; each defaults to inverse video (the cell's own colors
 # swapped) when unset.
 # selection_foreground = "#181818"
