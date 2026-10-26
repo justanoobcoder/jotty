@@ -29,8 +29,23 @@
           src = pkgs.lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.ncurses # tic
+          ];
           buildInputs = runtimeLibs pkgs;
+
+          # jotty finds the entry next to its executable and sets TERM=jotty.
+          postInstall = ''
+            mkdir -p $out/share/terminfo
+            tic -x -o $out/share/terminfo extra/jotty.terminfo
+            # unibilium (Neovim) refuses entries of 4096 bytes or more.
+            size=$(stat -c %s $out/share/terminfo/j/jotty)
+            if [ "$size" -ge 4096 ]; then
+              echo "terminfo entry is $size bytes, must stay under 4096" >&2
+              exit 1
+            fi
+          '';
 
           # libEGL is provided by libglvnd, which loads the driver from
           # /run/opengl-driver at run time; make sure the loader is found.
@@ -89,8 +104,15 @@
             rustfmt
             rust-analyzer
             pkg-config
+            ncurses
           ];
           buildInputs = runtimeLibs pkgs;
+          # Compile the terminfo entry next to target/{debug,release}/jotty,
+          # where jotty looks for it, so `cargo run` uses TERM=jotty.
+          shellHook = ''
+            mkdir -p target/share/terminfo
+            tic -x -o "$PWD/target/share/terminfo" extra/jotty.terminfo 2>/dev/null || true
+          '';
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
