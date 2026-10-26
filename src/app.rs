@@ -895,16 +895,25 @@ impl App {
             return;
         };
         log::info!("opening {target}");
+        // Browsers print noise on startup (Chromium's "zygote" errors when
+        // an instance is already running); only the exit status matters.
         let child = std::process::Command::new(program)
             .args(args)
             .arg(target)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn();
         match child {
             // Reap it in the background so it doesn't linger as a zombie.
             Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
+                let program = program.clone();
+                std::thread::spawn(move || match child.wait() {
+                    Ok(status) if !status.success() => {
+                        log::warn!("{program} failed to open the link: {status}")
+                    }
+                    _ => {}
+                });
             }
             Err(e) => log::warn!("cannot run {program}: {e}"),
         }
