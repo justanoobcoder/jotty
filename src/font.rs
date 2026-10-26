@@ -1,10 +1,11 @@
-//! Font discovery (fontconfig) and glyph rasterization (fontdue).
+//! Font discovery (fontconfig) and glyph rasterization (ab_glyph).
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::PathBuf;
 
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
 use fontconfig_sys as fc;
 use fontconfig_sys::constants::*;
 
@@ -137,7 +138,7 @@ impl Fontconfig {
                 fc::FcCharSetAddChar(charset, c as u32);
                 fc::FcPatternAddCharSet(pattern, FC_CHARSET.as_ptr(), charset);
                 fc::FcCharSetDestroy(charset);
-                // Color (bitmap) fonts cannot be rendered by fontdue.
+                // Color (bitmap) fonts cannot be rendered by ab_glyph.
                 fc::FcPatternAddBool(pattern, FC_COLOR.as_ptr(), 0);
             }
             fc::FcConfigSubstitute(self.0, pattern, fc::FcMatchPattern);
@@ -173,8 +174,9 @@ impl Drop for Fontconfig {
 
 pub struct Fonts {
     fontconfig: Fontconfig,
-    faces: Vec<fontdue::Font>,
-    loaded: HashMap<FontFile, usize>,
+    faces: Vec<FontVec>,
+    /// Loaded faces by file and style (variable fonts differ per style).
+    loaded: HashMap<(FontFile, Style), usize>,
     /// Face index for each style.
     styles: [usize; 4],
     fallback_families: Vec<String>,
@@ -215,53 +217,49 @@ impl Fonts {
             .fontconfig
             .find(family, style, c)
             .ok_or_else(|| FontError::NotFound(family.into()))?;
-        self.load(file)
+        self.load(file, style)
     }
 
-    fn load(&mut self, file: FontFile) -> Result<usize, FontError> {
-        if let Some(&face) = self.loaded.get(&file) {
+    fn load(&mut self, file: FontFile, style: Style) -> Result<usize, FontError> {
+        if let Some(&face) = self.loaded.get(&(file.clone(), style)) {
             return Ok(face);
         }
         log::info!("loading font {} (index {})", file.path.display(), file.index);
         let data = std::fs::read(&file.path).map_err(|_| FontError::Load(file.path.clone(), "cannot read file"))?;
-        let settings = fontdue::FontSettings {
-            collection_index: file.index,
-            ..fontdue::FontSettings::default()
-        };
-        let face = fontdue::Font::from_bytes(data, settings).map_err(|e| FontError::Load(file.path.clone(), e))?;
+        // fontconfig puts the named instance of a variable font in the high
+        // 16 bits; only the face index matters here (the default instance
+        // is used).
+        let mut face = FontVec::try_from_vec_and_index(data, file.index & 0xffff)
+            .map_err(|_| FontError::Load(file.path.clone(), "invalid font"))?;
+        // Variable fonts default to an arbitrary instance (often the lightest).
+        let weight = if matches!(style, Style::Bold | Style::BoldItalic) { 700.0 } else { 400.0 };
+        face.set_variation(b"wght", weight);
         self.faces.push(face);
         let index = self.faces.len() - 1;
-        self.loaded.insert(file, index);
+        self.loaded.insert((file, style), index);
         Ok(index)
-    }
-
-    pub fn size(&self) -> f32 {
-        self.px
     }
 
     pub fn set_size(&mut self, px: f32) {
         self.px = px;
         let face = &self.faces[self.styles[0]];
+        let scaled = face.as_scaled(px_scale(face, px));
         let advance = ['M', '0', 'x']
             .into_iter()
-            .find(|&c| face.lookup_glyph_index(c) != 0)
-            .map(|c| face.metrics(c, px).advance_width)
+            .find(|&c| has_glyph(face, c))
+            .map(|c| scaled.h_advance(face.glyph_id(c)))
             .unwrap_or(px * 0.6);
-        let (ascent, descent, gap) = match face.horizontal_line_metrics(px) {
-            Some(m) => (m.ascent, m.descent, m.line_gap),
-            None => (px * 0.8, -px * 0.2, 0.0),
-        };
-        self.metrics = CellMetrics::new(advance, ascent, descent, gap);
+        self.metrics = CellMetrics::new(advance, scaled.ascent(), scaled.descent(), scaled.line_gap());
     }
 
     /// The face used to draw `c` in `style`.
     fn face_for(&mut self, c: char, style: Style) -> Option<usize> {
         let styled = self.styles[style as usize];
-        if self.faces[styled].lookup_glyph_index(c) != 0 {
+        if has_glyph(&self.faces[styled], c) {
             return Some(styled);
         }
         let regular = self.styles[0];
-        if self.faces[regular].lookup_glyph_index(c) != 0 {
+        if has_glyph(&self.faces[regular], c) {
             return Some(regular);
         }
         if let Some(&face) = self.fallback.get(&c) {
@@ -270,7 +268,7 @@ impl Fonts {
         let families: Vec<String> = self.fallback_families.iter().cloned().chain([String::new()]).collect();
         let face = families.iter().find_map(|family| {
             let face = self.find_and_load(family, Style::Regular, Some(c)).ok()?;
-            (self.faces[face].lookup_glyph_index(c) != 0).then_some(face)
+            has_glyph(&self.faces[face], c).then_some(face)
         });
         if face.is_none() {
             log::debug!("no font covers {c:?} (U+{:04X})", c as u32);
@@ -284,18 +282,145 @@ impl Fonts {
         if c == ' ' {
             return None;
         }
-        let face = self.face_for(c, style).unwrap_or(self.styles[0]);
-        let (m, data) = self.faces[face].rasterize(c, self.px);
-        if m.width == 0 || m.height == 0 {
+        if let Some(glyph) = box_glyph(c, self.metrics) {
+            return Some(glyph);
+        }
+        let index = self.face_for(c, style).unwrap_or(self.styles[0]);
+        let face = &self.faces[index];
+        // Place the baseline where the cell's is, so bounds are cell-relative.
+        let glyph = face
+            .glyph_id(c)
+            .with_scale_and_position(px_scale(face, self.px), point(0.0, self.metrics.baseline as f32));
+        let outline = face.outline_glyph(glyph)?;
+        let bounds = outline.px_bounds();
+        let (width, height) = (bounds.width() as u32, bounds.height() as u32);
+        if width == 0 || height == 0 {
             return None;
         }
+        let mut data = vec![0; (width * height) as usize];
+        outline.draw(|x, y, coverage| {
+            if let Some(px) = data.get_mut((y * width + x) as usize) {
+                *px = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        });
         Some(Glyph {
-            width: m.width as u32,
-            height: m.height as u32,
-            left: m.xmin,
-            top: self.metrics.baseline as i32 - (m.ymin + m.height as i32),
+            width,
+            height,
+            left: bounds.min.x as i32,
+            top: bounds.min.y as i32,
             data,
         })
+    }
+}
+
+/// Line weights of the four arms (up, down, left, right) of a box-drawing
+/// character: 0 none, 1 light, 2 heavy.
+fn box_arms(c: char) -> Option<[u8; 4]> {
+    Some(match c {
+        '─' => [0, 0, 1, 1],
+        '━' => [0, 0, 2, 2],
+        '│' => [1, 1, 0, 0],
+        '┃' => [2, 2, 0, 0],
+        '┌' | '╭' => [0, 1, 0, 1],
+        '┏' => [0, 2, 0, 2],
+        '┐' | '╮' => [0, 1, 1, 0],
+        '┓' => [0, 2, 2, 0],
+        '└' | '╰' => [1, 0, 0, 1],
+        '┗' => [2, 0, 0, 2],
+        '┘' | '╯' => [1, 0, 1, 0],
+        '┛' => [2, 0, 2, 0],
+        '├' => [1, 1, 0, 1],
+        '┣' => [2, 2, 0, 2],
+        '┤' => [1, 1, 1, 0],
+        '┫' => [2, 2, 2, 0],
+        '┬' => [0, 1, 1, 1],
+        '┳' => [0, 2, 2, 2],
+        '┴' => [1, 0, 1, 1],
+        '┻' => [2, 0, 2, 2],
+        '┼' => [1, 1, 1, 1],
+        '╋' => [2, 2, 2, 2],
+        '╴' => [0, 0, 1, 0],
+        '╵' => [1, 0, 0, 0],
+        '╶' => [0, 0, 0, 1],
+        '╷' => [0, 1, 0, 0],
+        _ => return None,
+    })
+}
+
+/// Draws box-drawing and block characters to fill the cell exactly, so
+/// lines join across cells regardless of the font's metrics.
+fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
+    let (w, h) = (m.width, m.height);
+    let mut data = vec![0u8; (w * h) as usize];
+    let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32, value: u8| {
+        for y in y0.min(h)..y1.min(h) {
+            for x in x0.min(w)..x1.min(w) {
+                data[(y * w + x) as usize] = value;
+            }
+        }
+    };
+    if let Some(arms) = box_arms(c) {
+        let thickness = |weight: u8| m.stroke * u32::from(weight);
+        let heaviest = thickness(*arms.iter().max().unwrap());
+        let (cx, cy) = ((w - heaviest.min(w)) / 2, (h - heaviest.min(h)) / 2);
+        let [up, down, left, right] = arms.map(thickness);
+        let center = |t: u32, size: u32| (size - t.min(size)) / 2;
+        if up > 0 {
+            fill(center(up, w), 0, center(up, w) + up, cy + heaviest, 255);
+        }
+        if down > 0 {
+            fill(center(down, w), cy, center(down, w) + down, h, 255);
+        }
+        if left > 0 {
+            fill(0, center(left, h), cx + heaviest, center(left, h) + left, 255);
+        }
+        if right > 0 {
+            fill(cx, center(right, h), w, center(right, h) + right, 255);
+        }
+    } else {
+        let eighth_h = |n: u32| (h * n + 4) / 8;
+        let eighth_w = |n: u32| (w * n + 4) / 8;
+        match c {
+            '█' => fill(0, 0, w, h, 255),
+            '▀' => fill(0, 0, w, eighth_h(4), 255),
+            '▔' => fill(0, 0, w, eighth_h(1), 255),
+            '▕' => fill(w - eighth_w(1), 0, w, h, 255),
+            '▐' => fill(w - eighth_w(4), 0, w, h, 255),
+            '░' => fill(0, 0, w, h, 64),
+            '▒' => fill(0, 0, w, h, 128),
+            '▓' => fill(0, 0, w, h, 192),
+            // Lower one eighth to seven eighths (including the lower half).
+            '▁'..='▇' => {
+                let n = c as u32 - '▁' as u32 + 1;
+                fill(0, h - eighth_h(n), w, h, 255);
+            }
+            // Left seven eighths down to one eighth (including the left half).
+            '▉'..='▏' => {
+                let n = 7 - (c as u32 - '▉' as u32);
+                fill(0, 0, eighth_w(n), h, 255);
+            }
+            _ => return None,
+        }
+    }
+    Some(Glyph {
+        width: w,
+        height: h,
+        left: 0,
+        top: 0,
+        data,
+    })
+}
+
+fn has_glyph(face: &FontVec, c: char) -> bool {
+    face.glyph_id(c).0 != 0
+}
+
+/// The ab_glyph scale for a size of `px` pixels per em. ab_glyph scales by
+/// the ascent-to-descent height instead of the em size.
+fn px_scale(face: &FontVec, px: f32) -> PxScale {
+    match face.units_per_em() {
+        Some(units) if units > 0.0 => PxScale::from(px * face.height_unscaled() / units),
+        _ => PxScale::from(px),
     }
 }
 
@@ -336,6 +461,50 @@ mod tests {
     fn points_conversion() {
         assert_eq!(points_to_px(12.0, 1.0), 16.0);
         assert_eq!(points_to_px(12.0, 2.0), 32.0);
+    }
+
+    fn coverage(glyph: &Glyph, x: u32, y: u32) -> u8 {
+        glyph.data[(y * glyph.width + x) as usize]
+    }
+
+    #[test]
+    fn box_lines_reach_cell_edges() {
+        let m = CellMetrics::new(8.0, 13.0, -3.0, 1.0);
+        let (w, h) = (m.width, m.height);
+        let horizontal = box_glyph('─', m).unwrap();
+        assert_eq!((horizontal.width, horizontal.height), (w, h));
+        let mid = (0..h).find(|&y| coverage(&horizontal, 0, y) > 0).unwrap();
+        assert!((0..w).all(|x| coverage(&horizontal, x, mid) == 255));
+        assert_eq!(coverage(&horizontal, 0, 0), 0);
+
+        let vertical = box_glyph('│', m).unwrap();
+        let mid = (0..w).find(|&x| coverage(&vertical, x, 0) > 0).unwrap();
+        assert!((0..h).all(|y| coverage(&vertical, mid, y) == 255));
+
+        // A corner covers the center and reaches only its two edges.
+        let corner = box_glyph('┌', m).unwrap();
+        assert!((0..h).any(|y| coverage(&corner, w - 1, y) > 0));
+        assert!((0..w).any(|x| coverage(&corner, x, h - 1) > 0));
+        assert!((0..h).all(|y| coverage(&corner, 0, y) == 0));
+        assert!((0..w).all(|x| coverage(&corner, x, 0) == 0));
+    }
+
+    #[test]
+    fn block_elements() {
+        let m = CellMetrics::new(8.0, 12.0, -4.0, 0.0);
+        let full = box_glyph('█', m).unwrap();
+        assert!(full.data.iter().all(|&c| c == 255));
+        let upper = box_glyph('▀', m).unwrap();
+        assert_eq!(coverage(&upper, 0, 0), 255);
+        assert_eq!(coverage(&upper, 0, m.height - 1), 0);
+        let lower = box_glyph('▄', m).unwrap();
+        assert_eq!(coverage(&lower, 0, 0), 0);
+        assert_eq!(coverage(&lower, 0, m.height - 1), 255);
+        let left = box_glyph('▌', m).unwrap();
+        assert_eq!(coverage(&left, 0, 0), 255);
+        assert_eq!(coverage(&left, m.width - 1, 0), 0);
+        assert_eq!(box_glyph('▒', m).unwrap().data[0], 128);
+        assert!(box_glyph('a', m).is_none());
     }
 
     /// Needs fonts installed; skipped (passes) where none are available,
