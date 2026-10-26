@@ -6,7 +6,7 @@
 
 pub mod grid;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
 pub use grid::{Cell, Color, Flags, Grid, Row};
@@ -158,6 +158,9 @@ pub struct Screen {
     pub modes: Modes,
     pub cursor_shape: CursorShape,
     last_char: Option<char>,
+    /// Where the last character was printed, if nothing else happened
+    /// since; a following variation selector applies to it.
+    last_printed: Option<(usize, usize)>,
     title: Option<String>,
     title_changed: bool,
     responses: Vec<u8>,
@@ -168,6 +171,9 @@ pub struct Screen {
     /// Where the shell's prompt ended (OSC 133;B), as (row, column).
     prompt_end: Option<(usize, usize)>,
 }
+
+/// VARIATION SELECTOR-16: display the preceding character as an emoji.
+const EMOJI_PRESENTATION: char = '\u{FE0F}';
 
 fn default_tabs(cols: usize) -> Vec<bool> {
     (0..cols).map(|c| c % 8 == 0 && c != 0).collect()
@@ -191,6 +197,7 @@ impl Screen {
             modes: Modes::default(),
             cursor_shape: CursorShape::default(),
             last_char: None,
+            last_printed: None,
             title: None,
             title_changed: false,
             responses: Vec::new(),
@@ -567,7 +574,12 @@ impl Screen {
 
     fn print_char(&mut self, c: char) {
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
-        // Zero-width characters (combining marks, ZWJ) are not supported yet.
+        if c == EMOJI_PRESENTATION {
+            self.apply_emoji_presentation();
+            return;
+        }
+        // Other zero-width characters (combining marks, ZWJ) are not
+        // supported yet.
         let width = match c.width() {
             Some(w @ 1..=2) => w,
             _ => return,
@@ -618,6 +630,40 @@ impl Screen {
             self.cursor.col += width;
         }
         self.last_char = Some(c);
+        self.last_printed = Some((row, col));
+        self.dirty = true;
+    }
+
+    /// Handles VS16 after a character that has an emoji form (like `❄` or
+    /// `☀`): the pair is two cells wide, as in other terminals and in the
+    /// width calculations of programs such as starship.
+    fn apply_emoji_presentation(&mut self) {
+        let Some((row, col)) = self.last_printed.take() else {
+            return;
+        };
+        let cell = self.grid().rows[row].cells[col];
+        let pair: String = [cell.c, EMOJI_PRESENTATION].into_iter().collect();
+        if row != self.cursor.row
+            || col + 1 >= self.cols
+            || cell.flags.contains(Flags::WIDE)
+            || pair.width() != 2
+        {
+            return;
+        }
+        self.split_wide(row, col + 1);
+        let cells = &mut self.grid_mut().rows[row].cells;
+        cells[col].flags.insert(Flags::WIDE);
+        cells[col + 1] = Cell {
+            c: ' ',
+            flags: cell.flags | Flags::WIDE_SPACER,
+            ..cell
+        };
+        if col + 2 >= self.cols {
+            self.cursor.col = self.cols - 1;
+            self.cursor.pending_wrap = self.modes.autowrap;
+        } else {
+            self.cursor.col = col + 2;
+        }
         self.dirty = true;
     }
 
@@ -808,6 +854,7 @@ impl Perform for Screen {
     }
 
     fn execute(&mut self, byte: u8) {
+        self.last_printed = None;
         match byte {
             0x07 => self.bell = true,
             0x08 => self.move_backward(1),
@@ -827,6 +874,7 @@ impl Perform for Screen {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        self.last_printed = None;
         let args: Vec<u16> = params.iter().map(|p| p[0]).collect();
         // Argument `i`, where 0 or absent means `default`.
         let arg = |i: usize, default: usize| match args.get(i) {
@@ -962,6 +1010,7 @@ impl Perform for Screen {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        self.last_printed = None;
         match (intermediates, byte) {
             ([], b'7') => self.save_cursor(),
             ([], b'8') => self.restore_cursor(),

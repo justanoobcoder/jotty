@@ -441,3 +441,46 @@ fn garbage_does_not_panic() {
     let (row, col) = t.screen().cursor();
     assert!(row < 9 && col < 3);
 }
+
+#[test]
+fn emoji_presentation_selector_widens_character() {
+    let mut t = term(10, 1);
+    t.feed("\u{2744}\u{FE0F} x".as_bytes());
+    assert!(cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert!(cell(&t, 0, 1).flags.contains(Flags::WIDE_SPACER));
+    assert_eq!(cell(&t, 0, 3).c, 'x');
+    assert_eq!(t.screen().cursor(), (0, 4));
+}
+
+#[test]
+fn emoji_presentation_selector_is_ignored_where_it_does_not_apply() {
+    // Not an emoji: the selector is dropped.
+    let mut t = term(10, 1);
+    t.feed("a\u{FE0F}b".as_bytes());
+    assert_eq!(lines(&t), ["ab"]);
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::WIDE));
+
+    // Already wide.
+    let mut t = term(10, 1);
+    t.feed("\u{1F600}\u{FE0F}x".as_bytes());
+    assert_eq!(cell(&t, 0, 2).c, 'x');
+
+    // No room in the last column.
+    let mut t = term(3, 1);
+    t.feed("ab\u{2744}\u{FE0F}".as_bytes());
+    assert!(!cell(&t, 0, 2).flags.contains(Flags::WIDE));
+
+    // Separated by an escape sequence.
+    let mut t = term(10, 1);
+    t.feed("\u{2744}\x1b[31m\u{FE0F}x".as_bytes());
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert_eq!(cell(&t, 0, 1).c, 'x');
+}
+
+#[test]
+fn emoji_presentation_at_second_to_last_column_sets_pending_wrap() {
+    let mut t = term(4, 2);
+    t.feed("ab\u{2744}\u{FE0F}c".as_bytes());
+    assert!(cell(&t, 0, 2).flags.contains(Flags::WIDE));
+    assert_eq!(lines(&t), ["ab\u{2744}", "c"]);
+}
