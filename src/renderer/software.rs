@@ -1,5 +1,13 @@
 //! CPU rendering into shared-memory buffers (`wl_shm`). Draws the same
 //! [`Batch`] as the GL backend, without loading a GPU driver.
+//!
+//! Only what changed is repainted. The window is split into horizontal
+//! bands, one per text row plus the padding above and below, and each band
+//! gets a fingerprint of everything drawn in it. A buffer remembers the
+//! fingerprints of what it holds, so only differing bands are repainted,
+//! and only bands that differ from the previous frame are damaged.
+
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
@@ -16,9 +24,12 @@ const ATLAS_SIZE: u32 = 1024;
 pub struct Renderer {
     surface: WlSurface,
     pool: SlotPool,
-    /// Buffers of the current size; one is free unless the compositor
-    /// still holds all of them.
-    buffers: Vec<Buffer>,
+    /// Buffers of the current size, with the band fingerprints of what each
+    /// holds (empty: unknown). One is free unless the compositor still holds
+    /// all of them.
+    buffers: Vec<(Buffer, Vec<u64>)>,
+    /// Band fingerprints of the last frame presented.
+    presented: Vec<u64>,
     atlas: Atlas,
     /// The atlas image, one coverage byte per pixel.
     atlas_pixels: Vec<u8>,
@@ -42,6 +53,7 @@ impl Renderer {
             surface,
             pool,
             buffers: Vec::new(),
+            presented: Vec::new(),
             atlas: Atlas::new(ATLAS_SIZE),
             atlas_pixels: vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize],
             fonts,
@@ -59,6 +71,7 @@ impl Renderer {
         if size != self.size {
             self.size = size;
             self.buffers.clear();
+            self.presented.clear();
         }
     }
 
@@ -88,10 +101,21 @@ impl Renderer {
         );
 
         let (w, h) = (self.size.0.max(1), self.size.1.max(1));
+        let background = premultiply(theme.background.to_f32(), theme.opacity);
+        let bands = bands(frame.origin.1, metrics.height, frame.screen.rows(), h);
+        let fingerprints = fingerprint(&batch, &bands, background);
+        let damage = changed(&bands, &fingerprints, &self.presented);
+        if damage.is_empty() {
+            // Nothing changed; commit anyway so the frame callback fires.
+            self.surface.damage_buffer(0, 0, 1, 1);
+            self.surface.commit();
+            return Ok(self.atlas.take_overflowed());
+        }
+
         let free = self
             .buffers
             .iter()
-            .position(|b| b.canvas(&mut self.pool).is_some());
+            .position(|(b, _)| b.canvas(&mut self.pool).is_some());
         let index = match free {
             Some(i) => i,
             None => {
@@ -99,21 +123,36 @@ impl Renderer {
                     .pool
                     .create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888)
                     .map_err(|e| format!("wl_shm buffer: {e}"))?;
-                self.buffers.push(buffer);
+                self.buffers.push((buffer, Vec::new()));
                 self.buffers.len() - 1
             }
         };
-        let buffer = &self.buffers[index];
+        let (buffer, held) = &mut self.buffers[index];
         let canvas = buffer
             .canvas(&mut self.pool)
             .ok_or("wl_shm buffer is busy")?;
-        let background = premultiply(theme.background.to_f32(), theme.opacity);
-        paint(&batch, &self.atlas_pixels, canvas, (w, h), background);
+        let mut rows = vec![false; h as usize];
+        for (y0, y1) in changed(&bands, &fingerprints, held) {
+            rows[y0 as usize..y1 as usize].fill(true);
+        }
+        paint(
+            &batch,
+            &self.atlas_pixels,
+            canvas,
+            (w, h),
+            background,
+            &rows,
+        );
         buffer
             .attach_to(&self.surface)
             .map_err(|e| format!("wl_shm attach: {e:?}"))?;
-        self.surface.damage_buffer(0, 0, w as i32, h as i32);
+        for (y0, y1) in damage {
+            self.surface
+                .damage_buffer(0, y0 as i32, w as i32, (y1 - y0) as i32);
+        }
         self.surface.commit();
+        *held = fingerprints.clone();
+        self.presented = fingerprints;
         Ok(self.atlas.take_overflowed())
     }
 }
@@ -125,11 +164,82 @@ fn premultiply([r, g, b]: [f32; 3], alpha: f32) -> [u8; 4] {
     [byte(b), byte(g), byte(r), (alpha * 255.0).round() as u8]
 }
 
-/// Clears `canvas` (ARGB8888, `size` pixels, no row padding) to `clear` and
-/// draws the quads of `batch` over it, sampling glyphs from `atlas`.
-fn paint(batch: &Batch, atlas: &[u8], canvas: &mut [u8], size: (u32, u32), clear: [u8; 4]) {
-    for pixel in canvas.as_chunks_mut::<4>().0 {
-        *pixel = clear;
+/// The window's horizontal bands, as pixel rows `[start, end)`: the padding
+/// above the grid, one band per text row, and the rest below.
+fn bands(top: u32, cell_height: u32, rows: usize, height: u32) -> Vec<(u32, u32)> {
+    let mut bands = vec![(0, top.min(height))];
+    for row in 0..rows as u32 {
+        let y = (top + row * cell_height).min(height);
+        bands.push((y, (y + cell_height).min(height)));
+    }
+    let bottom = bands.last().unwrap().1;
+    bands.push((bottom, height));
+    bands
+}
+
+/// A fingerprint per band of everything drawn in it.
+fn fingerprint(batch: &Batch, bands: &[(u32, u32)], clear: [u8; 4]) -> Vec<u64> {
+    let mut hashers: Vec<DefaultHasher> = bands
+        .iter()
+        .map(|_| {
+            let mut hasher = DefaultHasher::new();
+            clear.hash(&mut hasher);
+            hasher
+        })
+        .collect();
+    for quad in batch.vertices.as_chunks::<{ 6 * VERTEX_FLOATS }>().0 {
+        // The first vertex has the top-left corner, texture coordinate,
+        // color and mode; the fifth the bottom-right corner.
+        let first = &quad[..VERTEX_FLOATS];
+        let last = &quad[4 * VERTEX_FLOATS..4 * VERTEX_FLOATS + 2];
+        let (y0, y1) = (first[1].round() as i64, last[1].round() as i64);
+        for (band, hasher) in bands.iter().zip(&mut hashers) {
+            if y0 < i64::from(band.1) && y1 > i64::from(band.0) {
+                for v in first.iter().chain(last) {
+                    v.to_bits().hash(hasher);
+                }
+            }
+        }
+    }
+    hashers.iter().map(Hasher::finish).collect()
+}
+
+/// The bands whose fingerprint differs from `old` (all when `old` is
+/// unknown), merged into contiguous pixel row ranges.
+fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    for (i, &(y0, y1)) in bands.iter().enumerate() {
+        if y0 == y1 || (old.len() == new.len() && old[i] == new[i]) {
+            continue;
+        }
+        match ranges.last_mut() {
+            Some(last) if last.1 == y0 => last.1 = y1,
+            _ => ranges.push((y0, y1)),
+        }
+    }
+    ranges
+}
+
+/// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
+/// padding) marked in `rows`: clears them to `clear` and draws the parts of
+/// the quads of `batch` on them, sampling glyphs from `atlas`.
+fn paint(
+    batch: &Batch,
+    atlas: &[u8],
+    canvas: &mut [u8],
+    size: (u32, u32),
+    clear: [u8; 4],
+    rows: &[bool],
+) {
+    let width = size.0 as usize;
+    for (pixels, _) in canvas
+        .chunks_exact_mut(width * 4)
+        .zip(rows)
+        .filter(|(_, dirty)| **dirty)
+    {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            *pixel = clear;
+        }
     }
     let (width, height) = (size.0 as i64, size.1 as i64);
     for quad in batch.vertices.as_chunks::<{ 6 * VERTEX_FLOATS }>().0 {
@@ -146,6 +256,9 @@ fn paint(batch: &Batch, atlas: &[u8], canvas: &mut [u8], size: (u32, u32), clear
         let [u0, v0] = [first[2], first[3]].map(|t| (t * ATLAS_SIZE as f32).round() as i64);
 
         for y in y0.max(0)..y1.min(height) {
+            if !rows[y as usize] {
+                continue;
+            }
             let row = (y * width) as usize * 4;
             for x in x0.max(0)..x1.min(width) {
                 let a = if glyph {
@@ -206,7 +319,14 @@ mod tests {
         let mut batch = Batch::default();
         batch.rect(2.0, 1.0, 10.0, 1.0, Rgb(255, 0, 0));
         let mut canvas = vec![0; 4 * 4 * 3];
-        paint(&batch, &atlas_with(&[]), &mut canvas, (4, 3), CLEAR);
+        paint(
+            &batch,
+            &atlas_with(&[]),
+            &mut canvas,
+            (4, 3),
+            CLEAR,
+            &[true; 3],
+        );
         assert_eq!(pixel(&canvas, 4, 1, 1), CLEAR);
         assert_eq!(pixel(&canvas, 4, 2, 1), [0, 0, 255, 255]);
         assert_eq!(pixel(&canvas, 4, 3, 1), [0, 0, 255, 255]);
@@ -218,7 +338,14 @@ mod tests {
         let mut batch = Batch::default();
         batch.fill(0.0, 0.0, 1.0, 1.0, Rgb(255, 255, 255), 0.5);
         let mut canvas = vec![0; 4];
-        paint(&batch, &atlas_with(&[]), &mut canvas, (1, 1), [0; 4]);
+        paint(
+            &batch,
+            &atlas_with(&[]),
+            &mut canvas,
+            (1, 1),
+            [0; 4],
+            &[true],
+        );
         assert_eq!(pixel(&canvas, 1, 0, 0), [128, 128, 128, 128]);
     }
 
@@ -237,10 +364,56 @@ mod tests {
         let mut batch = Batch::default();
         batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
         let mut canvas = vec![0; 4 * 3];
-        paint(&batch, &atlas, &mut canvas, (3, 1), [0, 0, 0, 255]);
+        paint(&batch, &atlas, &mut canvas, (3, 1), [0, 0, 0, 255], &[true]);
         assert_eq!(pixel(&canvas, 3, 0, 0), [0, 0, 0, 255]);
         assert_eq!(pixel(&canvas, 3, 1, 0), [255, 255, 255, 255]);
         assert_eq!(pixel(&canvas, 3, 2, 0), [128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn repaints_only_marked_rows() {
+        let mut batch = Batch::default();
+        batch.rect(0.0, 0.0, 1.0, 3.0, Rgb(255, 0, 0));
+        let mut canvas = vec![7; 4 * 3];
+        paint(
+            &batch,
+            &atlas_with(&[]),
+            &mut canvas,
+            (1, 3),
+            CLEAR,
+            &[false, true, false],
+        );
+        assert_eq!(pixel(&canvas, 1, 0, 0), [7; 4]);
+        assert_eq!(pixel(&canvas, 1, 0, 1), [0, 0, 255, 255]);
+        assert_eq!(pixel(&canvas, 1, 0, 2), [7; 4]);
+    }
+
+    #[test]
+    fn bands_cover_padding_and_rows() {
+        assert_eq!(bands(4, 10, 2, 30), [(0, 4), (4, 14), (14, 24), (24, 30)]);
+        // Clipped to the window.
+        assert_eq!(
+            bands(4, 10, 3, 30),
+            [(0, 4), (4, 14), (14, 24), (24, 30), (30, 30)]
+        );
+    }
+
+    #[test]
+    fn only_changed_bands_are_reported() {
+        let bands = bands(0, 10, 3, 30);
+        let mut batch = Batch::default();
+        batch.rect(0.0, 10.0, 5.0, 10.0, Rgb(1, 2, 3));
+        let before = fingerprint(&batch, &bands, CLEAR);
+        // Unknown contents: everything.
+        assert_eq!(changed(&bands, &before, &[]), [(0, 30)]);
+        assert!(changed(&bands, &before, &before).is_empty());
+        // A glyph overhanging from the second row into the third.
+        batch.rect(0.0, 18.0, 1.0, 4.0, Rgb(9, 9, 9));
+        let after = fingerprint(&batch, &bands, CLEAR);
+        assert_eq!(changed(&bands, &after, &before), [(10, 30)]);
+        // A new background color changes every band.
+        let other = fingerprint(&batch, &bands, [0; 4]);
+        assert_eq!(changed(&bands, &other, &after), [(0, 30)]);
     }
 
     #[test]
@@ -257,7 +430,7 @@ mod tests {
         let mut batch = Batch::default();
         batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
         let mut canvas = vec![0; 4];
-        paint(&batch, &atlas, &mut canvas, (1, 1), [0, 0, 0, 255]);
+        paint(&batch, &atlas, &mut canvas, (1, 1), [0, 0, 0, 255], &[true]);
         assert_eq!(pixel(&canvas, 1, 0, 0), [255, 255, 255, 255]);
     }
 }
