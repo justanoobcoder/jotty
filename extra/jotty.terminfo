@@ -16,7 +16,10 @@ jotty|jotty Wayland terminal emulator,
 # Cursor shape (DECSCUSR) and color (OSC 12 / OSC 112).
 	Ss=\E[%p1%d q, Se=\E[0 q,
 	Cs=\E]12;%p1%s\007, Cr=\E]112\007,
-# Cancel what jotty doesn't implement (OSC 52 clipboard, SGR mouse
-# reporting, visual bell); this also keeps the entry small enough.
-	Ms@, XM@, xm@, flash@,
+# Cancel what jotty doesn't implement (OSC 52 clipboard, visual bell), and
+# the names of Ctrl+Alt navigation keys (the keys still work; ncurses just
+# doesn't name them) to stay under the size limit.
+	Ms@, flash@,
+	kDC7@, kDN7@, kEND7@, kHOM7@, kIC7@,
+	kLFT7@, kNXT7@, kPRV7@, kRIT7@, kUP7@,
 	use=xterm-256color,
