@@ -22,6 +22,7 @@ vte = "0.15.0"
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
+xkbcommon = { version = "0.8", default-features = false }
 yeslogic-fontconfig-sys = "6.0.1"
 
 [profile.release]

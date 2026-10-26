@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::keybinds::Keybinds;
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -14,6 +16,8 @@ pub struct Config {
     pub window: WindowConfig,
     pub terminal: TerminalConfig,
     pub colors: ColorConfig,
+    /// Key bindings for jotty's actions; see `keybinds.rs`.
+    pub keybinds: Keybinds,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -317,6 +321,14 @@ mod tests {
         assert_eq!(palette[0], Rgb(1, 2, 3));
         assert_eq!(palette[1], Rgb(0xaa, 0xbb, 0xcc));
         assert_eq!(palette[2], DEFAULT_PALETTE[2]);
+    }
+
+    #[test]
+    fn keybinds_section() {
+        let config = Config::parse("[keybinds]\ncopy = [\"ctrl+insert\"]").unwrap();
+        assert_ne!(config.keybinds, Keybinds::default());
+        let err = Config::parse("[keybinds]\ncopy = [\"ctrl+bogus\"]").unwrap_err();
+        assert!(err.to_string().contains("unknown key"), "{err}");
     }
 
     #[test]

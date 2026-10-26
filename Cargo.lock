@@ -398,6 +398,7 @@ dependencies = [
  "wayland-client",
  "wayland-egl",
  "wayland-protocols",
+ "xkbcommon",
  "yeslogic-fontconfig-sys",
 ]
 

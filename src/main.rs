@@ -6,6 +6,7 @@ mod config;
 mod font;
 mod ime;
 mod input;
+mod keybinds;
 mod pty;
 mod renderer;
 mod selection;

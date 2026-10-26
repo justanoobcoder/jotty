@@ -12,45 +12,6 @@ pub struct KeyModes {
     pub app_keypad: bool,
 }
 
-/// Actions handled by jotty itself instead of being sent to the child.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Copy,
-    Paste,
-    ScrollPageUp,
-    ScrollPageDown,
-    ScrollToTop,
-    ScrollToBottom,
-    FontLarger,
-    FontSmaller,
-    FontReset,
-}
-
-pub fn shortcut(keysym: Keysym, mods: Modifiers) -> Option<Action> {
-    let ctrl_shift = mods.ctrl && mods.shift && !mods.alt && !mods.logo;
-    let shift_only = mods.shift && !mods.ctrl && !mods.alt && !mods.logo;
-    let ctrl_only = mods.ctrl && !mods.shift && !mods.alt && !mods.logo;
-    match keysym {
-        Keysym::C | Keysym::c if ctrl_shift => Some(Action::Copy),
-        Keysym::V | Keysym::v if ctrl_shift => Some(Action::Paste),
-        Keysym::Insert if shift_only => Some(Action::Paste),
-        Keysym::Page_Up if shift_only => Some(Action::ScrollPageUp),
-        Keysym::Page_Down if shift_only => Some(Action::ScrollPageDown),
-        Keysym::Home if shift_only => Some(Action::ScrollToTop),
-        Keysym::End if shift_only => Some(Action::ScrollToBottom),
-        Keysym::plus | Keysym::equal | Keysym::KP_Add if ctrl_only || ctrl_shift => {
-            Some(Action::FontLarger)
-        }
-        Keysym::minus | Keysym::underscore | Keysym::KP_Subtract if ctrl_only || ctrl_shift => {
-            Some(Action::FontSmaller)
-        }
-        Keysym::_0 | Keysym::parenright | Keysym::KP_0 if ctrl_only || ctrl_shift => {
-            Some(Action::FontReset)
-        }
-        _ => None,
-    }
-}
-
 /// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl.
 fn modifier_param(mods: Modifiers) -> u8 {
     1 + mods.shift as u8 + 2 * mods.alt as u8 + 4 * mods.ctrl as u8
@@ -411,21 +372,6 @@ mod tests {
             encode_key(Keysym::KP_Enter, None, NONE, app).unwrap(),
             b"\x1bOM"
         );
-    }
-
-    #[test]
-    fn shortcuts() {
-        assert_eq!(shortcut(Keysym::C, CTRL_SHIFT), Some(Action::Copy));
-        assert_eq!(shortcut(Keysym::V, CTRL_SHIFT), Some(Action::Paste));
-        assert_eq!(shortcut(Keysym::Insert, SHIFT), Some(Action::Paste));
-        assert_eq!(shortcut(Keysym::Page_Up, SHIFT), Some(Action::ScrollPageUp));
-        assert_eq!(shortcut(Keysym::equal, CTRL), Some(Action::FontLarger));
-        assert_eq!(shortcut(Keysym::minus, CTRL), Some(Action::FontSmaller));
-        assert_eq!(shortcut(Keysym::_0, CTRL), Some(Action::FontReset));
-        // Plain Ctrl+C and Ctrl+V go to the application.
-        assert_eq!(shortcut(Keysym::c, CTRL), None);
-        assert_eq!(shortcut(Keysym::v, CTRL), None);
-        assert_eq!(shortcut(Keysym::Page_Up, NONE), None);
     }
 
     fn mouse(action: MouseAction, col: usize, row: usize, mods: Modifiers) -> MouseEvent {

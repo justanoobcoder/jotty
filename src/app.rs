@@ -26,6 +26,7 @@ use smithay_client_toolkit::reexports::calloop::{
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
+    Keymap,
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{
@@ -40,6 +41,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
+use xkbcommon::xkb;
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::wl_data_source::WlDataSource;
@@ -53,7 +55,8 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 use crate::config::Config;
 use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
-use crate::input::{self, Action, KeyModes, MouseAction, MouseButton, MouseEvent};
+use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
+use crate::keybinds::Action;
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme};
 use crate::selection::{Point, Selection};
@@ -102,6 +105,10 @@ pub struct App {
 
     keyboard: Option<wl_keyboard::WlKeyboard>,
     modifiers: Modifiers,
+    /// Our own copy of the keyboard's keymap, to find what a key produces
+    /// without modifiers (for key bindings), and the active layout.
+    keymap: Option<xkb::Keymap>,
+    layout: u32,
     focused: bool,
     /// Serial of the latest input event, for clipboard requests.
     last_serial: u32,
@@ -256,6 +263,8 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         exit: false,
         keyboard: None,
         modifiers: Modifiers::default(),
+        keymap: None,
+        layout: 0,
         focused: false,
         last_serial: 0,
         pointer: None,
@@ -438,8 +447,24 @@ impl App {
         self.update_text_input(false);
     }
 
+    /// The symbol `raw_code` produces without modifiers, in the active layout.
+    fn base_keysym(&self, raw_code: u32) -> Option<Keysym> {
+        let keymap = self.keymap.as_ref()?;
+        // Wayland key codes are evdev codes; xkb's are offset by 8.
+        let code = xkb::Keycode::new(raw_code + 8);
+        keymap
+            .key_get_syms_by_level(code, self.layout, 0)
+            .first()
+            .copied()
+    }
+
     fn handle_key(&mut self, event: KeyEvent) {
-        if let Some(action) = input::shortcut(event.keysym, self.modifiers) {
+        let base = self.base_keysym(event.raw_code);
+        if let Some(action) = self
+            .config
+            .keybinds
+            .lookup(event.keysym, base, self.modifiers)
+        {
             self.run_action(action);
             return;
         }
@@ -468,6 +493,8 @@ impl App {
         match action {
             Action::Copy => self.copy(),
             Action::Paste => self.paste(),
+            Action::ScrollLineUp => self.term.screen_mut().scroll_display(1),
+            Action::ScrollLineDown => self.term.screen_mut().scroll_display(-1),
             Action::ScrollPageUp => self.term.screen_mut().scroll_display(page),
             Action::ScrollPageDown => self.term.screen_mut().scroll_display(-page),
             Action::ScrollToTop => self.term.screen_mut().scroll_display(isize::MAX),
@@ -1010,9 +1037,29 @@ impl KeyboardHandler for App {
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
-        _: u32,
+        layout: u32,
     ) {
         self.modifiers = modifiers;
+        self.layout = layout;
+    }
+
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        self.keymap = xkb::Keymap::new_from_string(
+            &context,
+            keymap.as_string(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        );
+        if self.keymap.is_none() {
+            log::warn!("cannot compile the keymap; key bindings match shifted symbols only");
+        }
     }
 }
 
