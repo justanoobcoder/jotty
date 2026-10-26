@@ -180,7 +180,7 @@ impl ViMode {
                     return Outcome::Exit;
                 }
             }
-            Key::Char('i' | 'q') => return Outcome::Exit,
+            Key::Char('i' | 'I' | 'q') => return Outcome::Exit,
             _ => return Outcome::Ignored,
         }
         self.cursor.line = self.cursor.line.clamp(top, bottom);
@@ -524,6 +524,7 @@ mod tests {
         assert_eq!(vi.key(t.screen(), Key::Escape), Outcome::Done);
         assert_eq!(vi.visual(), None);
         assert_eq!(vi.key(t.screen(), Key::Escape), Outcome::Exit);
+        assert_eq!(press(&mut vi, &t, "I"), Outcome::Exit);
         assert_eq!(press(&mut vi, &t, "x"), Outcome::Ignored);
     }
 
