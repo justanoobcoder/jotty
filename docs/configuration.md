@@ -49,9 +49,32 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `title` | string | `"jotty"` | Initial title. Programs can change it with OSC 0/2. |
 | `app_id` | string | `"jotty"` | Wayland application ID, for compositor window rules. |
 | `padding` | integer | `4` | Space around the grid, in logical pixels. |
-| `opacity` | float | `1.0` | Background opacity, 0.0–1.0. Text stays opaque. |
+| `opacity` | float | `1.0` | Background opacity, 0.0–1.0. Text, the cursor and the selection stay opaque. |
+| `transparent_cell_backgrounds` | bool | `false` | Also apply `opacity` to cells with an explicit background color. |
+| `blur` | bool | `false` | Blur what is behind the window, if the compositor supports `ext-background-effect-v1`. |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
+
+### Transparency
+
+`opacity` makes the default background translucent. Cells whose background
+an application set explicitly (status bars, vim or tmux themes, `ls`
+highlights) stay opaque unless `transparent_cell_backgrounds = true`. That
+option matters for full-screen programs whose theme paints every cell, since
+otherwise the window looks completely opaque while they run.
+
+```toml
+[window]
+opacity = 0.85
+transparent_cell_backgrounds = true
+blur = true
+```
+
+`blur` asks the compositor to blur what is behind the window, which keeps
+text readable over busy wallpapers. It needs the `ext-background-effect-v1`
+protocol; without it, jotty logs a warning and stays unblurred. When
+`opacity` is 1.0, jotty marks the window opaque so the compositor can skip
+drawing what is behind it.
 
 ## `[terminal]`
 

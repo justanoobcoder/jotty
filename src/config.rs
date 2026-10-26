@@ -46,6 +46,11 @@ pub struct WindowConfig {
     pub padding: u32,
     /// Background opacity, from 0.0 (transparent) to 1.0 (opaque).
     pub opacity: f32,
+    /// Also apply `opacity` to cells with an explicit background color.
+    pub transparent_cell_backgrounds: bool,
+    /// Ask the compositor to blur what is behind the window
+    /// (ext-background-effect-v1).
+    pub blur: bool,
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
@@ -58,6 +63,8 @@ impl Default for WindowConfig {
             app_id: "jotty".into(),
             padding: 4,
             opacity: 1.0,
+            transparent_cell_backgrounds: false,
+            blur: false,
             columns: 80,
             lines: 24,
         }
@@ -262,6 +269,8 @@ mod tests {
             [window]
             padding = 8
             opacity = 0.9
+            transparent_cell_backgrounds = true
+            blur = true
 
             [terminal]
             shell = "/bin/zsh"
@@ -281,6 +290,8 @@ mod tests {
         assert_eq!(config.font.fallback, ["Noto Color Emoji"]);
         assert_eq!(config.window.padding, 8);
         assert_eq!(config.window.opacity, 0.9);
+        assert!(config.window.transparent_cell_backgrounds);
+        assert!(config.window.blur);
         assert_eq!(config.terminal.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.terminal.scrollback, 500);
         assert_eq!(config.colors.cursor(), Rgb(255, 0, 0));

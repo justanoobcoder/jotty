@@ -24,7 +24,10 @@ pub struct Theme {
     pub cursor: Rgb,
     pub palette: [Rgb; 16],
     pub bold_is_bright: bool,
+    /// Opacity of the default background.
     pub opacity: f32,
+    /// Also apply `opacity` to cells with an explicit background color.
+    pub transparent_cells: bool,
 }
 
 impl Theme {
@@ -36,6 +39,7 @@ impl Theme {
             palette: config.colors.palette(),
             bold_is_bright: config.terminal.bold_is_bright,
             opacity: config.window.opacity,
+            transparent_cells: config.window.transparent_cell_backgrounds,
         }
     }
 
@@ -124,7 +128,7 @@ pub struct Batch {
 impl Batch {
     /// Adds a quad covering `[x, y, width, height]`; `mode` 0 is a solid
     /// color, 1 samples the glyph atlas at `uv`.
-    fn quad(&mut self, [x, y, w, h]: [f32; 4], uv: [f32; 4], color: Rgb, mode: f32) {
+    fn quad(&mut self, [x, y, w, h]: [f32; 4], uv: [f32; 4], color: Rgb, alpha: f32, mode: f32) {
         let [r, g, b] = color.to_f32();
         let [u0, v0, u1, v1] = uv;
         let corners = [
@@ -137,12 +141,17 @@ impl Batch {
         ];
         for (px, py, u, v) in corners {
             self.vertices
-                .extend_from_slice(&[px, py, u, v, r, g, b, 1.0, mode]);
+                .extend_from_slice(&[px, py, u, v, r, g, b, alpha, mode]);
         }
     }
 
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
-        self.quad([x, y, w, h], [0.0; 4], color, 0.0);
+        self.fill(x, y, w, h, color, 1.0);
+    }
+
+    /// A solid rectangle with the given opacity.
+    pub fn fill(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb, alpha: f32) {
+        self.quad([x, y, w, h], [0.0; 4], color, alpha, 0.0);
     }
 
     pub fn glyph(&mut self, x: f32, y: f32, glyph: &GlyphInfo, color: Rgb) {
@@ -151,6 +160,7 @@ impl Batch {
             [x + glyph.left as f32, y + glyph.top as f32, w, h],
             glyph.uv,
             color,
+            1.0,
             1.0,
         );
     }
@@ -217,7 +227,13 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             let px = ox + x as f32 * cw;
 
             if bg != theme.background {
-                back.rect(px, py, cw * span, ch, bg);
+                // Selection and cursor stay opaque so they remain visible.
+                let alpha = if theme.transparent_cells && !selected && !is_cursor {
+                    theme.opacity
+                } else {
+                    1.0
+                };
+                back.fill(px, py, cw * span, ch, bg, alpha);
             }
             if cell.c != ' '
                 && !cell.flags.contains(Flags::HIDDEN)
@@ -291,7 +307,7 @@ fn draw_preedit(
             break;
         }
         let w = cw * width as f32;
-        batch.rect(col_x(col), py, w, ch, theme.background);
+        batch.fill(col_x(col), py, w, ch, theme.background, theme.opacity);
         if let Some(glyph) = glyphs.glyph(c, Style::Regular) {
             batch.glyph(col_x(col), py, &glyph, theme.foreground);
         }
@@ -358,6 +374,11 @@ mod tests {
             focused: true,
             origin: (0, 0),
         }
+    }
+
+    /// Alpha of the quad's first vertex.
+    fn alpha_at(batch: &Batch, i: usize) -> f32 {
+        batch.vertices[i * 6 * VERTEX_FLOATS + 7]
     }
 
     /// Color and position of the quad's first vertex.
@@ -453,6 +474,35 @@ mod tests {
         assert_eq!(batch.quads(), 2);
         let ((_, y), _, _) = quad_at(&batch, 1);
         assert_eq!(y, METRICS.underline as f32);
+    }
+
+    #[test]
+    fn cell_backgrounds_follow_transparency_setting() {
+        let mut term = Terminal::new(4, 1, 0);
+        term.feed(b"\x1b[41ma\x1b[0m");
+        let mut theme = theme();
+        theme.opacity = 0.5;
+        let batch = build(
+            &frame(term.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        // Red cell background, then the block cursor: both opaque by default.
+        assert_eq!(alpha_at(&batch, 0), 1.0);
+
+        theme.transparent_cells = true;
+        let batch = build(
+            &frame(term.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(quad_at(&batch, 0).1, theme.palette[1].to_f32());
+        assert_eq!(alpha_at(&batch, 0), 0.5);
+        // The cursor (second background) stays opaque.
+        assert_eq!(quad_at(&batch, 1).1, theme.cursor.to_f32());
+        assert_eq!(alpha_at(&batch, 1), 1.0);
     }
 
     #[test]

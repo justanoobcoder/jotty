@@ -5,7 +5,12 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
+use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
+use smithay_client_toolkit::compositor::{
+    CompositorHandler, CompositorState, FrameCallbackData, Region,
+};
+use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::Capability as EffectCapability;
+use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
 use smithay_client_toolkit::data_device_manager::data_source::{
@@ -38,7 +43,7 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::wl_data_source::WlDataSource;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -70,6 +75,9 @@ pub struct App {
     shm: Shm,
     data_device_manager: Option<DataDeviceManagerState>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
+    background_effect: BackgroundEffectState,
+    /// Present once the compositor agreed to blur behind the window.
+    blur: Option<ExtBackgroundEffectSurfaceV1>,
 
     config: Config,
     // Declared before `window` so the EGL surface is destroyed before the
@@ -125,6 +133,14 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
     let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|e| format!("xdg_wm_base: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
+    let background_effect = BackgroundEffectState::new(&globals, &qh);
+    if config.window.blur
+        && background_effect
+            .ext_background_effect_manager_v1()
+            .is_err()
+    {
+        log::warn!("blur requested, but the compositor lacks ext-background-effect-v1");
+    }
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
     let text_input_manager = globals
         .bind::<ZwpTextInputManagerV3, _, _>(&qh, 1..=1, TextInputManagerData)
@@ -147,6 +163,12 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     window.set_title(config.window.title.clone());
     window.set_app_id(config.window.app_id.clone());
     window.set_min_size(Some((cell.width * 2 + 2 * pad, cell.height + 2 * pad)));
+    if config.window.opacity >= 1.0 {
+        // Lets the compositor skip drawing what is behind the window.
+        set_whole_region(&compositor, |region| {
+            window.wl_surface().set_opaque_region(region)
+        });
+    }
     window.commit();
 
     // SAFETY: the display outlives the renderer (the event loop holds a
@@ -207,6 +229,8 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         shm,
         data_device_manager,
         text_input_manager,
+        background_effect,
+        blur: None,
         config,
         renderer,
         window,
@@ -973,6 +997,54 @@ impl PointerHandler for App {
                 PointerEventKind::Axis { vertical, .. } => self.scroll(vertical),
                 _ => {}
             }
+        }
+    }
+}
+
+/// Calls `apply` with a region covering any surface size; compositors clip
+/// it to the surface, so it never needs updating on resize.
+fn set_whole_region(
+    compositor: &CompositorState,
+    apply: impl FnOnce(Option<&wl_region::WlRegion>),
+) {
+    match Region::new(compositor) {
+        Ok(region) => {
+            region.add(0, 0, i32::MAX, i32::MAX);
+            apply(Some(region.wl_region()));
+        }
+        Err(e) => log::warn!("cannot create region: {e}"),
+    }
+}
+
+impl BackgroundEffectHandler for App {
+    fn background_effect_state(&mut self) -> &mut BackgroundEffectState {
+        &mut self.background_effect
+    }
+
+    fn update_capabilities(&mut self) {
+        if !self.config.window.blur || self.blur.is_some() {
+            return;
+        }
+        let supported = self
+            .background_effect
+            .capabilities()
+            .is_some_and(|c| c.contains(EffectCapability::Blur));
+        if !supported {
+            log::warn!("blur requested, but the compositor cannot blur");
+            return;
+        }
+        let surface = self.window.wl_surface().clone();
+        match self
+            .background_effect
+            .get_background_effect(&surface, &self.qh)
+        {
+            Ok(effect) => {
+                set_whole_region(&self.compositor, |region| effect.set_blur_region(region));
+                self.blur = Some(effect);
+                // The blur region applies on the next commit, i.e. frame.
+                self.request_redraw();
+            }
+            Err(e) => log::warn!("cannot enable blur: {e}"),
         }
     }
 }

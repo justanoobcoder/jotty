@@ -146,7 +146,10 @@ and uploads into the atlas.
 **2. Drawing** (`renderer::gl`) uploads the batch into one vertex buffer and
 issues one `glDrawArrays`. A vertex has position, texture coordinate, color,
 and a mode (solid or glyph). A single shader handles both modes, writing
-premultiplied alpha so `window.opacity` works. The atlas is a 2048×2048
+premultiplied alpha. The EGL config has an alpha channel, so the
+compositor blends the window: the clear color is the background at
+`window.opacity`, and colored cell backgrounds use the same alpha when
+`transparent_cell_backgrounds` is set. The atlas is a 2048×2048
 single-channel (`R8`) texture sampled with `NEAREST`, since glyphs sit on
 whole pixels. When it fills up, it is cleared and the frame is redrawn.
 
@@ -172,6 +175,12 @@ first configure sets the logical size; the grid size is
 SCTK's `scale_factor_changed`. jotty sets the buffer scale, re-rasterizes the
 font at `size × 96/72 × scale` pixels per em, resizes the EGL window, and
 reports the new grid size to the child with `TIOCSWINSZ`.
+
+For transparency, `app.rs` also sets a whole-surface opaque region when the
+opacity is 1.0. When `window.blur` is set, it asks
+`ext_background_effect_manager_v1` for a blur region once the compositor has
+advertised that capability. Both regions are larger than any window and
+clipped by the compositor, so resizing never has to update them.
 
 ## Clipboard (`app.rs`)
 

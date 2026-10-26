@@ -19,8 +19,15 @@ title = "jotty"
 app_id = "jotty"
 # Space around the text, in logical pixels.
 padding = 4
-# Background opacity from 0.0 to 1.0 (needs a compositor that blends).
+# Background opacity from 0.0 to 1.0. Text, the cursor and the selection
+# stay opaque.
 opacity = 1.0
+# Also make cells with an explicit background color (as painted by vim or
+# tmux themes) transparent. When false, only the default background is.
+transparent_cell_backgrounds = false
+# Blur what is behind the window, on compositors that support
+# ext-background-effect-v1. Only visible with opacity below 1.0.
+blur = false
 # Initial size in cells (the compositor may override it).
 columns = 80
 lines = 24

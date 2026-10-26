@@ -67,6 +67,14 @@ nothing surprises you.
 
 ## Rendering and performance
 
+- Blur only uses `ext-background-effect-v1`. The older KDE
+  (`org_kde_kwin_blur`) and Hyprland-specific mechanisms are not supported;
+  on those compositors, use their window rules instead. The blur path has
+  not been tested against a compositor that implements the protocol.
+- With transparency, the input-method preedit is drawn over a translucent
+  background, so text under it on the same row can show through faintly.
+- Opacity can't be changed at runtime.
+
 - Every frame rebuilds and uploads the vertex buffer for the whole screen
   (no damage tracking). This is cheap for normal sizes, but a huge window
   with a tiny font does more work than necessary.
