@@ -59,7 +59,10 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 
 `opacity` makes the default background translucent. Cells whose background
 an application set explicitly (status bars, vim or tmux themes, `ls`
-highlights) stay opaque unless `transparent_cell_backgrounds = true`. That
+highlights) stay opaque unless `transparent_cell_backgrounds = true`, even
+when the color they set equals `colors.background`. To have Neovim show
+the transparency without that option, let its theme leave the background
+unset (most themes have a `transparent` setting). That
 option matters for full-screen programs whose theme paints every cell, since
 otherwise the window looks completely opaque while they run.
 
