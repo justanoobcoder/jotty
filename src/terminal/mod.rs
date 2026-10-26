@@ -139,6 +139,9 @@ pub struct Modes {
     pub mouse: MouseMode,
     /// `?1006`: report pointer events in the SGR encoding.
     pub mouse_sgr: bool,
+    /// `?2026`: the program is in the middle of an update; hold drawing
+    /// until it ends.
+    pub synchronized: bool,
     autowrap: bool,
     origin: bool,
     insert: bool,
@@ -154,6 +157,7 @@ impl Default for Modes {
             focus_events: false,
             mouse: MouseMode::Off,
             mouse_sgr: false,
+            synchronized: false,
             show_cursor: true,
             autowrap: true,
             origin: false,
@@ -839,9 +843,49 @@ impl Screen {
             1006 => self.modes.mouse_sgr = on,
             1004 => self.modes.focus_events = on,
             2004 => self.modes.bracketed_paste = on,
+            2026 => self.modes.synchronized = on,
             _ => log::debug!("unhandled private mode {mode} = {on}"),
         }
         self.dirty = true;
+    }
+
+    /// Whether a private mode is set, for DECRQM; `None` if unsupported.
+    fn private_mode(&self, mode: u16) -> Option<bool> {
+        let m = &self.modes;
+        Some(match mode {
+            1 => m.app_cursor,
+            6 => m.origin,
+            7 => m.autowrap,
+            25 => m.show_cursor,
+            47 | 1047 | 1049 => self.alt_active,
+            9 => m.mouse == MouseMode::X10,
+            1000 => m.mouse == MouseMode::Normal,
+            1002 => m.mouse == MouseMode::ButtonMotion,
+            1003 => m.mouse == MouseMode::AnyMotion,
+            1004 => m.focus_events,
+            1006 => m.mouse_sgr,
+            2004 => m.bracketed_paste,
+            2026 => m.synchronized,
+            _ => return None,
+        })
+    }
+
+    /// Answers DECRQM (`CSI ? Ps $ p` or `CSI Ps $ p`).
+    fn report_mode(&mut self, mode: u16, private: bool) {
+        let state = if private {
+            self.private_mode(mode)
+        } else {
+            match mode {
+                4 => Some(self.modes.insert),
+                20 => Some(self.modes.linefeed_newline),
+                _ => None,
+            }
+        };
+        // 1: set, 2: reset, 0: not recognized.
+        let value = state.map_or(0, |on| if on { 1 } else { 2 });
+        let prefix = if private { "?" } else { "" };
+        let reply = format!("\x1b[{prefix}{mode};{value}$y");
+        self.responses.extend_from_slice(reply.as_bytes());
     }
 
     fn set_mode(&mut self, mode: u16, on: bool) {
@@ -1182,6 +1226,8 @@ impl Perform for Screen {
             ([], 'l') => args.iter().for_each(|&m| self.set_mode(m, false)),
             ([b'?'], 'h') => args.iter().for_each(|&m| self.set_private_mode(m, true)),
             ([b'?'], 'l') => args.iter().for_each(|&m| self.set_private_mode(m, false)),
+            ([b'?', b'$'], 'p') => self.report_mode(raw(0), true),
+            ([b'$'], 'p') => self.report_mode(raw(0), false),
             ([], 'm') => self.sgr(params),
             ([], 'r') => {
                 let top = arg(0, 1) - 1;

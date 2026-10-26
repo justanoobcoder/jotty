@@ -473,6 +473,25 @@ fn erasing_removes_marks() {
 }
 
 #[test]
+fn synchronized_output_mode() {
+    let mut t = term(10, 2);
+    t.feed(b"\x1b[?2026h");
+    assert!(t.screen().modes.synchronized);
+    t.feed(b"\x1b[?2026l");
+    assert!(!t.screen().modes.synchronized);
+}
+
+#[test]
+fn mode_reports() {
+    let mut t = term(10, 2);
+    t.feed(b"\x1b[?2026h\x1b[?2026$p\x1b[?25l\x1b[?25$p\x1b[?9999$p\x1b[4$p");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b[?2026;1$y\x1b[?25;2$y\x1b[?9999;0$y\x1b[4;2$y"
+    );
+}
+
+#[test]
 fn split_input_across_feeds() {
     let mut t = term(10, 1);
     let bytes = "\x1b[31m中".as_bytes();

@@ -4,6 +4,7 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
 use smithay_client_toolkit::compositor::{
@@ -20,6 +21,7 @@ use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WriteP
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
     EventLoop, Interest, LoopHandle, Mode, PostAction,
 };
@@ -68,6 +70,9 @@ const BTN_MIDDLE: u32 = 0x112;
 /// Clicks on the same cell within this many milliseconds of each other make
 /// a double or triple click.
 const DOUBLE_CLICK_MS: u32 = 400;
+/// Longest a program can hold drawing with synchronized output (mode 2026),
+/// in case it never ends the update.
+const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
@@ -104,6 +109,8 @@ pub struct App {
     dirty: bool,
     /// A frame callback is outstanding; drawing waits for it.
     frame_pending: bool,
+    /// When the program started a synchronized update that is still open.
+    sync_since: Option<Instant>,
     exit: bool,
 
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -290,6 +297,7 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         configured: false,
         dirty: true,
         frame_pending: false,
+        sync_since: None,
         exit: false,
         keyboard: None,
         modifiers: Modifiers::default(),
@@ -449,9 +457,32 @@ impl App {
 
     fn request_redraw(&mut self) {
         self.dirty = true;
-        if self.configured && !self.frame_pending {
+        if self.configured && !self.frame_pending && !self.holding_for_sync() {
             self.draw();
         }
+    }
+
+    /// Whether drawing waits for the program to finish a synchronized
+    /// update. A timer redraws anyway after `SYNC_TIMEOUT`.
+    fn holding_for_sync(&mut self) -> bool {
+        if !self.term.screen().modes.synchronized {
+            self.sync_since = None;
+            return false;
+        }
+        let since = *self.sync_since.get_or_insert_with(|| {
+            let timer = Timer::from_duration(SYNC_TIMEOUT);
+            let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
+                if app.dirty {
+                    app.request_redraw();
+                }
+                TimeoutAction::Drop
+            });
+            if let Err(e) = inserted {
+                log::warn!("cannot start the synchronized-output timer: {e}");
+            }
+            Instant::now()
+        });
+        since.elapsed() < SYNC_TIMEOUT
     }
 
     fn draw(&mut self) {
@@ -884,7 +915,7 @@ impl CompositorHandler for App {
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
         self.frame_pending = false;
         if self.dirty {
-            self.draw();
+            self.request_redraw();
         }
     }
 
