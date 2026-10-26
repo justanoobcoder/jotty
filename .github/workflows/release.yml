@@ -145,7 +145,7 @@ jobs:
         run: sha256sum -- * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          name: jotty ${{ needs.version.outputs.version }}
+          name: ${{ github.ref_name }}
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
