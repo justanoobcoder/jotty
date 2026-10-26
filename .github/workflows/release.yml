@@ -1,0 +1,151 @@
+name: Release
+
+# Pushing a tag such as `v0.2.0` builds jotty for the major distributions
+# and publishes a GitHub release with the packages attached. Tags with a
+# `-` (`v0.2.0-rc.1`) are published as pre-releases.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: The tag must match Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag" != "$cargo" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $cargo in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Packages (${{ matrix.arch }})
+    needs: version
+    strategy:
+      matrix:
+        include:
+          # Ubuntu 22.04 for its older glibc (2.35): the binaries then run
+          # on Debian 12, Ubuntu 22.04 and every newer distribution.
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libegl-dev \
+            libfontconfig-dev ncurses-bin
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - run: cargo build --release --locked
+      - name: Compile the terminfo entry
+        run: |
+          tic -x -o target/terminfo extra/jotty.terminfo
+          # unibilium (Neovim) refuses entries of 4096 bytes or more.
+          size=$(stat -c %s target/terminfo/j/jotty)
+          if [ "$size" -ge 4096 ]; then
+            echo "::error::terminfo entry is $size bytes, must stay under 4096"
+            exit 1
+          fi
+      - run: strip target/release/jotty
+      - name: Tarball
+        run: |
+          name="jotty-$VERSION-${{ matrix.arch }}-linux"
+          mkdir -p "dist/$name/bin" "dist/$name/share/doc/jotty"
+          install -m755 target/release/jotty "dist/$name/bin/"
+          # jotty finds the entry next to its binary (../share/terminfo).
+          install -Dm644 target/terminfo/j/jotty "dist/$name/share/terminfo/j/jotty"
+          install -Dm644 extra/jotty.desktop "dist/$name/share/applications/jotty.desktop"
+          install -m644 README.md LICENSE docs/*.md docs/config.example.toml "dist/$name/share/doc/jotty/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -r "dist/$name"
+      - name: Debian package
+        run: |
+          cargo deb --no-build --locked
+          cp target/debian/*.deb dist/
+      - name: RPM package
+        run: |
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  arch:
+    name: Arch Linux package
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Install build tools and libraries
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust wayland libxkbcommon \
+            libglvnd fontconfig ncurses
+      - uses: actions/checkout@v4
+      - name: Build with makepkg
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cd packaging/arch
+          # The tagged source, where makepkg looks for it before downloading.
+          git -C "$GITHUB_WORKSPACE" archive --prefix="jotty-$VERSION/" \
+            -o "$PWD/jotty-$VERSION.tar.gz" HEAD
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          # makepkg refuses to run as root.
+          useradd --create-home builder
+          chown -R builder .
+          su builder -c "makepkg --noconfirm"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp ./*.pkg.tar.zst "$GITHUB_WORKSPACE/dist/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: [version, linux, arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: jotty ${{ needs.version.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true

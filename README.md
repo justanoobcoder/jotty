@@ -23,6 +23,19 @@ A minimal terminal emulator for Wayland, written in Rust.
 
 ## Install
 
+Each [release](https://github.com/justanoobcoder/jotty/releases) has
+packages for x86_64 and aarch64 (the Arch package is x86_64 only):
+
+| Distribution | Package | Install with |
+| --- | --- | --- |
+| Debian, Ubuntu, Mint, Pop!_OS | `jotty_*.deb` | `sudo apt install ./jotty_*.deb` |
+| Fedora, openSUSE, RHEL-likes | `jotty-*.rpm` | `sudo dnf install ./jotty-*.rpm` |
+| Arch, Manjaro, EndeavourOS | `jotty-*.pkg.tar.zst` | `sudo pacman -U jotty-*.pkg.tar.zst` |
+| Other (glibc 2.35+) | `jotty-*-linux.tar.gz` | unpack anywhere and run `bin/jotty` |
+
+`SHA256SUMS` lists their checksums. The packages install the terminfo
+entry and a desktop entry, so app launchers list jotty.
+
 With Nix flakes, from a checkout:
 
 ```sh

@@ -33,3 +33,35 @@ yeslogic-fontconfig-sys = "6.0.1"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Distribution packages, built by the release workflow. The terminfo entry is
+# compiled there first, with `tic -x -o target/terminfo extra/jotty.terminfo`.
+
+[package.metadata.deb]
+section = "x11"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+A minimal terminal emulator for Wayland: GPU or CPU rendering, input methods \
+with surrounding text, grapheme clusters and color emoji, reflow, scrollback \
+search, clickable links and a vi mode."""
+assets = [
+    ["target/release/jotty", "usr/bin/", "755"],
+    ["target/terminfo/j/jotty", "usr/share/terminfo/j/", "644"],
+    ["extra/jotty.desktop", "usr/share/applications/", "644"],
+    ["README.md", "usr/share/doc/jotty/", "644"],
+    ["docs/*.md", "usr/share/doc/jotty/", "644"],
+    ["docs/config.example.toml", "usr/share/doc/jotty/", "644"],
+]
+
+[package.metadata.generate-rpm]
+auto-req = "auto"
+assets = [
+    { source = "target/release/jotty", dest = "/usr/bin/jotty", mode = "755" },
+    { source = "target/terminfo/j/jotty", dest = "/usr/share/terminfo/j/jotty", mode = "644" },
+    { source = "extra/jotty.desktop", dest = "/usr/share/applications/jotty.desktop", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/jotty/LICENSE", mode = "644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/jotty/README.md", mode = "644", doc = true },
+    { source = "docs/*.md", dest = "/usr/share/doc/jotty/", mode = "644", doc = true },
+    { source = "docs/config.example.toml", dest = "/usr/share/doc/jotty/config.example.toml", mode = "644", doc = true },
+]

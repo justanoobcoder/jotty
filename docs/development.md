@@ -49,6 +49,34 @@ nix fmt             # formats flake.nix
 Warnings fail every job. When raising `rust-version`, update the
 toolchain in the minimum-version job too.
 
+## Releasing
+
+1. Set `version` in `Cargo.toml` (and run `cargo build` to update
+   `Cargo.lock`), commit, and push.
+2. Tag the commit and push the tag:
+
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+`.github/workflows/release.yml` then checks that the tag matches the
+version, builds on Ubuntu 22.04 (for an old enough glibc) for x86_64 and
+aarch64, and publishes a GitHub release with:
+
+| File | For |
+| --- | --- |
+| `jotty_VERSION-1_ARCH.deb` | Debian, Ubuntu and derivatives (`cargo-deb`; dependencies detected from the binary) |
+| `jotty-VERSION-1.ARCH.rpm` | Fedora, openSUSE, RHEL-likes (`cargo-generate-rpm`) |
+| `jotty-VERSION-1-x86_64.pkg.tar.zst` | Arch Linux, built with `makepkg` from `packaging/arch/PKGBUILD` in an Arch container |
+| `jotty-VERSION-ARCH-linux.tar.gz` | Anything else: `bin/jotty` with `share/terminfo`, the desktop entry and docs |
+| `SHA256SUMS` | Checksums of all of the above |
+
+A tag with a `-` (`v0.2.0-rc.1`) makes a pre-release. The package contents
+are listed in `Cargo.toml` (`[package.metadata.deb]` and
+`[package.metadata.generate-rpm]`) and in the PKGBUILD. The PKGBUILD also
+works for the AUR: it downloads the tagged source from GitHub.
+
 ## Tests
 
 The tests don't need a compositor, GPU or display:
