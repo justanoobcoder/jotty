@@ -10,7 +10,17 @@ you change. Unknown keys and invalid values are errors:
 - For the default file, jotty logs the error and starts with the defaults, so
   a typo never leaves you without a terminal.
 
-The config is read once at startup.
+**Reloading.** jotty reloads the config when you save the file, when you
+press Ctrl+Shift+R (`reload_config`), and when it receives `SIGUSR1`
+(`pkill -USR1 jotty` reloads every window, handy for theme switchers). If
+the new file has an error, jotty logs it and keeps the current settings.
+Fonts, colors, opacity, blur, padding, key bindings, `[url]`, `[files]`
+and the other window and terminal options apply right away. A new
+`font.size` replaces any zooming done with Ctrl+=/Ctrl+-. A few options
+only apply to new windows, which jotty logs when they change:
+`terminal.shell`, `terminal.term`, `terminal.scrollback`,
+`window.renderer`, `window.columns`, `window.lines`, `window.title` and
+`window.app_id`.
 
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
@@ -217,6 +227,7 @@ Actions you don't list keep their defaults.
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
+| `reload_config` | `ctrl+shift+r` | Read the config file again |
 | `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
 | `new_window` | `ctrl+shift+n` | Open another jotty in the current directory of the shell (or whatever runs in the terminal), with the same `--config` file |
 

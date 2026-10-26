@@ -39,6 +39,7 @@ on the CPU.
 | `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
+| `watch.rs` | Reload triggers: inotify on the config's directory, a SIGUSR1 self-pipe | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |
@@ -309,6 +310,8 @@ The `unsafe` code is confined to:
 - `font.rs`: the fontconfig FFI calls, each a create/use/destroy sequence
   inside one function, and `mmap` of font files, which are never unmapped
   (so the `&'static` slices that faces borrow stay valid);
+- `watch.rs`: `inotify_init1`/`inotify_add_watch`, and the SIGUSR1
+  handler, which only writes a byte to a pipe the event loop reads;
 - `renderer/gl.rs`: EGL and GL calls. The `Renderer` must not outlive the
   `wl_display` or the `wl_surface`. `App` declares `renderer` before `window`,
   so it is dropped first, and the event loop holding the connection outlives

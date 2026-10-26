@@ -50,6 +50,7 @@ The tests don't need a compositor, GPU or display:
 | `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, color glyphs, clipping, partial repaints and damage bands |
 | `font.rs` | Cell metrics, box drawing, mark overlays, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
 | `emoji.rs` | Which text is drawn in color, scaling, and flag ligatures in the system emoji font (skipped without one) |
+| `watch.rs` | Noticing a config file replaced by rename, ignoring other files, parsing inotify events |
 | `links.rs`, `search.rs` | URL and hyperlink detection, trimming, wrapped lines, configured patterns; finding matches in both directions |
 | `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text, words, lines, following output |
 
@@ -110,7 +111,8 @@ See [architecture.md](architecture.md) for the module map. Some conventions:
   `input`, `selection`, `renderer::build`), so they stay unit-testable.
 - When adding an escape sequence, add a test in `terminal/tests.rs` that
   feeds the bytes and checks the resulting grid.
-- `unsafe` stays in `pty.rs`, `font.rs` (fontconfig, `mmap`) and `renderer/gl.rs`,
+- `unsafe` stays in `pty.rs`, `font.rs` (fontconfig, `mmap`), `watch.rs`
+  (inotify, signals) and `renderer/gl.rs`,
   with a `SAFETY` comment where the reason isn't obvious.
 - Commit one change at a time, and make sure tests, clippy and rustfmt pass
   first.

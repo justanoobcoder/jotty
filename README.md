@@ -71,6 +71,7 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Ctrl+Shift+F           | Search the scrollback                         |
 | Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |
 | Ctrl+Shift+N           | New window in the current directory           |
+| Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
 | Ctrl+click             | Open a link, URL, image or video file (Ctrl+hover underlines it) |
 
 These are the defaults; key bindings can be changed in the

@@ -103,6 +103,9 @@ new_window = ["ctrl+shift+n"]
 # Vi mode: move a cursor over the screen and scrollback with vim keys,
 # select (v, V, Ctrl+V), yank (y), search (/, ?, n, N); Escape leaves.
 vi_mode = ["ctrl+shift+space"]
+# Read the config file again (it also reloads by itself when saved, and on
+# SIGUSR1).
+reload_config = ["ctrl+shift+r"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set

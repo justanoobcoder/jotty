@@ -105,6 +105,10 @@ nothing surprises you.
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
 - No `idle-inhibit`. Drag-and-drop is not accepted.
+- Saving the config reloads it by watching the file's directory. When the
+  config is a symlink, editing the file it points to in another directory
+  isn't noticed (replacing the symlink, as home-manager does, is); press
+  Ctrl+Shift+R or send `SIGUSR1` then.
 
 ## Rendering and performance
 
@@ -114,7 +118,6 @@ nothing surprises you.
   not been tested against a compositor that implements the protocol.
 - With transparency, the input-method preedit is drawn over a translucent
   background, so text under it on the same row can show through faintly.
-- Opacity can't be changed at runtime.
 - Every frame rebuilds the whole screen's quads. The CPU renderer then
   repaints and damages only the rows that changed, so typing is cheap, but
   output that scrolls the whole screen repaints all of it; on a large
@@ -129,6 +132,7 @@ nothing surprises you.
 
 ## Platform
 
-- Linux only: it uses `openpty`, `TIOCSCTTY`, and `EIO` for detecting that
-  the child exited. The BSDs would need small changes in `pty.rs`.
+- Linux only: it uses `openpty`, `TIOCSCTTY`, `EIO` for detecting that the
+  child exited, `/proc` for the shell's directory, and inotify to notice
+  config changes. The BSDs would need small changes in `pty.rs`.
 - Wayland only. There is no X11 support, by design.
