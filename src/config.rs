@@ -1,0 +1,332 @@
+//! User configuration, loaded from `$XDG_CONFIG_HOME/jotty/config.toml`.
+//!
+//! Every field has a default, so an empty or missing file is valid.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub font: FontConfig,
+    pub window: WindowConfig,
+    pub terminal: TerminalConfig,
+    pub colors: ColorConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FontConfig {
+    /// Font family name, resolved through the system font configuration.
+    pub family: String,
+    /// Font size in points (at a scale factor of 1, one point is one pixel).
+    pub size: f32,
+    /// Families tried, in order, for characters the primary font lacks.
+    pub fallback: Vec<String>,
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            family: "monospace".into(),
+            size: 14.0,
+            fallback: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowConfig {
+    pub title: String,
+    pub app_id: String,
+    /// Padding around the cell grid, in logical pixels.
+    pub padding: u32,
+    /// Background opacity, from 0.0 (transparent) to 1.0 (opaque).
+    pub opacity: f32,
+    /// Initial size in cells.
+    pub columns: u16,
+    pub lines: u16,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            title: "jotty".into(),
+            app_id: "jotty".into(),
+            padding: 4,
+            opacity: 1.0,
+            columns: 80,
+            lines: 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalConfig {
+    /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
+    pub shell: Option<String>,
+    /// Value of `$TERM` for the child process.
+    pub term: String,
+    /// Number of lines kept in the scrollback history.
+    pub scrollback: usize,
+    /// Render bold text with the bright variant of the first eight colors.
+    pub bold_is_bright: bool,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            term: "xterm-256color".into(),
+            scrollback: 10_000,
+            bold_is_bright: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ColorConfig {
+    pub foreground: Rgb,
+    pub background: Rgb,
+    /// Cursor color; defaults to the foreground color.
+    pub cursor: Option<Rgb>,
+    /// Overrides for the 16 ANSI colors, in order (black, red, ..., bright white).
+    /// May be shorter than 16 entries; the rest keep their defaults.
+    pub palette: Vec<Rgb>,
+}
+
+impl Default for ColorConfig {
+    fn default() -> Self {
+        Self {
+            foreground: Rgb(0xdc, 0xdc, 0xdc),
+            background: Rgb(0x18, 0x18, 0x18),
+            cursor: None,
+            palette: Vec::new(),
+        }
+    }
+}
+
+pub const DEFAULT_PALETTE: [Rgb; 16] = [
+    Rgb(0x24, 0x24, 0x24),
+    Rgb(0xe0, 0x6c, 0x75),
+    Rgb(0x98, 0xc3, 0x79),
+    Rgb(0xe5, 0xc0, 0x7b),
+    Rgb(0x61, 0xaf, 0xef),
+    Rgb(0xc6, 0x78, 0xdd),
+    Rgb(0x56, 0xb6, 0xc2),
+    Rgb(0xc8, 0xc8, 0xc8),
+    Rgb(0x5c, 0x63, 0x70),
+    Rgb(0xff, 0x7a, 0x85),
+    Rgb(0xb5, 0xe8, 0x90),
+    Rgb(0xff, 0xd6, 0x8a),
+    Rgb(0x7e, 0xc7, 0xff),
+    Rgb(0xde, 0x93, 0xf2),
+    Rgb(0x6e, 0xd3, 0xdf),
+    Rgb(0xff, 0xff, 0xff),
+];
+
+impl ColorConfig {
+    /// The 16 ANSI colors with user overrides applied.
+    pub fn palette(&self) -> [Rgb; 16] {
+        let mut palette = DEFAULT_PALETTE;
+        for (slot, color) in palette.iter_mut().zip(&self.palette) {
+            *slot = *color;
+        }
+        palette
+    }
+
+    pub fn cursor(&self) -> Rgb {
+        self.cursor.unwrap_or(self.foreground)
+    }
+}
+
+/// An sRGB color, written as `"#rrggbb"` in the config file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Rgb(pub u8, pub u8, pub u8);
+
+impl Rgb {
+    pub fn to_f32(self) -> [f32; 3] {
+        [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
+    }
+}
+
+impl TryFrom<String> for Rgb {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl std::str::FromStr for Rgb {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let hex = s.strip_prefix('#').unwrap_or(s);
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("invalid color {s:?}, expected \"#rrggbb\""));
+        }
+        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+        Ok(Rgb(channel(0), channel(2), channel(4)))
+    }
+}
+
+impl fmt::Display for Rgb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+    }
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    Io(PathBuf, std::io::Error),
+    Parse(PathBuf, toml::de::Error),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Io(path, e) => write!(f, "{}: {e}", path.display()),
+            ConfigError::Parse(path, e) => write!(f, "{}: {e}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+impl Config {
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        let mut config: Config = toml::from_str(text)?;
+        config.sanitize();
+        Ok(config)
+    }
+
+    /// Loads the config from `path`, or from the default location when `None`.
+    /// A missing file at the default location yields the default config.
+    pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
+        let (path, required) = match path {
+            Some(p) => (p.to_path_buf(), true),
+            None => match default_path() {
+                Some(p) => (p, false),
+                None => return Ok(Self::default()),
+            },
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Self::parse(&text).map_err(|e| ConfigError::Parse(path, e)),
+            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Self::default())
+            }
+            Err(e) => Err(ConfigError::Io(path, e)),
+        }
+    }
+
+    /// Clamps values that would otherwise break rendering.
+    fn sanitize(&mut self) {
+        self.font.size = self.font.size.clamp(4.0, 200.0);
+        self.window.opacity = self.window.opacity.clamp(0.0, 1.0);
+        self.window.columns = self.window.columns.max(2);
+        self.window.lines = self.window.lines.max(1);
+    }
+}
+
+pub fn default_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("jotty").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_file_is_default() {
+        assert_eq!(Config::parse("").unwrap(), Config::default());
+    }
+
+    #[test]
+    fn parses_all_sections() {
+        let config = Config::parse(
+            r##"
+            [font]
+            family = "JetBrains Mono"
+            size = 11.5
+            fallback = ["Noto Color Emoji"]
+
+            [window]
+            padding = 8
+            opacity = 0.9
+
+            [terminal]
+            shell = "/bin/zsh"
+            scrollback = 500
+
+            [colors]
+            foreground = "#ffffff"
+            background = "#000000"
+            cursor = "#ff0000"
+            palette = ["#010203", "#aabbcc"]
+            "##,
+        )
+        .unwrap();
+
+        assert_eq!(config.font.family, "JetBrains Mono");
+        assert_eq!(config.font.size, 11.5);
+        assert_eq!(config.font.fallback, ["Noto Color Emoji"]);
+        assert_eq!(config.window.padding, 8);
+        assert_eq!(config.window.opacity, 0.9);
+        assert_eq!(config.terminal.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(config.terminal.scrollback, 500);
+        assert_eq!(config.colors.cursor(), Rgb(255, 0, 0));
+        let palette = config.colors.palette();
+        assert_eq!(palette[0], Rgb(1, 2, 3));
+        assert_eq!(palette[1], Rgb(0xaa, 0xbb, 0xcc));
+        assert_eq!(palette[2], DEFAULT_PALETTE[2]);
+    }
+
+    #[test]
+    fn rejects_unknown_keys() {
+        assert!(Config::parse("[font]\nfamliy = \"x\"").is_err());
+    }
+
+    #[test]
+    fn rejects_bad_colors() {
+        assert!(Config::parse("[colors]\nforeground = \"#12345\"").is_err());
+        assert!(Config::parse("[colors]\nforeground = \"#gggggg\"").is_err());
+    }
+
+    #[test]
+    fn color_roundtrip() {
+        let c: Rgb = "#1a2B3c".parse().unwrap();
+        assert_eq!(c, Rgb(0x1a, 0x2b, 0x3c));
+        assert_eq!(c.to_string(), "#1a2b3c");
+        assert_eq!("1a2b3c".parse::<Rgb>().unwrap(), c);
+    }
+
+    #[test]
+    fn clamps_values() {
+        let config = Config::parse("[font]\nsize = 0\n[window]\nopacity = 3.0").unwrap();
+        assert_eq!(config.font.size, 4.0);
+        assert_eq!(config.window.opacity, 1.0);
+    }
+
+    #[test]
+    fn cursor_defaults_to_foreground() {
+        let config = Config::default();
+        assert_eq!(config.colors.cursor(), config.colors.foreground);
+    }
+
+    #[test]
+    fn missing_explicit_file_is_an_error() {
+        let err = Config::load(Some(Path::new("/nonexistent/jotty.toml"))).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(..)));
+    }
+}
