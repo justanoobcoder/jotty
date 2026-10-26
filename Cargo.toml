@@ -21,7 +21,7 @@ unicode-width = "0.2.2"
 vte = "0.15.0"
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
-wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }
 xkbcommon = { version = "0.8", default-features = false }
 yeslogic-fontconfig-sys = "6.0.1"
 

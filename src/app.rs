@@ -26,7 +26,13 @@ use smithay_client_toolkit::primary_selection::device::{
 use smithay_client_toolkit::primary_selection::selection::{
     PrimarySelectionSource, PrimarySelectionSourceHandler,
 };
+use smithay_client_toolkit::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use smithay_client_toolkit::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
+    self, WpFractionalScaleV1,
+};
 use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1;
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1;
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -121,9 +127,14 @@ pub struct App {
     pty: Pty,
     pty_write_queued: bool,
 
-    /// Window size in logical pixels and the integer buffer scale.
+    /// Window size in logical pixels and the scale factor, which is
+    /// fractional with wp-fractional-scale.
     size: (u32, u32),
-    scale: u32,
+    scale: f64,
+    /// With fractional scaling, the buffer is drawn at the scaled size and
+    /// the viewport maps it back to the logical size.
+    viewport: Option<WpViewport>,
+    _fractional_scale: Option<WpFractionalScaleV1>,
     font_points: f32,
     configured: bool,
     /// The screen changed and needs drawing.
@@ -227,6 +238,24 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
             window.wl_surface().set_opaque_region(region)
         });
     }
+    // Fractional scaling needs both protocols; otherwise the scale is the
+    // integer buffer scale.
+    let viewporter = globals
+        .bind::<WpViewporter, _, _>(&qh, 1..=1, ScaleData)
+        .ok();
+    let fractional_manager = globals
+        .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ScaleData)
+        .ok();
+    let (viewport, fractional_scale) = match (&viewporter, &fractional_manager) {
+        (Some(viewporter), Some(manager)) => (
+            Some(viewporter.get_viewport(window.wl_surface(), &qh, ScaleData)),
+            Some(manager.get_fractional_scale(window.wl_surface(), &qh, ScaleData)),
+        ),
+        _ => {
+            log::info!("no fractional scaling (wp-fractional-scale or wp-viewporter missing)");
+            (None, None)
+        }
+    };
     window.commit();
 
     let theme = Theme::from_config(&config);
@@ -329,7 +358,9 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         pty,
         pty_write_queued: false,
         size,
-        scale: 1,
+        scale: 1.0,
+        viewport,
+        _fractional_scale: fractional_scale,
         font_points,
         configured: false,
         dirty: true,
@@ -377,11 +408,27 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
 
 impl App {
     fn physical_size(&self) -> (u32, u32) {
-        (self.size.0 * self.scale, self.size.1 * self.scale)
+        let scaled = |v: u32| (f64::from(v) * self.scale).round() as u32;
+        (scaled(self.size.0), scaled(self.size.1))
     }
 
     fn padding(&self) -> u32 {
-        self.config.window.padding * self.scale
+        (f64::from(self.config.window.padding) * self.scale).round() as u32
+    }
+
+    /// Applies a new scale factor: re-rasterizes the font and resizes.
+    fn set_scale(&mut self, scale: f64) {
+        if scale == self.scale || scale <= 0.0 {
+            return;
+        }
+        log::info!("scale factor {scale}");
+        self.scale = scale;
+        if self.viewport.is_none() {
+            self.window.wl_surface().set_buffer_scale(scale as i32);
+        }
+        self.renderer
+            .set_font_size(points_to_px(self.font_points, scale as f32));
+        self.apply_size();
     }
 
     /// Grid dimensions that fit the window.
@@ -397,6 +444,9 @@ impl App {
     /// Propagates a window, scale or font size change to the renderer,
     /// the terminal and the child.
     fn apply_size(&mut self) {
+        if let Some(viewport) = &self.viewport {
+            viewport.set_destination(self.size.0.max(1) as i32, self.size.1.max(1) as i32);
+        }
         self.renderer.resize(self.physical_size());
         let (cols, rows) = self.grid_size();
         self.term.screen_mut().resize(cols, rows);
@@ -645,7 +695,7 @@ impl App {
 
     /// The visible cell under a surface-local position, as (column, row).
     fn cell_at(&self, (x, y): (f64, f64)) -> (usize, usize) {
-        let scale = f64::from(self.scale);
+        let scale = self.scale;
         let pad = f64::from(self.padding());
         let cell = self.renderer.cell();
         let screen = self.term.screen();
@@ -720,7 +770,7 @@ impl App {
         axis: &smithay_client_toolkit::seat::pointer::AxisScroll,
         per_notch: f64,
     ) -> isize {
-        let cell_height = f64::from(self.renderer.cell().height) / f64::from(self.scale);
+        let cell_height = f64::from(self.renderer.cell().height) / self.scale;
         self.scroll_accum += if axis.value120 != 0 {
             f64::from(axis.value120) / 120.0 * per_notch
         } else if axis.discrete != 0 {
@@ -978,12 +1028,13 @@ impl App {
         let surrounding =
             Surrounding::from_row(&screen.grid().rows[row], screen.input_start(), col);
         let cell = self.renderer.cell();
-        let (pad, scale) = (self.padding(), self.scale);
+        let pad = self.padding();
+        let logical = |px: u32| (f64::from(px) / self.scale) as i32;
         let rect = (
-            ((pad + col as u32 * cell.width) / scale) as i32,
-            ((pad + row as u32 * cell.height) / scale) as i32,
-            (cell.width / scale).max(1) as i32,
-            (cell.height / scale).max(1) as i32,
+            logical(pad + col as u32 * cell.width),
+            logical(pad + row as u32 * cell.height),
+            logical(cell.width).max(1),
+            logical(cell.height).max(1),
         );
         if !force && surrounding == self.ime.surrounding && rect == self.ime_cursor_rect {
             return;
@@ -1012,16 +1063,10 @@ impl CompositorHandler for App {
         _: &wl_surface::WlSurface,
         factor: i32,
     ) {
-        let scale = factor.max(1) as u32;
-        if scale == self.scale {
-            return;
+        // wp-fractional-scale reports the exact scale instead.
+        if self.viewport.is_none() {
+            self.set_scale(f64::from(factor.max(1)));
         }
-        log::info!("scale factor {scale}");
-        self.scale = scale;
-        self.window.wl_surface().set_buffer_scale(scale as i32);
-        self.renderer
-            .set_font_size(points_to_px(self.font_points, scale as f32));
-        self.apply_size();
     }
 
     fn transform_changed(
@@ -1612,6 +1657,61 @@ impl DataSourceHandler for App {
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+}
+
+/// User data for the viewport and fractional-scale objects.
+struct ScaleData;
+
+impl Dispatch2<WpViewporter, App> for ScaleData {
+    fn event(
+        &self,
+        _: &mut App,
+        _: &WpViewporter,
+        _: <WpViewporter as Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
+    }
+}
+
+impl Dispatch2<WpViewport, App> for ScaleData {
+    fn event(
+        &self,
+        _: &mut App,
+        _: &WpViewport,
+        _: <WpViewport as Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
+    }
+}
+
+impl Dispatch2<WpFractionalScaleManagerV1, App> for ScaleData {
+    fn event(
+        &self,
+        _: &mut App,
+        _: &WpFractionalScaleManagerV1,
+        _: <WpFractionalScaleManagerV1 as Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
+    }
+}
+
+impl Dispatch2<WpFractionalScaleV1, App> for ScaleData {
+    fn event(
+        &self,
+        app: &mut App,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _: &Connection,
+        _: &QueueHandle<App>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            // In 120ths.
+            app.set_scale(f64::from(scale) / 120.0);
+        }
+    }
 }
 
 /// User data for the text-input manager global.
