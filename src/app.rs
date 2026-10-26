@@ -286,7 +286,10 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     };
     window.commit();
 
-    let links = Detector::new(&config.url.regex).map_err(|e| format!("invalid url.regex: {e}"))?;
+    let links = Detector::new(&config.url.regex).unwrap_or_else(|e| {
+        log::error!("invalid url.regex, using only the built-in URL pattern: {e}");
+        Detector::new(&[]).expect("the built-in URL pattern is valid")
+    });
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
     let gpu = match config.window.renderer {
