@@ -84,13 +84,41 @@ drawing what is behind it.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `shell` | string | unset | Program to run. Unset means `$SHELL`, then `/bin/sh`. `-e` overrides it. |
-| `term` | string | `"xterm-256color"` | `$TERM` for the child. |
+| `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
 | `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
 
-jotty does not ship its own terminfo entry. It implements the parts of
-`xterm-256color` that matter in practice (see
-[known issues](known-issues.md) for the gaps).
+### `TERM` and terminfo
+
+jotty ships a terminfo entry, [`extra/jotty.terminfo`](../extra/jotty.terminfo):
+`xterm-256color` plus styled and colored underlines (`Smulx`, `Setulc`,
+`Su`), `Tc`, and cursor shape and color. With it, programs know what jotty
+supports without having to ask at startup. That matters behind anything
+that relays the terminal: `devenv shell`, for example, swallows the
+attribute probe Neovim uses, so Neovim falls back to plain underlines for
+diagnostics unless `TERM=jotty`.
+
+With `term = "auto"` (the default), jotty looks for the compiled entry next
+to its executable (`<prefix>/share/terminfo`, where the Nix package and the
+dev shell put it), then in `$TERMINFO`, `~/.terminfo`, `$TERMINFO_DIRS` and
+the system directories. If it finds one, the child gets `TERM=jotty` and
+`TERMINFO` pointing at that directory; otherwise `TERM=xterm-256color`.
+
+To install the entry by hand (for example for a `cargo build` outside the
+dev shell):
+
+```sh
+tic -x -o ~/.terminfo extra/jotty.terminfo
+```
+
+**SSH.** Remote hosts don't know `jotty`. Copy the entry over once:
+
+```sh
+infocmp -x jotty | ssh host -- tic -x -
+```
+
+or set `term = "xterm-256color"`, which works everywhere but makes programs
+fall back to probing (or plain underlines).
 
 The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 `TERM_PROGRAM_VERSION`.

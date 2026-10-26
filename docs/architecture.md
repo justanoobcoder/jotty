@@ -28,6 +28,7 @@ and the renderer turns it into vertices once per frame.
 | `config.rs` | TOML config with defaults, validation and clamping | no |
 | `terminal/` | VT emulation: grid, scrollback, escape sequences | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
+| `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
 | `input.rs` | Key → bytes encoding, shortcuts, paste encoding | xkb keysyms only |
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
 | `selection.rs` | Text selection in history-aware coordinates | no |

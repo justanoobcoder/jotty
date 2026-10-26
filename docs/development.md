@@ -15,6 +15,11 @@ cargo run -- -e htop
 Without Nix, install the development packages for those four libraries and a
 Rust toolchain of version 1.88 or newer.
 
+The dev shell also compiles `extra/jotty.terminfo` into
+`target/share/terminfo`, next to `target/{debug,release}/jotty`, so
+`cargo run` uses `TERM=jotty`. Without the dev shell, jotty falls back to
+`xterm-256color` unless the entry is installed elsewhere.
+
 ## Checks
 
 Run these before committing. `nix flake check` runs all three in the
