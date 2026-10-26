@@ -47,6 +47,10 @@ foreground = "#dcdcdc"
 background = "#181818"
 # Cursor color; defaults to the foreground color when unset.
 # cursor = "#dcdcdc"
+# Selection colors; each defaults to inverse video (the cell's own colors
+# swapped) when unset.
+# selection_foreground = "#181818"
+# selection_background = "#dcdcdc"
 # The 16 ANSI colors: black, red, green, yellow, blue, magenta, cyan, white,
 # then their bright variants. A shorter list overrides only the first entries.
 palette = [

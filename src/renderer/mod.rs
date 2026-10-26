@@ -22,6 +22,8 @@ pub struct Theme {
     pub foreground: Rgb,
     pub background: Rgb,
     pub cursor: Rgb,
+    pub selection_foreground: Option<Rgb>,
+    pub selection_background: Option<Rgb>,
     pub palette: [Rgb; 16],
     pub bold_is_bright: bool,
     /// Opacity of the default background.
@@ -36,6 +38,8 @@ impl Theme {
             foreground: config.colors.foreground,
             background: config.colors.background,
             cursor: config.colors.cursor(),
+            selection_foreground: config.colors.selection_foreground,
+            selection_background: config.colors.selection_background,
             palette: config.colors.palette(),
             bold_is_bright: config.terminal.bold_is_bright,
             opacity: config.window.opacity,
@@ -79,8 +83,14 @@ impl Theme {
         if cell.flags.contains(Flags::DIM) {
             fg = blend(fg, bg, 0.66);
         }
-        if cell.flags.contains(Flags::INVERSE) != selected {
+        if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
+        }
+        if selected {
+            // Each selection color defaults to inverse video, like foot.
+            let (inverse_fg, inverse_bg) = (bg, fg);
+            fg = self.selection_foreground.unwrap_or(inverse_fg);
+            bg = self.selection_background.unwrap_or(inverse_bg);
         }
         if block_cursor {
             fg = bg;
@@ -428,6 +438,40 @@ mod tests {
         };
         let (fg, bg) = t.cell_colors(&hidden, false, false);
         assert_eq!(fg, bg);
+    }
+
+    #[test]
+    fn selection_colors() {
+        let mut t = theme();
+        let red = Cell {
+            fg: Color::Indexed(1),
+            ..Cell::default()
+        };
+        // Only the background configured: the text is still inverted.
+        t.selection_background = Some(Rgb(1, 2, 3));
+        assert_eq!(
+            t.cell_colors(&red, true, false),
+            (t.background, Rgb(1, 2, 3))
+        );
+        t.selection_foreground = Some(Rgb(4, 5, 6));
+        assert_eq!(
+            t.cell_colors(&red, true, false),
+            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+        );
+        // Inverse cells use the configured colors too.
+        let inverse = Cell {
+            flags: Flags::INVERSE,
+            ..red
+        };
+        assert_eq!(
+            t.cell_colors(&inverse, true, false),
+            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+        );
+        // Unselected cells are unaffected.
+        assert_eq!(
+            t.cell_colors(&red, false, false),
+            (t.palette[1], t.background)
+        );
     }
 
     #[test]

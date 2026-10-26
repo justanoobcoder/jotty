@@ -99,6 +99,8 @@ The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 | `foreground` | `"#rrggbb"` | `"#dcdcdc"` | Default text color. |
 | `background` | `"#rrggbb"` | `"#181818"` | Default background color. |
 | `cursor` | `"#rrggbb"` | the foreground | Cursor color. |
+| `selection_foreground` | `"#rrggbb"` | inverse | Text color of selected cells. Unset means the cell's background color. |
+| `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
 | `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
 
 Colors 16–255 are the standard xterm 6×6×6 cube and 24-step grayscale ramp.
