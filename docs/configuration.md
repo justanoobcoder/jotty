@@ -217,6 +217,7 @@ Actions you don't list keep their defaults.
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
+| `new_window` | `ctrl+shift+n` | Open another jotty in the current directory of the shell (or whatever runs in the terminal), with the same `--config` file |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -240,6 +241,17 @@ copy = ["ctrl+insert"]
 paste = ["shift+insert"]
 scroll_line_up = ["shift+up"]
 scroll_line_down = ["shift+down"]
+```
+
+**A new window in the same directory.** `new_window` starts another jotty
+where you are: in the current directory of the program running in the
+terminal, usually your shell after its last `cd`. It is bound to
+Ctrl+Shift+N; to use Shift+Enter instead (which then no longer reaches
+programs that use it, such as some chat CLIs and Neovim mappings):
+
+```toml
+[keybinds]
+new_window = ["shift+return"]
 ```
 
 **Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C

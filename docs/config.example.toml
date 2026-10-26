@@ -97,6 +97,9 @@ font_reset = ["ctrl+0", "ctrl+kp_0"]
 # Down/Ctrl+S for the previous and next match, Enter to keep the match
 # selected, Escape to cancel.
 search = ["ctrl+shift+f"]
+# Open another jotty in the current directory of the shell (or whatever
+# runs in the terminal), with the same config file.
+new_window = ["ctrl+shift+n"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set
