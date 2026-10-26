@@ -295,6 +295,12 @@ Keep the button down after a double or triple click and drag to extend the
 selection by whole words or whole lines. The clicked word or line always
 stays selected.
 
+**Shift+click to select a range.** Shift+click a character to mark it (it
+is highlighted), then Shift+click another one: everything from the first
+to the second is selected, in either direction, even across a long stretch
+of history. A plain click or Escape cancels the mark. Shift+dragging still
+selects as usual.
+
 **Selecting a command's output.** With
 `terminal.double_click_selects_output = true`, double-clicking anywhere in
 a command's output selects all of it instead of a word, from the line after

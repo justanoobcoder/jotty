@@ -63,6 +63,7 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Left drag              | Select text (Shift+drag in programs that use the mouse) |
 | Double click           | Select a word, or a command's whole output (opt-in, needs [shell integration](docs/configuration.md#shell-integration)) |
 | Triple click           | Select a line (drag after a double or triple click to extend by words or lines) |
+| Shift+click, Shift+click | Select from the first clicked character to the second (Escape or a plain click cancels) |
 | Shift+PageUp/PageDown  | Scroll the history by a page                  |
 | Shift+Home/End         | Jump to the top or bottom of the history      |
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
