@@ -32,6 +32,10 @@ nothing surprises you.
 - **No mouse reporting** (modes 1000/1002/1003/1006). Mouse clicks in vim,
   htop or tmux are not sent to them. The wheel sends arrow keys on the
   alternate screen, which scrolls most pagers and editors.
+- Neovim detects curly and colored underlines by querying jotty (DECRQSS),
+  which works with `TERM=xterm-256color`. Programs that only trust terminfo
+  `Smulx`/`Setulc` capabilities need a terminfo entry with them, which jotty
+  doesn't ship.
 - Not implemented: synchronized output (mode 2026), the kitty keyboard
   protocol and `modifyOtherKeys`, OSC 8 hyperlinks, OSC 52 clipboard access,
   OSC 4/10/11 color queries, sixel/kitty graphics, blinking text, DECCOLM, and

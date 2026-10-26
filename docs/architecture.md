@@ -56,11 +56,13 @@ stream into printable characters and control functions, and calls the
 - modes (application cursor, bracketed paste, autowrap, origin, insert, ...),
   the scroll region, and tab stops.
 - outputs for the application to collect: `take_responses()` (replies to
-  status queries), `take_title()`, `take_bell()` and `take_dirty()`.
+  status queries: DSR, DA, OSC 12, and DECRQSS for SGR, the scroll region
+  and the cursor style), `take_title()`, `take_bell()` and `take_dirty()`.
 - the scrollback view offset, and the prompt marker from OSC 133;B.
 
 A `Cell` is a `char`, foreground and background colors (default, 256-color
-index or RGB) and attribute flags. A double-width character occupies a `WIDE`
+index or RGB), attribute flags, and an underline style (single, double,
+curly, dotted, dashed; SGR `4:n`) with its own color (SGR 58). A double-width character occupies a `WIDE`
 cell followed by a `WIDE_SPACER` cell. Every write and erase calls
 `split_wide()` so a wide character is never left half-overwritten.
 
@@ -136,7 +138,9 @@ history when scrolled back) and emits quads into a `Batch`: cell backgrounds
 that differ from the default background, glyphs, underline and strikethrough,
 the cursor (block, beam, underline, or a hollow box when unfocused), and the
 preedit. Backgrounds go first, so a glyph that overhangs into the next cell is
-never covered. Colors are resolved here: palette, 256-color cube, grayscale
+never covered. Underlines other than plain ones are bitmaps from
+`font::underline_glyph`, cached in the atlas like glyphs. Their patterns
+repeat once per cell, so a curly underline is a continuous wave. Colors are resolved here: palette, 256-color cube, grayscale
 ramp, bold-is-bright, dim, inverse, hidden, selection and block cursor.
 
 Glyphs come through the `GlyphCache` trait. Tests pass in a fake
