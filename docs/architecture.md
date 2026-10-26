@@ -29,7 +29,8 @@ and the renderer turns it into vertices once per frame.
 | `terminal/` | VT emulation: grid, scrollback, escape sequences | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
-| `input.rs` | Key → bytes encoding, shortcuts, paste encoding | xkb keysyms only |
+| `input.rs` | Key → bytes encoding, mouse reports, paste encoding | xkb keysyms only |
+| `keybinds.rs` | Configurable key bindings for jotty's actions | xkb keysyms only |
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
 | `selection.rs` | Text selection in history-aware coordinates | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), box drawing | no |
@@ -88,7 +89,10 @@ and `TERM_PROGRAM=jotty`. The master is non-blocking:
 ## Input (`input.rs`)
 
 SCTK delivers keys already translated by xkbcommon: a keysym plus the UTF-8
-text. jotty's own shortcuts (copy, paste, scrolling, zoom) are matched first.
+text. jotty's own key bindings (copy, paste, scrolling, zoom; see
+`keybinds.rs`) are matched first, against both that keysym and the key's
+symbol without modifiers. For the latter, `app.rs` compiles its own copy
+of the keymap the compositor sends.
 Everything else goes to `encode_key`, which produces xterm-compatible
 sequences:
 

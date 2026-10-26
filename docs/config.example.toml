@@ -63,3 +63,19 @@ palette = [
     "#5c6370", "#ff7a85", "#b5e890", "#ffd68a",
     "#7ec7ff", "#de93f2", "#6ed3df", "#ffffff",
 ]
+
+[keybinds]
+# Actions and their key combos. Listing an action replaces its defaults;
+# an empty list unbinds it. Combos are modifiers (ctrl, alt, shift, super)
+# and an xkb key name or character, joined by "+".
+copy = ["ctrl+shift+c"]
+paste = ["ctrl+shift+v", "shift+insert"]
+scroll_line_up = []
+scroll_line_down = []
+scroll_page_up = ["shift+page_up"]
+scroll_page_down = ["shift+page_down"]
+scroll_to_top = ["shift+home"]
+scroll_to_bottom = ["shift+end"]
+font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add"]
+font_smaller = ["ctrl+minus", "ctrl+kp_subtract"]
+font_reset = ["ctrl+0", "ctrl+kp_0"]

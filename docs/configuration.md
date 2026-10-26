@@ -165,17 +165,50 @@ palette = [
 ]
 ```
 
-## Key bindings
+## `[keybinds]`
 
-Key bindings are fixed:
+Each action takes a list of key combos. Listing an action replaces its
+default combos; an empty list unbinds it, so those keys reach the program.
+Actions you don't list keep their defaults.
 
-| Keys | Action |
-| --- | --- |
-| Ctrl+Shift+C | Copy the selection |
-| Ctrl+Shift+V, Shift+Insert, middle click | Paste the clipboard |
-| Shift+PageUp / Shift+PageDown | Scroll history by a screen |
-| Shift+Home / Shift+End | Top / bottom of the history |
-| Ctrl+= (or Ctrl++), Ctrl+-, Ctrl+0 | Font larger, smaller, reset |
+| Action | Default | Does |
+| --- | --- | --- |
+| `copy` | `ctrl+shift+c` | Copy the selection |
+| `paste` | `ctrl+shift+v`, `shift+insert` | Paste the clipboard |
+| `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
+| `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
+| `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
+| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add` | Increase the font size by a point |
+| `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
+| `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
+
+A combo is modifiers and a key joined by `+`:
+
+- Modifiers: `ctrl`, `alt`, `shift`, `super` (also `control`, `meta`,
+  `logo`, `mod1`, `mod4`). They must match exactly; Caps Lock and Num Lock
+  are ignored.
+- Key: a single character (`c`, `0`, `ä`) or an xkb keysym name, matched
+  case-insensitively (`page_up`, `insert`, `F5`, `plus`, `kp_add`,
+  `return`). `ctrl++` binds the plus key.
+- A combo matches the key's symbol without modifiers (`ctrl+shift+equal`)
+  or the symbol it produces with them, minus the Shift that produced it
+  (`ctrl+plus` on layouts where `+` is Shift+`=`). Letters are
+  case-insensitive, and `ctrl+c` never matches Ctrl+Shift+C.
+
+Example: copy and paste with Ctrl+Insert / Shift+Insert, free
+Ctrl+Shift+V for the program, and scroll by line with Shift+Up/Down:
+
+```toml
+[keybinds]
+copy = ["ctrl+insert"]
+paste = ["shift+insert"]
+scroll_line_up = ["shift+up"]
+scroll_line_down = ["shift+down"]
+```
+
+Unknown actions, modifiers or keys are reported with their line when the
+config is loaded. Middle-click paste isn't a key binding and can't be
+changed.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,

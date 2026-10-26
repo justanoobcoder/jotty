@@ -60,6 +60,9 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 | Mouse wheel            | Scroll the history (arrow keys in full-screen programs; sent to programs that use the mouse) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
 
+These are the defaults; key bindings can be changed in the
+[`[keybinds]`](docs/configuration.md#keybinds) section.
+
 The configuration lives in `$XDG_CONFIG_HOME/jotty/config.toml`. See
 [docs/configuration.md](docs/configuration.md) for every option.
 
