@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use unicode_width::UnicodeWidthChar;
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont, point};
 use fontconfig_sys as fc;
 
 use crate::terminal::Underline;
@@ -180,7 +180,9 @@ impl Drop for Fontconfig {
 
 pub struct Fonts {
     fontconfig: Fontconfig,
-    faces: Vec<FontVec>,
+    faces: Vec<FontRef<'static>>,
+    /// Font files mapped so far, shared by the faces and styles in them.
+    files: HashMap<PathBuf, &'static [u8]>,
     /// Loaded faces by file and style (variable fonts differ per style).
     loaded: HashMap<(FontFile, Style), usize>,
     /// Face index for each style.
@@ -199,6 +201,7 @@ impl Fonts {
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),
+            files: HashMap::new(),
             loaded: HashMap::new(),
             styles: [0; 4],
             fallback_families: fallback.to_vec(),
@@ -243,12 +246,19 @@ impl Fonts {
             file.path.display(),
             file.index
         );
-        let data = std::fs::read(&file.path)
-            .map_err(|_| FontError::Load(file.path.clone(), "cannot read file"))?;
+        let data = match self.files.get(&file.path) {
+            Some(&data) => data,
+            None => {
+                let data = map_file(&file.path)
+                    .map_err(|_| FontError::Load(file.path.clone(), "cannot read file"))?;
+                self.files.insert(file.path.clone(), data);
+                data
+            }
+        };
         // fontconfig puts the named instance of a variable font in the high
         // 16 bits; only the face index matters here (the default instance
         // is used).
-        let mut face = FontVec::try_from_vec_and_index(data, file.index & 0xffff)
+        let mut face = FontRef::try_from_slice_and_index(data, file.index & 0xffff)
             .map_err(|_| FontError::Load(file.path.clone(), "invalid font"))?;
         // Variable fonts default to an arbitrary instance (often the lightest).
         let weight = if matches!(style, Style::Bold | Style::BoldItalic) {
@@ -596,13 +606,45 @@ fn is_icon(c: char) -> bool {
         | '\u{100000}'..='\u{10FFFD}')
 }
 
-fn has_glyph(face: &FontVec, c: char) -> bool {
+/// Maps a font file into memory for the rest of the process. Unlike
+/// reading it, only the parts in use take memory, and the kernel can share
+/// and reclaim them; that matters for fallback fonts such as Noto CJK,
+/// which are tens of megabytes. Faces are never unloaded, so neither are
+/// the mappings.
+fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
+    let file = std::fs::File::open(path)?;
+    let len = usize::try_from(file.metadata()?.len()).map_err(std::io::Error::other)?;
+    if len == 0 {
+        return Err(std::io::Error::other("empty file"));
+    }
+    // SAFETY: a private read-only mapping of an open file, which stays valid
+    // after the descriptor is closed. Font files are not modified in place
+    // (package updates replace them), as FreeType also assumes when it maps
+    // them.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            std::os::fd::AsRawFd::as_raw_fd(&file),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the mapping is `len` readable bytes and is never unmapped.
+    Ok(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
+}
+
+fn has_glyph(face: &FontRef, c: char) -> bool {
     face.glyph_id(c).0 != 0
 }
 
 /// The ab_glyph scale for a size of `px` pixels per em. ab_glyph scales by
 /// the ascent-to-descent height instead of the em size.
-fn px_scale(face: &FontVec, px: f32) -> PxScale {
+fn px_scale(face: &FontRef, px: f32) -> PxScale {
     match face.units_per_em() {
         Some(units) if units > 0.0 => PxScale::from(px * face.height_unscaled() / units),
         _ => PxScale::from(px),
