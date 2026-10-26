@@ -87,7 +87,7 @@ drawing what is behind it.
 | `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
 | `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
-| `double_click_selects_output` | bool | `false` | Double-clicking a command's output selects all of it. Needs [shell integration](#shell-integration). |
+| `double_click_selects_output` | bool | `false` | Double-clicking a command's output selects all of it instead of a word. Needs [shell integration](#shell-integration). |
 
 ### `TERM` and terminfo
 
@@ -222,13 +222,18 @@ Unknown actions, modifiers or keys are reported with their line when the
 config is loaded. Middle-click paste isn't a key binding and can't be
 changed.
 
+**Double click** selects the word under the pointer. A word is a run of
+characters other than whitespace and `` "'`()[]{}<>|,; ``, so paths, URLs
+and options such as `--color=auto` are selected whole. Words continue
+across soft-wrapped lines.
+
 **Selecting a command's output.** With
 `terminal.double_click_selects_output = true`, double-clicking anywhere in
-a command's output selects all of it, from the line after the command to
-the line before the next prompt, without trailing blank lines. Copy it as
-usual. This needs the shell to mark its prompts and commands (see
-[Shell integration](#shell-integration)); elsewhere, a double click
-does nothing special.
+a command's output selects all of it instead of a word, from the line after
+the command to the line before the next prompt, without trailing blank
+lines. Copy it as usual. This needs the shell to mark its prompts and
+commands (see [Shell integration](#shell-integration)); on prompts and
+command lines, a double click still selects a word.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
