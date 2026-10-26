@@ -14,7 +14,7 @@ depends=('gcc-libs' 'glibc' 'wayland' 'libxkbcommon' 'libglvnd' 'fontconfig')
 makedepends=('cargo' 'ncurses')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
-options=('!debug' '!strips')
+options=('!debug' '!strip')
 
 prepare() {
   cd "$pkgname-$pkgver"
