@@ -21,7 +21,7 @@ pub struct Config {
 pub struct FontConfig {
     /// Font family name, resolved through the system font configuration.
     pub family: String,
-    /// Font size in points (at a scale factor of 1, one point is one pixel).
+    /// Font size in points (at 96 DPI and a scale factor of 1).
     pub size: f32,
     /// Families tried, in order, for characters the primary font lacks.
     pub fallback: Vec<String>,
@@ -31,7 +31,7 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: "monospace".into(),
-            size: 14.0,
+            size: 11.0,
             fallback: Vec::new(),
         }
     }

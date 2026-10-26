@@ -18,6 +18,7 @@
           wayland
           libxkbcommon
           libGL
+          fontconfig
         ];
     in
     {

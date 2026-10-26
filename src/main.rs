@@ -1,4 +1,5 @@
 mod config;
+mod font;
 mod ime;
 mod input;
 mod pty;
