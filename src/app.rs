@@ -52,13 +52,13 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     self, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
 };
 
-use crate::config::Config;
+use crate::config::{Config, RendererKind};
 use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
 use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::Action;
 use crate::pty::{Pty, WindowSize};
-use crate::renderer::{Frame, Renderer, Theme};
+use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::selection::{Point, Selection, Unit};
 use crate::terminal::{MouseMode, Terminal};
 
@@ -165,11 +165,14 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
         .map_err(|e| log::warn!("text-input-v3 unavailable, no input method support: {e}"))
         .ok();
 
-    let fonts = Fonts::new(
-        &config.font.family,
-        &config.font.fallback,
-        points_to_px(config.font.size, 1.0),
-    )?;
+    let load_fonts = || {
+        Fonts::new(
+            &config.font.family,
+            &config.font.fallback,
+            points_to_px(config.font.size, 1.0),
+        )
+    };
+    let fonts = load_fonts()?;
     let cell = fonts.metrics;
     let pad = config.window.padding;
     let cols = u32::from(config.window.columns);
@@ -189,17 +192,38 @@ pub fn run(config: Config, command: Option<Vec<String>>) -> Result<(), Box<dyn E
     }
     window.commit();
 
-    // SAFETY: the display outlives the renderer (the event loop holds a
-    // connection until after `App` is dropped), and `App` drops the renderer
-    // before the window.
-    let renderer = unsafe {
-        Renderer::new(
-            conn.backend().display_ptr().cast(),
-            window.wl_surface().id(),
+    let theme = Theme::from_config(&config);
+    let mut fonts = Some(fonts);
+    let gpu = match config.window.renderer {
+        // SAFETY: the display outlives the renderer (the event loop holds a
+        // connection until after `App` is dropped), and `App` drops the
+        // renderer before the window.
+        RendererKind::Gpu => match unsafe {
+            gl::Renderer::new(
+                conn.backend().display_ptr().cast(),
+                window.wl_surface().id(),
+                size,
+                fonts.take().unwrap(),
+                theme.clone(),
+            )
+        } {
+            Ok(renderer) => Some(Renderer::Gpu(Box::new(renderer))),
+            Err(e) => {
+                log::warn!("cannot render with the GPU, using the CPU instead: {e}");
+                None
+            }
+        },
+        RendererKind::Cpu => None,
+    };
+    let renderer = match gpu {
+        Some(renderer) => renderer,
+        None => Renderer::Cpu(Box::new(software::Renderer::new(
+            &shm,
+            window.wl_surface().clone(),
             size,
-            fonts,
-            Theme::from_config(&config),
-        )?
+            fonts.map_or_else(load_fonts, Ok)?,
+            theme,
+        )?)),
     };
 
     let (program, args) = match command {

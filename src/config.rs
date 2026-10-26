@@ -55,6 +55,8 @@ pub struct WindowConfig {
     /// Ask the compositor to blur what is behind the window
     /// (ext-background-effect-v1).
     pub blur: bool,
+    /// Draw with the GPU (OpenGL ES) or on the CPU.
+    pub renderer: RendererKind,
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
@@ -69,10 +71,21 @@ impl Default for WindowConfig {
             opacity: 1.0,
             transparent_cell_backgrounds: false,
             blur: false,
+            renderer: RendererKind::Gpu,
             columns: 80,
             lines: 24,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RendererKind {
+    /// OpenGL ES 3 through EGL. Fast, but the GPU driver it loads takes
+    /// 100 MiB or more of memory.
+    Gpu,
+    /// Shared-memory buffers drawn on the CPU, like foot.
+    Cpu,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

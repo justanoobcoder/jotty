@@ -2,10 +2,12 @@
 //!
 //! [`build`] is GPU-independent: it produces a [`Batch`] of vertices for
 //! cell backgrounds, glyphs, decorations, the cursor and the input-method
-//! preedit. [`gl`] uploads and draws it with OpenGL ES 3 on an EGL surface.
+//! preedit. [`gl`] uploads and draws it with OpenGL ES 3 on an EGL surface;
+//! [`software`] draws it on the CPU into shared-memory buffers.
 
 pub mod atlas;
 pub mod gl;
+pub mod software;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -15,7 +17,44 @@ use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::{Cell, Color, CursorShape, Flags, Screen, Underline};
 
-pub use gl::Renderer;
+/// One of the two backends, which draw the same [`Batch`].
+pub enum Renderer {
+    Gpu(Box<gl::Renderer>),
+    Cpu(Box<software::Renderer>),
+}
+
+impl Renderer {
+    pub fn cell(&self) -> CellMetrics {
+        match self {
+            Renderer::Gpu(r) => r.cell(),
+            Renderer::Cpu(r) => r.cell(),
+        }
+    }
+
+    /// Resizes the drawable, in physical pixels.
+    pub fn resize(&mut self, size: (u32, u32)) {
+        match self {
+            Renderer::Gpu(r) => r.resize(size),
+            Renderer::Cpu(r) => r.resize(size),
+        }
+    }
+
+    pub fn set_font_size(&mut self, px: f32) {
+        match self {
+            Renderer::Gpu(r) => r.set_font_size(px),
+            Renderer::Cpu(r) => r.set_font_size(px),
+        }
+    }
+
+    /// Draws and presents a frame (this commits the surface). Returns
+    /// whether another frame is needed because the glyph atlas overflowed.
+    pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
+        match self {
+            Renderer::Gpu(r) => r.draw(frame),
+            Renderer::Cpu(r) => r.draw(frame),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Theme {
