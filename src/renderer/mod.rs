@@ -253,7 +253,15 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
 
-            if bg != theme.background {
+            // Whether the program chose this background, as opposed to the
+            // default one showing through. This depends on how the cell was
+            // set, not on the color: themes often paint the same color as
+            // the configured background, and that should stay opaque.
+            let explicit_bg = cell.bg != Color::Default
+                || cell.flags.contains(Flags::INVERSE)
+                || selected
+                || is_cursor;
+            if explicit_bg {
                 // Selection and cursor stay opaque so they remain visible.
                 let alpha = if theme.transparent_cells && !selected && !is_cursor {
                     theme.opacity
@@ -611,6 +619,46 @@ mod tests {
         // The cursor (second background) stays opaque.
         assert_eq!(quad_at(&batch, 1).1, theme.cursor.to_f32());
         assert_eq!(alpha_at(&batch, 1), 1.0);
+    }
+
+    #[test]
+    fn explicit_background_matching_default_stays_opaque() {
+        let mut theme = theme();
+        theme.opacity = 0.5;
+        let Rgb(r, g, b) = theme.background;
+        // A theme painting the configured background color explicitly.
+        let mut term = Terminal::new(4, 1, 0);
+        term.feed(format!("\x1b[?25l\x1b[48;2;{r};{g};{b}m ").as_bytes());
+        let batch = build(
+            &frame(term.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(batch.quads(), 1);
+        assert_eq!(quad_at(&batch, 0).1, theme.background.to_f32());
+        assert_eq!(alpha_at(&batch, 0), 1.0);
+
+        theme.transparent_cells = true;
+        let batch = build(
+            &frame(term.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(alpha_at(&batch, 0), 0.5);
+
+        // Cells left at the default background draw nothing; the clear
+        // color provides it.
+        let mut term = Terminal::new(4, 1, 0);
+        term.feed(b"\x1b[?25l ");
+        let batch = build(
+            &frame(term.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+        );
+        assert_eq!(batch.quads(), 0);
     }
 
     #[test]
