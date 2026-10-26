@@ -508,7 +508,6 @@ impl App {
         }
     }
 
-    /// The grid cell under a surface-local position.
     /// The visible cell under a surface-local position, as (column, row).
     fn cell_at(&self, (x, y): (f64, f64)) -> (usize, usize) {
         let scale = f64::from(self.scale);
