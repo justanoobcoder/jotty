@@ -752,6 +752,29 @@ impl Canvas {
     }
 }
 
+impl Canvas {
+    /// Fills the region where `inside` holds, given coordinates relative
+    /// to the cell (0 to 1 across and down), at `value`. Each pixel is
+    /// sampled 4×4 times for antialiased edges.
+    fn shape(&mut self, value: u8, inside: impl Fn(f32, f32) -> bool) {
+        let (w, h) = (self.width as f32, self.height as f32);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let mut hits = 0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let u = (x as f32 + (sx as f32 + 0.5) / 4.0) / w;
+                        let v = (y as f32 + (sy as f32 + 0.5) / 4.0) / h;
+                        hits += u32::from(inside(u, v));
+                    }
+                }
+                let px = &mut self.data[(y * self.width + x) as usize];
+                *px = (*px).max((hits * u32::from(value) / 16) as u8);
+            }
+        }
+    }
+}
+
 /// Draws straight box-drawing lines meeting at the center. A double line
 /// is drawn as one wide band whose middle is then cleared.
 fn draw_arms(canvas: &mut Canvas, stroke: u32, arms: [u8; 4]) {
@@ -965,6 +988,7 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                     }
                 }
             }
+            _ if draw_legacy(&mut canvas, c, s) => {}
             _ => return None,
         }
     }
@@ -976,6 +1000,236 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
         data: canvas.data,
         color: false,
     })
+}
+
+/// Smooth mosaics (U+1FB3C–U+1FB67): the part of the cell on one side of
+/// a line, as the line's two ends and the corner on the filled side, in
+/// (x, y) pairs with x in halves and y in thirds of the cell.
+const MOSAICS: [[u8; 6]; 44] = [
+    [0, 2, 1, 3, 0, 3],
+    [0, 2, 2, 3, 0, 3],
+    [0, 1, 1, 3, 0, 3],
+    [0, 1, 2, 3, 0, 3],
+    [0, 0, 1, 3, 0, 3],
+    [0, 1, 1, 0, 2, 3],
+    [0, 1, 2, 0, 2, 3],
+    [0, 2, 1, 0, 2, 3],
+    [0, 2, 2, 0, 2, 3],
+    [0, 3, 1, 0, 2, 3],
+    [0, 2, 2, 1, 2, 3],
+    [1, 3, 2, 2, 2, 3],
+    [0, 3, 2, 2, 2, 3],
+    [1, 3, 2, 1, 2, 3],
+    [0, 3, 2, 1, 2, 3],
+    [1, 3, 2, 0, 2, 3],
+    [1, 0, 2, 1, 0, 3],
+    [0, 0, 2, 1, 0, 3],
+    [1, 0, 2, 2, 0, 3],
+    [0, 0, 2, 2, 0, 3],
+    [1, 0, 2, 3, 0, 3],
+    [0, 1, 2, 2, 0, 3],
+    [0, 2, 1, 3, 2, 0],
+    [0, 2, 2, 3, 2, 0],
+    [0, 1, 1, 3, 2, 0],
+    [0, 1, 2, 3, 2, 0],
+    [0, 0, 1, 3, 2, 0],
+    [0, 1, 1, 0, 0, 0],
+    [0, 1, 2, 0, 0, 0],
+    [0, 2, 1, 0, 0, 0],
+    [0, 2, 2, 0, 0, 0],
+    [0, 3, 1, 0, 0, 0],
+    [0, 2, 2, 1, 0, 0],
+    [1, 3, 2, 2, 0, 0],
+    [0, 3, 2, 2, 0, 0],
+    [1, 3, 2, 1, 0, 0],
+    [0, 3, 2, 1, 0, 0],
+    [1, 3, 2, 0, 0, 0],
+    [1, 0, 2, 1, 2, 0],
+    [0, 0, 2, 1, 2, 0],
+    [1, 0, 2, 2, 2, 0],
+    [0, 0, 2, 2, 2, 0],
+    [1, 0, 2, 3, 2, 0],
+    [0, 1, 2, 2, 2, 0],
+];
+
+/// The triangle between the cell's center and its left, upper, right or
+/// lower edge (`edge` 0 to 3), in cell coordinates.
+fn in_quarter(edge: u32, u: f32, v: f32) -> bool {
+    match edge {
+        0 => u < v && u < 1.0 - v,
+        1 => v < u && v < 1.0 - u,
+        2 => u > v && u > 1.0 - v,
+        _ => v > u && v > 1.0 - u,
+    }
+}
+
+/// Distance from (`x`, `y`) to the segment from `a` to `b`.
+fn segment_distance(x: f32, y: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let t = (((x - a.0) * dx + (y - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    (x - a.0 - t * dx).hypot(y - a.1 - t * dy)
+}
+
+/// Draws the Symbols for Legacy Computing (U+1FB00–U+1FBAF) that are
+/// made of blocks, wedges, shades and lines, so that they tile like the
+/// block elements. Returns `false` for other characters.
+fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
+    const SHADE: u8 = 128;
+    let (w, h) = (canvas.width, canvas.height);
+    let eighth_h = |n: u32| (h * n + 4) / 8;
+    let eighth_w = |n: u32| (w * n + 4) / 8;
+    let i = (c as u32).wrapping_sub(0x1FB00);
+    match i {
+        // Sextants: a 2×3 grid, numbered across then down, without the
+        // left and right halves, which are ▌ and ▐.
+        0x00..=0x3B => {
+            let mut bits = i + 1;
+            if bits >= 21 {
+                bits += 1;
+            }
+            if bits >= 42 {
+                bits += 1;
+            }
+            let third = |n: u32| (h * n + 1) / 3;
+            for cell in 0..6 {
+                if bits & (1 << cell) != 0 {
+                    let (x0, x1) = if cell % 2 == 0 {
+                        (0, eighth_w(4))
+                    } else {
+                        (eighth_w(4), w)
+                    };
+                    canvas.fill(x0, third(cell / 2), x1, third(cell / 2 + 1), 255);
+                }
+            }
+        }
+        0x3C..=0x67 => {
+            let [x1, y1, x2, y2, cx, cy] = MOSAICS[(i - 0x3C) as usize].map(f32::from);
+            let side = |x: f32, y: f32| (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
+            let corner = side(cx, cy) > 0.0;
+            canvas.shape(255, |u, v| (side(u * 2.0, v * 3.0) > 0.0) == corner);
+        }
+        // Triangles from the center to an edge: all but one, then one.
+        0x68..=0x6F => canvas.shape(255, |u, v| in_quarter(i % 4, u, v) != (i < 0x6C)),
+        // One-eighth columns and rows 2 to 7.
+        0x70..=0x75 => canvas.fill(eighth_w(i - 0x70 + 1), 0, eighth_w(i - 0x70 + 2), h, 255),
+        0x76..=0x7B => canvas.fill(0, eighth_h(i - 0x76 + 1), w, eighth_h(i - 0x76 + 2), 255),
+        // Pairs of one-eighth edges: left and lower, left and upper, right
+        // and upper, right and lower, upper and lower.
+        0x7C..=0x80 => {
+            let (left, right, upper, lower) = [
+                (true, false, false, true),
+                (true, false, true, false),
+                (false, true, true, false),
+                (false, true, false, true),
+                (false, false, true, true),
+            ][(i - 0x7C) as usize];
+            if left {
+                canvas.fill(0, 0, eighth_w(1), h, 255);
+            }
+            if right {
+                canvas.fill(w - eighth_w(1), 0, w, h, 255);
+            }
+            if upper {
+                canvas.fill(0, 0, w, eighth_h(1), 255);
+            }
+            if lower {
+                canvas.fill(0, h - eighth_h(1), w, h, 255);
+            }
+        }
+        // Rows 1, 3, 5 and 8.
+        0x81 => {
+            for row in [0, 2, 4, 7] {
+                canvas.fill(0, eighth_h(row), w, eighth_h(row + 1), 255);
+            }
+        }
+        // Upper and right blocks of 2, 3, 5, 6 and 7 eighths.
+        0x82..=0x8B => {
+            let n = [2, 3, 5, 6, 7][((i - 0x82) % 5) as usize];
+            if i < 0x87 {
+                canvas.fill(0, 0, w, eighth_h(n), 255);
+            } else {
+                canvas.fill(w - eighth_w(n), 0, w, h, 255);
+            }
+        }
+        // Half shades, and halves of a shade and a block.
+        0x8C => canvas.fill(0, 0, eighth_w(4), h, SHADE),
+        0x8D => canvas.fill(w - eighth_w(4), 0, w, h, SHADE),
+        0x8E => canvas.fill(0, 0, w, eighth_h(4), SHADE),
+        0x8F => canvas.fill(0, h - eighth_h(4), w, h, SHADE),
+        0x90 => canvas.fill(0, 0, w, h, SHADE),
+        0x91 => {
+            canvas.fill(0, 0, w, eighth_h(4), 255);
+            canvas.fill(0, eighth_h(4), w, h, SHADE);
+        }
+        0x92 => {
+            canvas.fill(0, 0, w, eighth_h(4), SHADE);
+            canvas.fill(0, eighth_h(4), w, h, 255);
+        }
+        0x94 => {
+            canvas.fill(0, 0, eighth_w(4), h, SHADE);
+            canvas.fill(eighth_w(4), 0, w, h, 255);
+        }
+        // Checker boards of 4×8 squares, and 4 horizontal bars.
+        0x95..=0x97 => {
+            for row in 0..8 {
+                for col in 0..4 {
+                    let on = match i {
+                        0x95 => (row + col) % 2 == 0,
+                        0x96 => (row + col) % 2 == 1,
+                        _ => row % 2 == 1,
+                    };
+                    if on {
+                        canvas.fill(
+                            w * col / 4,
+                            eighth_h(row),
+                            w * (col + 1) / 4,
+                            eighth_h(row + 1),
+                            255,
+                        );
+                    }
+                }
+            }
+        }
+        // Four diagonal stripes, parallel to the cell's diagonals so they
+        // continue across cells.
+        0x98 => canvas.shape(255, |u, v| (u - v).rem_euclid(0.25) < 0.125),
+        0x99 => canvas.shape(255, |u, v| (u + v).rem_euclid(0.25) < 0.125),
+        0x9A => canvas.shape(255, |u, v| in_quarter(1, u, v) || in_quarter(3, u, v)),
+        0x9B => canvas.shape(255, |u, v| in_quarter(0, u, v) || in_quarter(2, u, v)),
+        // Shaded triangles: upper left, upper right, lower right, lower left.
+        0x9C => canvas.shape(SHADE, |u, v| u + v < 1.0),
+        0x9D => canvas.shape(SHADE, |u, v| v < u),
+        0x9E => canvas.shape(SHADE, |u, v| u + v > 1.0),
+        0x9F => canvas.shape(SHADE, |u, v| v > u),
+        // Lines between the middles of the edges, meeting the lines of
+        // box-drawing characters next to them. Bits: upper to left 1, upper
+        // to right 2, left to lower 4, right to lower 8.
+        0xA0..=0xAE => {
+            let bits = [1, 2, 4, 8, 5, 10, 12, 3, 9, 6, 14, 13, 11, 7, 15][(i - 0xA0) as usize];
+            let s = stroke as f32;
+            let mx = band_start(stroke, w) as f32 + s / 2.0;
+            let my = band_start(stroke, h) as f32 + s / 2.0;
+            let (up, down) = ((mx, 0.0), (mx, h as f32));
+            let (left, right) = ((0.0, my), (w as f32, my));
+            let segments = [(up, left), (up, right), (left, down), (right, down)];
+            canvas.stroke(s, |x, y| {
+                segments
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| bits & (1 << bit) != 0)
+                    .map(|(_, &(a, b))| segment_distance(x, y, a, b))
+                    .fold(f32::INFINITY, f32::min)
+            });
+        }
+        // A horizontal line crossed by a short vertical stroke.
+        0xAF => {
+            draw_arms(canvas, stroke, [0, 0, 1, 1]);
+            let x = band_start(stroke, w);
+            canvas.fill(x, h / 3, x + stroke, h - h / 3, 255);
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// The first and last bitmap rows with a pixel of at least `threshold`
@@ -1229,6 +1483,49 @@ mod tests {
             let (lo, hi) = (pitches.iter().min().unwrap(), pitches.iter().max().unwrap());
             assert!(hi - lo <= 1, "{pitches:?}");
         }
+    }
+
+    #[test]
+    fn legacy_computing_symbols() {
+        let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
+        let (w, h) = (m.width, m.height);
+        for c in '\u{1FB00}'..='\u{1FBAF}' {
+            if c == '\u{1FB93}' {
+                continue; // unassigned
+            }
+            let glyph = box_glyph(c, m).unwrap_or_else(|| panic!("{c} not drawn"));
+            assert!(glyph.data.iter().any(|&p| p > 0), "{c} is blank");
+        }
+
+        // Sextant 1 is the upper left cell of the 2×3 grid; sextant
+        // 2-3-4-5-6 everything else.
+        let one = box_glyph('🬀', m).unwrap();
+        assert_eq!(coverage(&one, 0, 0), 255);
+        assert_eq!(coverage(&one, w - 1, 0), 0);
+        assert_eq!(coverage(&one, 0, h / 2), 0);
+        let most = box_glyph('🬻', m).unwrap();
+        assert_eq!(coverage(&most, 0, 0), 0);
+        assert!(
+            [(w - 1, 0), (0, h / 2), (w - 1, h - 1), (0, h - 1)]
+                .iter()
+                .all(|&(x, y)| coverage(&most, x, y) == 255)
+        );
+
+        // Each smooth mosaic fills its corner and leaves the opposite one.
+        for (i, &[.., cx, cy]) in MOSAICS.iter().enumerate() {
+            let c = char::from_u32(0x1FB3C + i as u32).unwrap();
+            let glyph = box_glyph(c, m).unwrap();
+            let (x, y) = (
+                if cx == 0 { 0 } else { w - 1 },
+                if cy == 0 { 0 } else { h - 1 },
+            );
+            assert_eq!(coverage(&glyph, x, y), 255, "{c} corner");
+            assert_eq!(coverage(&glyph, w - 1 - x, h - 1 - y), 0, "{c} opposite");
+        }
+
+        // The checker boards are each other's inverse.
+        let (a, b) = (box_glyph('🮕', m).unwrap(), box_glyph('🮖', m).unwrap());
+        assert!(a.data.iter().zip(&b.data).all(|(p, q)| p ^ q == 255));
     }
 
     #[test]
