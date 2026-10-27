@@ -511,10 +511,12 @@ impl Fonts {
 }
 
 impl Fonts {
-    /// Rasterizes a grapheme cluster: a character with combining marks.
-    /// When Unicode composes it into one character (`e` + U+0301 is `é`),
-    /// that character is drawn; otherwise the marks are drawn over the
-    /// first character, centered in the slot.
+    /// Rasterizes a grapheme cluster: a character with combining marks,
+    /// and possibly characters that join it but take up cells of their own
+    /// (Thai ำ after a consonant). When Unicode composes it into one
+    /// character (`e` + U+0301 is `é`), that character is drawn; otherwise
+    /// the marks are drawn centered over the character they follow, and
+    /// spacing characters in their own cells.
     pub fn rasterize_cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<Glyph> {
         if let Some(glyph) = self.rasterize_color(text, wide) {
             return Some(glyph);
@@ -522,18 +524,33 @@ impl Fonts {
         let composed: String = text.nfc().collect();
         let mut chars = composed.chars();
         let base = chars.next()?;
-        let mut glyph = self.rasterize(base, style, wide);
-        let slot = self.metrics.width * if wide { 2 } else { 1 };
-        // Marks only: joiners and variation selectors have no ink of
-        // their own.
-        for mark in chars.filter(|&c| c.width() == Some(0) && !is_joiner_or_selector(c)) {
-            if let Some(mut mark) = self.rasterize(mark, style, false) {
-                mark.left = (slot as i32 - mark.width as i32) / 2;
-                glyph = Some(match glyph {
-                    Some(base) => overlay(&base, &mark),
-                    None => mark,
-                });
+        // A narrow character fills a two-cell slot only when nothing else
+        // is drawn in it, as for emoji presentation sequences (`❄` + VS16).
+        let spacing = chars.clone().any(|c| c.width().unwrap_or(0) > 0);
+        let mut glyph = self.rasterize(base, style, wide && !spacing);
+        let cell = self.metrics.width as i32;
+        // The cell the last character drawn starts in, and its width.
+        let (mut col, mut cols) = (0, if wide && !spacing { 2 } else { 1 });
+        for c in chars {
+            let width = c.width().unwrap_or(0) as i32;
+            // Joiners and variation selectors have no ink of their own.
+            if width == 0 && is_joiner_or_selector(c) {
+                continue;
             }
+            let Some(mut part) = self.rasterize(c, style, false) else {
+                continue;
+            };
+            if width > 0 {
+                col += cols;
+                cols = width;
+                part.left += col * cell;
+            } else {
+                part.left = col * cell + (cols * cell - part.width as i32) / 2;
+            }
+            glyph = Some(match glyph {
+                Some(base) => overlay(&base, &part),
+                None => part,
+            });
         }
         glyph
     }
@@ -1404,6 +1421,21 @@ mod tests {
                 (top_gap - bottom_gap).abs() <= 1,
                 "{top_gap} vs {bottom_gap}"
             );
+        }
+
+        // Thai ส + ำ is one cluster over two cells: ส keeps its size and
+        // ำ, a spacing vowel, is drawn in the second cell.
+        let base = fonts.rasterize('ส', Style::Regular, false);
+        let vowel = fonts.rasterize('ำ', Style::Regular, false);
+        let cluster = fonts.rasterize_cluster("สำ", Style::Regular, true);
+        if let (Some(base), Some(vowel), Some(cluster)) = (base, vowel, cluster) {
+            let top = base.top.min(vowel.top);
+            let bottom = (base.top + base.height as i32).max(vowel.top + vowel.height as i32);
+            assert_eq!(
+                (cluster.top, cluster.top + cluster.height as i32),
+                (top, bottom)
+            );
+            assert!(cluster.left + cluster.width as i32 > m.width as i32);
         }
 
         // Symbols, often from a fallback font, stay inside their cell.
