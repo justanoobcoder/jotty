@@ -223,8 +223,8 @@ Actions you don't list keep their defaults.
 | `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
 | `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
 | `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
-| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add` | Increase the font size by a point |
-| `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract` | Decrease it |
+| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by a point |
+| `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract`, `ctrl+wheel_down` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
 | `reload_config` | `ctrl+shift+r` | Read the config file again |
@@ -239,13 +239,20 @@ A combo is modifiers and a key joined by `+`:
 - Key: a single character (`c`, `0`, `ä`) or an xkb keysym name, matched
   case-insensitively (`page_up`, `insert`, `F5`, `plus`, `kp_add`,
   `return`). `ctrl++` binds the plus key.
+- Or a direction of the mouse wheel: `wheel_up`, `wheel_down`,
+  `wheel_left`, `wheel_right`. The action runs once per notch (touchpads:
+  once per line's worth of scrolling). A bound wheel combo takes
+  precedence over scrolling and over programs that read the mouse; with
+  other modifiers, or none, the wheel scrolls or goes to the program as
+  usual.
 - A combo matches the key's symbol without modifiers (`ctrl+shift+equal`)
   or the symbol it produces with them, minus the Shift that produced it
   (`ctrl+plus` on layouts where `+` is Shift+`=`). Letters are
   case-insensitive, and `ctrl+c` never matches Ctrl+Shift+C.
 
 Example: copy and paste with Ctrl+Insert / Shift+Insert, free
-Ctrl+Shift+V for the program, and scroll by line with Shift+Up/Down:
+Ctrl+Shift+V for the program, scroll by line with Shift+Up/Down, and by a
+screen with Shift and the wheel:
 
 ```toml
 [keybinds]
@@ -253,6 +260,8 @@ copy = ["ctrl+insert"]
 paste = ["shift+insert"]
 scroll_line_up = ["shift+up"]
 scroll_line_down = ["shift+down"]
+scroll_page_up = ["shift+page_up", "shift+wheel_up"]
+scroll_page_down = ["shift+page_down", "shift+wheel_down"]
 ```
 
 **A new window in the same directory.** `new_window` starts another jotty

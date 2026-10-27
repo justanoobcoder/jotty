@@ -78,7 +78,8 @@ palette = [
 [keybinds]
 # Actions and their key combos. Listing an action replaces its defaults;
 # an empty list unbinds it. Combos are modifiers (ctrl, alt, shift, super)
-# and an xkb key name or character, joined by "+".
+# and an xkb key name, a character, or a wheel direction (wheel_up,
+# wheel_down, wheel_left, wheel_right), joined by "+".
 copy = ["ctrl+shift+c"]
 # Copy when text is selected, otherwise pass the key on; with "ctrl+c",
 # Ctrl+C copies a selection and interrupts the program otherwise.
@@ -90,8 +91,8 @@ scroll_page_up = ["shift+page_up"]
 scroll_page_down = ["shift+page_down"]
 scroll_to_top = ["shift+home"]
 scroll_to_bottom = ["shift+end"]
-font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add"]
-font_smaller = ["ctrl+minus", "ctrl+kp_subtract"]
+font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add", "ctrl+wheel_up"]
+font_smaller = ["ctrl+minus", "ctrl+kp_subtract", "ctrl+wheel_down"]
 font_reset = ["ctrl+0", "ctrl+kp_0"]
 # Search the scrollback: type to search older output, Up/Ctrl+R and
 # Down/Ctrl+S for the previous and next match, Enter to keep the match

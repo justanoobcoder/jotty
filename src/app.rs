@@ -75,7 +75,7 @@ use crate::config::{Config, RendererKind};
 use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
 use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
-use crate::keybinds::Action;
+use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
@@ -1371,6 +1371,55 @@ impl App {
         steps as isize
     }
 
+    /// Runs the actions bound to the wheel with the held modifiers, or else
+    /// reports it to the program or scrolls.
+    fn wheel(
+        &mut self,
+        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        pos: (f64, f64),
+    ) {
+        if self.run_wheel_bindings(vertical, horizontal) {
+            return;
+        }
+        if self.reporting_mouse() {
+            self.report_wheel(vertical, horizontal, pos);
+        } else {
+            self.scroll(vertical);
+        }
+    }
+
+    /// Runs the action bound to each direction the wheel turned in, once per
+    /// notch. Returns whether any was bound.
+    fn run_wheel_bindings(
+        &mut self,
+        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
+    ) -> bool {
+        let mut bound = false;
+        for (axis, back, forward) in [
+            (vertical, Wheel::Up, Wheel::Down),
+            (horizontal, Wheel::Left, Wheel::Right),
+        ] {
+            let direction = axis.value120.signum() + axis.discrete.signum();
+            let wheel = match (direction, axis.absolute) {
+                (d, _) if d < 0 => back,
+                (d, _) if d > 0 => forward,
+                (_, a) if a < 0.0 => back,
+                (_, a) if a > 0.0 => forward,
+                _ => continue,
+            };
+            let Some(action) = self.config.keybinds.lookup_wheel(wheel, self.modifiers) else {
+                continue;
+            };
+            bound = true;
+            for _ in 0..self.scroll_steps(axis, 1.0).unsigned_abs() {
+                self.run_action(action);
+            }
+        }
+        bound
+    }
+
     /// Reports wheel movement as button 64–67 presses, one per notch.
     fn report_wheel(
         &mut self,
@@ -1993,9 +2042,7 @@ impl PointerHandler for App {
                     vertical,
                     horizontal,
                     ..
-                } if self.reporting_mouse() => {
-                    self.report_wheel(vertical, horizontal, event.position)
-                }
+                } => self.wheel(vertical, horizontal, event.position),
                 PointerEventKind::Press {
                     button: BTN_LEFT,
                     serial,
@@ -2078,7 +2125,6 @@ impl PointerHandler for App {
                     self.last_serial = *serial;
                     self.paste_primary();
                 }
-                PointerEventKind::Axis { vertical, .. } => self.scroll(vertical),
                 _ => {}
             }
         }

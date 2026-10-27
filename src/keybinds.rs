@@ -1,8 +1,9 @@
 //! Configurable key bindings for jotty's own actions.
 //!
 //! Bindings are written as `mod+mod+key`, e.g. `ctrl+shift+c`, where `key`
-//! is an xkb keysym name (`c`, `page_up`, `plus`, `F5`, ...) or a single
-//! character.
+//! is an xkb keysym name (`c`, `page_up`, `plus`, `F5`, ...), a single
+//! character, or a wheel direction (`wheel_up`, `wheel_down`, `wheel_left`,
+//! `wheel_right`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -73,8 +74,8 @@ impl Action {
             Action::ScrollPageDown => &["shift+page_down"],
             Action::ScrollToTop => &["shift+home"],
             Action::ScrollToBottom => &["shift+end"],
-            Action::FontLarger => &["ctrl+plus", "ctrl+equal", "ctrl+kp_add"],
-            Action::FontSmaller => &["ctrl+minus", "ctrl+kp_subtract"],
+            Action::FontLarger => &["ctrl+plus", "ctrl+equal", "ctrl+kp_add", "ctrl+wheel_up"],
+            Action::FontSmaller => &["ctrl+minus", "ctrl+kp_subtract", "ctrl+wheel_down"],
             Action::FontReset => &["ctrl+0", "ctrl+kp_0"],
             Action::Search => &["ctrl+shift+f"],
             Action::NewWindow => &["ctrl+shift+n"],
@@ -104,12 +105,38 @@ impl From<Modifiers> for Mods {
     }
 }
 
-/// A key with modifiers, as written in the config.
+/// A direction of the mouse wheel, bound like a key: each notch runs the
+/// action once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wheel {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Wheel {
+    const ALL: [(&'static str, Wheel); 4] = [
+        ("wheel_up", Wheel::Up),
+        ("wheel_down", Wheel::Down),
+        ("wheel_left", Wheel::Left),
+        ("wheel_right", Wheel::Right),
+    ];
+}
+
+/// What a combo is pressed with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// Always the lowercase form, so `ctrl+shift+C` and `ctrl+shift+c` agree.
+    Key(Keysym),
+    Wheel(Wheel),
+}
+
+/// A key or wheel direction with modifiers, as written in the config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyCombo {
     pub mods: Mods,
-    /// Always the lowercase form, so `ctrl+shift+C` and `ctrl+shift+c` agree.
-    pub keysym: Keysym,
+    pub trigger: Trigger,
 }
 
 /// The lowercase keysym for letters, the keysym itself otherwise.
@@ -150,6 +177,15 @@ impl FromStr for KeyCombo {
         if key.is_empty() {
             return Err(format!("missing key in {s:?}"));
         }
+        if let Some(&(_, wheel)) = Wheel::ALL
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+        {
+            return Ok(KeyCombo {
+                mods,
+                trigger: Trigger::Wheel(wheel),
+            });
+        }
         let mut chars = key.chars();
         let keysym = match (chars.next(), chars.next()) {
             (Some(c), None) => Keysym::from_char(c),
@@ -160,7 +196,7 @@ impl FromStr for KeyCombo {
         }
         Ok(KeyCombo {
             mods,
-            keysym: lower(keysym),
+            trigger: Trigger::Key(lower(keysym)),
         })
     }
 }
@@ -177,7 +213,13 @@ impl fmt::Display for KeyCombo {
                 write!(f, "{name}+")?;
             }
         }
-        write!(f, "{}", xkb::keysym_get_name(self.keysym))
+        match self.trigger {
+            Trigger::Key(keysym) => write!(f, "{}", xkb::keysym_get_name(keysym)),
+            Trigger::Wheel(wheel) => {
+                let name = Wheel::ALL.iter().find(|&&(_, w)| w == wheel).unwrap().0;
+                write!(f, "{name}")
+            }
+        }
     }
 }
 
@@ -243,9 +285,22 @@ impl Keybinds {
         let find = |pred: &dyn Fn(&KeyCombo) -> bool| {
             self.bindings.iter().find(|(c, _)| pred(c)).map(|&(_, a)| a)
         };
-        find(&|c| c.mods == mods && (c.keysym == base || c.keysym == shifted)).or_else(|| {
-            find(&|c| shift_consumed && c.mods == unshifted_mods && c.keysym == shifted)
+        let (base, shifted) = (Trigger::Key(base), Trigger::Key(shifted));
+        find(&|c| c.mods == mods && (c.trigger == base || c.trigger == shifted)).or_else(|| {
+            find(&|c| shift_consumed && c.mods == unshifted_mods && c.trigger == shifted)
         })
+    }
+
+    /// The action bound to turning the wheel in `wheel` with `mods` held.
+    pub fn lookup_wheel(&self, wheel: Wheel, mods: Modifiers) -> Option<Action> {
+        let combo = KeyCombo {
+            mods: Mods::from(mods),
+            trigger: Trigger::Wheel(wheel),
+        };
+        self.bindings
+            .iter()
+            .find(|(c, _)| *c == combo)
+            .map(|&(_, a)| a)
     }
 
     /// The combos bound to `action`, for messages and tests.
@@ -298,21 +353,45 @@ mod tests {
                 ..Mods::default()
             }
         );
-        assert_eq!(combo.keysym, Keysym::c);
+        assert_eq!(combo.trigger, Trigger::Key(Keysym::c));
         assert_eq!(
-            "page_up".parse::<KeyCombo>().unwrap().keysym,
-            Keysym::Page_Up
+            "page_up".parse::<KeyCombo>().unwrap().trigger,
+            Trigger::Key(Keysym::Page_Up)
         );
-        assert_eq!("alt+F5".parse::<KeyCombo>().unwrap().keysym, Keysym::F5);
-        assert_eq!("ctrl++".parse::<KeyCombo>().unwrap().keysym, Keysym::plus);
         assert_eq!(
-            "super+ä".parse::<KeyCombo>().unwrap().keysym,
-            Keysym::adiaeresis
+            "alt+F5".parse::<KeyCombo>().unwrap().trigger,
+            Trigger::Key(Keysym::F5)
+        );
+        assert_eq!(
+            "ctrl++".parse::<KeyCombo>().unwrap().trigger,
+            Trigger::Key(Keysym::plus)
+        );
+        assert_eq!(
+            "super+ä".parse::<KeyCombo>().unwrap().trigger,
+            Trigger::Key(Keysym::adiaeresis)
         );
         assert_eq!(
             "ctrl+shift+c".parse::<KeyCombo>().unwrap().to_string(),
             "ctrl+shift+c"
         );
+    }
+
+    #[test]
+    fn wheel_combos() {
+        let combo: KeyCombo = "Ctrl+Wheel_Up".parse().unwrap();
+        assert_eq!(combo.trigger, Trigger::Wheel(Wheel::Up));
+        assert_eq!(combo.to_string(), "ctrl+wheel_up");
+        let k = Keybinds::default();
+        assert_eq!(k.lookup_wheel(Wheel::Up, CTRL), Some(Action::FontLarger));
+        assert_eq!(k.lookup_wheel(Wheel::Down, CTRL), Some(Action::FontSmaller));
+        // Plain wheel turns are left to scrolling, and keys don't match
+        // wheel bindings.
+        assert_eq!(k.lookup_wheel(Wheel::Up, NONE), None);
+        assert_eq!(k.lookup_wheel(Wheel::Up, CTRL_SHIFT), None);
+        let k =
+            binds("scroll_page_up = [\"shift+wheel_up\"]\nfont_larger = [\"ctrl+plus\"]").unwrap();
+        assert_eq!(k.lookup_wheel(Wheel::Up, SHIFT), Some(Action::ScrollPageUp));
+        assert_eq!(k.lookup_wheel(Wheel::Up, CTRL), None);
     }
 
     #[test]
