@@ -990,6 +990,37 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
             }
             // Black triangles filling half the cell, so they join the
             // wedges and diagonals around them: ◢ ◣ ◤ ◥.
+            // A circle over a 4×4 block of cells, with another a block of
+            // 2×2 cells across inside it, in pieces numbered across then
+            // down: the outer cells hold twelfths of the large one, the
+            // inner cells quarters of the small one.
+            '\u{1CC30}'..='\u{1CC3F}' => {
+                let i = c as u32 - 0x1CC30;
+                let (col, row) = ((i % 4) as f32, (i / 4) as f32);
+                let inner = (1.0..=2.0).contains(&col) && (1.0..=2.0).contains(&row);
+                let (wf, hf, t) = (w as f32, h as f32, s as f32);
+                let scale = if inner { 1.0 } else { 2.0 };
+                let (rx, ry) = (scale * wf - t / 2.0, scale * hf - t / 2.0);
+                canvas.stroke(t, |x, y| {
+                    // Distance to the ellipse through the block's center,
+                    // to first order.
+                    let (dx, dy) = (col * wf + x - 2.0 * wf, row * hf + y - 2.0 * hf);
+                    let f = (dx / rx).hypot(dy / ry);
+                    let gradient = (dx / (rx * rx)).hypot(dy / (ry * ry)) / f;
+                    (f - 1.0).abs() / gradient
+                });
+            }
+            // Two half circles centered on opposite edges, for chains of
+            // circles across cells: left and right, then top and bottom.
+            '\u{1CE00}' | '\u{1CE01}' => {
+                let (wf, hf) = (w as f32, h as f32);
+                let centers = if c == '\u{1CE00}' {
+                    [(0.0, hf / 2.0), (wf, hf / 2.0)]
+                } else {
+                    [(wf / 2.0, 0.0), (wf / 2.0, hf)]
+                };
+                draw_circles(&mut canvas, s, &centers, wf / 2.0, false);
+            }
             '◢' => canvas.shape(255, |u, v| u + v > 1.0),
             '◣' => canvas.shape(255, |u, v| v > u),
             '◤' => canvas.shape(255, |u, v| u + v < 1.0),
@@ -1076,7 +1107,31 @@ fn segment_distance(x: f32, y: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
     (x - a.0 - t * dx).hypot(y - a.1 - t * dy)
 }
 
-/// Draws the Symbols for Legacy Computing (U+1FB00–U+1FBAF) that are
+/// Draws circles of `radius` around `centers`, in pixels: filled, or as
+/// light lines just inside the radius.
+fn draw_circles(
+    canvas: &mut Canvas,
+    stroke: u32,
+    centers: &[(f32, f32)],
+    radius: f32,
+    filled: bool,
+) {
+    let distance = |x: f32, y: f32| {
+        centers
+            .iter()
+            .map(|&(cx, cy)| (x - cx).hypot(y - cy))
+            .fold(f32::INFINITY, f32::min)
+    };
+    if filled {
+        let (w, h) = (canvas.width as f32, canvas.height as f32);
+        canvas.shape(255, |u, v| distance(u * w, v * h) < radius);
+    } else {
+        let t = stroke as f32;
+        canvas.stroke(t, |x, y| (distance(x, y) - (radius - t / 2.0)).abs());
+    }
+}
+
+/// Draws the Symbols for Legacy Computing (U+1FB00–U+1FBEF) that are
 /// made of blocks, wedges, shades and lines, so that they tile like the
 /// block elements. Returns `false` for other characters.
 fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
@@ -1232,6 +1287,27 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             draw_arms(canvas, stroke, [0, 0, 1, 1]);
             let x = band_start(stroke, w);
             canvas.fill(x, h / 3, x + stroke, h - h / 3, 255);
+        }
+        // Half circles centered on the top, right, bottom or left edge, so
+        // two cells make a circle a cell wide: white, then black.
+        0xE0..=0xE3 | 0xE8..=0xEB => {
+            let (w, h) = (w as f32, h as f32);
+            let center = [(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)];
+            draw_circles(
+                canvas,
+                stroke,
+                &[center[(i % 4) as usize]],
+                w / 2.0,
+                i >= 0xE8,
+            );
+        }
+        // Black quarter circles centered on the top right, bottom left,
+        // bottom right or top left corner: four make a circle two cells
+        // wide.
+        0xEC..=0xEF => {
+            let (w, h) = (w as f32, h as f32);
+            let center = [(w, 0.0), (0.0, h), (w, h), (0.0, 0.0)];
+            draw_circles(canvas, stroke, &[center[(i - 0xEC) as usize]], w, true);
         }
         _ => return false,
     }
@@ -1495,7 +1571,14 @@ mod tests {
     fn legacy_computing_symbols() {
         let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
         let (w, h) = (m.width, m.height);
-        for c in '\u{1FB00}'..='\u{1FBAF}' {
+        let ranges = [
+            '\u{1FB00}'..='\u{1FBAF}',
+            '\u{1FBE0}'..='\u{1FBE3}',
+            '\u{1FBE8}'..='\u{1FBEF}',
+            '\u{1CC30}'..='\u{1CC3F}',
+            '\u{1CE00}'..='\u{1CE01}',
+        ];
+        for c in ranges.into_iter().flatten() {
             if c == '\u{1FB93}' {
                 continue; // unassigned
             }
