@@ -438,6 +438,25 @@ impl Fonts {
             outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
         }
 
+        // Symbols can stick out of the cell (☺ in DejaVu Sans Mono, ♥ in
+        // JetBrains Mono) and would overlap their neighbors: shrink them to
+        // fit, and center them. Letters keep their shape, italic overhangs
+        // included.
+        let b = outline.px_bounds();
+        let fit = !wide
+            && !is_icon(c)
+            && !c.is_alphanumeric()
+            && (b.min.x < 0.0 || b.max.x > m.width as f32);
+        if fit {
+            // Rounding the bounds outward can add a pixel.
+            let factor =
+                ((m.width as f32 - 1.0).max(1.0) / b.width()).min(m.height as f32 / b.height());
+            if factor < 1.0 {
+                let scale = PxScale::from(scale.y * factor);
+                outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
+            }
+        }
+
         let bounds = outline.px_bounds();
         let (width, height) = (bounds.width() as u32, bounds.height() as u32);
         if width == 0 || height == 0 {
@@ -456,6 +475,8 @@ impl Fonts {
         let centered_top = (m.height as i32 - ink_height) / 2 - ink.0 as i32;
         let (left, top) = if fill_slot {
             ((slot_width as i32 - width as i32) / 2, centered_top)
+        } else if fit {
+            ((m.width as i32 - width as i32) / 2, centered_top)
         } else if is_icon(c) && ink_height <= m.height as i32 {
             // Icon fonts center glyphs on the font's math axis, which sits
             // above the cell's middle; center them in the cell instead.
@@ -1300,6 +1321,14 @@ mod tests {
                 (top_gap - bottom_gap).abs() <= 1,
                 "{top_gap} vs {bottom_gap}"
             );
+        }
+
+        // Symbols, often from a fallback font, stay inside their cell.
+        for c in ['☺', '♀', '♥'] {
+            if let Some(glyph) = fonts.rasterize(c, Style::Regular, false) {
+                assert!(glyph.left >= 0, "{c}");
+                assert!(glyph.left + glyph.width as i32 <= m.width as i32, "{c}");
+            }
         }
 
         fonts.set_size(32.0);
