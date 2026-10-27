@@ -893,3 +893,99 @@ fn mouse_modes() {
     t.feed(b"\x1b[?1002h\x1bc");
     assert_eq!(t.screen().modes.mouse, MouseMode::Off);
 }
+
+/// A 1×1 RGB image with id 1, as a kitty graphics transmission.
+const IMAGE: &[u8] = b"\x1b_Ga=t,i=1,f=24,s=1,v=1;AAAA\x1b\\";
+
+#[test]
+fn apc_strings_are_hidden_from_the_parser() {
+    let mut t = term(10, 2);
+    t.feed(b"a\x1b_Xunknown\x1b\\b");
+    assert_eq!(lines(&t), ["ab", ""]);
+    // Split anywhere, even between ESC and `_` or `\`.
+    let mut t = term(10, 2);
+    let input = b"a\x1b_Gi=7,a=q,s=1,v=1,f=24;AAAA\x1b\\b\x1b[1mc";
+    for byte in input {
+        t.feed(&[*byte]);
+    }
+    assert_eq!(lines(&t), ["abc", ""]);
+    assert!(cell(&t, 0, 2).flags.contains(Flags::BOLD));
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
+}
+
+#[test]
+fn escape_sequence_cuts_apc_short() {
+    let mut t = term(10, 2);
+    t.feed(b"\x1b_Gjunk\x1b[1mx");
+    assert_eq!(lines(&t), ["x", ""]);
+    assert!(cell(&t, 0, 0).flags.contains(Flags::BOLD));
+}
+
+#[test]
+fn placing_an_image_moves_the_cursor_past_it() {
+    let mut t = term(10, 4);
+    t.screen_mut().set_cell_size(10, 20);
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1,c=3,r=2\x1b\\");
+    assert_eq!(t.screen().cursor(), (1, 3));
+    // C=1 leaves it.
+    t.feed(b"\x1b_Ga=p,i=1,c=3,r=2,C=1\x1b\\");
+    assert_eq!(t.screen().cursor(), (1, 3));
+    // At the bottom, the screen scrolls to make room.
+    t.feed(b"\x1b[4;1H\x1b_Ga=p,i=1,c=2,r=3\x1b\\");
+    assert_eq!(t.screen().cursor(), (3, 2));
+    let placements = t.screen().graphics().placements();
+    assert_eq!(placements[2].line - t.screen().grid().scrolled as i64, 1);
+}
+
+#[test]
+fn images_scroll_with_the_text() {
+    let mut t = term(10, 3);
+    t.feed(IMAGE);
+    t.feed(b"\x1b[2;1H\x1b_Ga=p,i=1,C=1\x1b\\");
+    let line = |t: &Terminal| {
+        let screen = t.screen();
+        screen.graphics().placements()[0].line - screen.grid().scrolled as i64
+    };
+    assert_eq!(line(&t), 1);
+    t.feed(b"\x1b[3;1H\n");
+    assert_eq!(line(&t), 0);
+    // Deleting lines above moves it up within the region; off the top of
+    // it, it is gone.
+    t.feed(b"\x1b[1;1H\x1b[L");
+    assert_eq!(line(&t), 1);
+    t.feed(b"\x1b[2;3r\x1b[2;1H\x1b[M");
+    assert!(t.screen().graphics().placements().is_empty());
+}
+
+#[test]
+fn clearing_the_screen_removes_images() {
+    let mut t = term(10, 3);
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\");
+    t.feed(b"\x1b[2J");
+    assert!(t.screen().graphics().placements().is_empty());
+}
+
+#[test]
+fn alternate_screen_has_its_own_images() {
+    let mut t = term(10, 3);
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\");
+    t.feed(b"\x1b[?1049h");
+    assert!(t.screen().graphics().placements().is_empty());
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\\x1b[?1049l");
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+}
+
+#[test]
+fn reports_pixel_sizes() {
+    let mut t = term(80, 24);
+    t.screen_mut().set_cell_size(9, 18);
+    t.feed(b"\x1b[16t\x1b[14t\x1b[18t");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b[6;18;9t\x1b[4;432;720t\x1b[8;24;80t"
+    );
+}

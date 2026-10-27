@@ -17,6 +17,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use super::atlas::Atlas;
 use super::{Batch, Frame, Theme, VERTEX_FLOATS};
 use crate::font::{CellMetrics, Fonts, Glyph};
+use crate::terminal::graphics::Image;
 
 /// Smaller than the GL atlas: saving memory is the point of this renderer.
 const ATLAS_SIZE: u32 = 1024;
@@ -166,9 +167,15 @@ impl Renderer {
         for (y0, y1) in changed(&bands, &fingerprints, held) {
             rows[y0 as usize..y1 as usize].fill(true);
         }
+        let images: Vec<Option<&Image>> = batch
+            .images
+            .iter()
+            .map(|&(_, uid)| frame.screen.image(uid))
+            .collect();
         let atlases = Atlases {
             coverage: &self.atlas_pixels,
             color: &self.color_pixels,
+            images: &images,
         };
         paint(&batch, &atlases, canvas, (w, h), background, &rows);
         buffer
@@ -215,17 +222,27 @@ fn fingerprint(batch: &Batch, bands: &[(u32, u32)], clear: [u8; 4]) -> Vec<u64> 
             hasher
         })
         .collect();
-    for quad in batch.vertices.as_chunks::<{ 6 * VERTEX_FLOATS }>().0 {
+    let mut images = batch.images.iter().peekable();
+    for (i, quad) in batch
+        .vertices
+        .as_chunks::<{ 6 * VERTEX_FLOATS }>()
+        .0
+        .iter()
+        .enumerate()
+    {
         // The first vertex has the top-left corner, texture coordinate,
-        // color and mode; the fifth the bottom-right corner.
+        // color and mode; the fifth the bottom-right corner and texture
+        // coordinate.
         let first = &quad[..VERTEX_FLOATS];
-        let last = &quad[4 * VERTEX_FLOATS..4 * VERTEX_FLOATS + 2];
+        let last = &quad[4 * VERTEX_FLOATS..4 * VERTEX_FLOATS + 4];
+        let image = images.next_if(|(v, _)| *v == i * 6).map(|&(_, uid)| uid);
         let (y0, y1) = (first[1].round() as i64, last[1].round() as i64);
         for (band, hasher) in bands.iter().zip(&mut hashers) {
             if y0 < i64::from(band.1) && y1 > i64::from(band.0) {
                 for v in first.iter().chain(last) {
                     v.to_bits().hash(hasher);
                 }
+                image.hash(hasher);
             }
         }
     }
@@ -249,10 +266,12 @@ fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
 }
 
 /// The atlas images: coverage (`ATLAS_SIZE`²) and color emoji
-/// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed).
+/// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed), and the image of each
+/// image quad of the batch.
 struct Atlases<'a> {
     coverage: &'a [u8],
     color: &'a [u8],
+    images: &'a [Option<&'a Image>],
 }
 
 /// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
@@ -277,13 +296,27 @@ fn paint(
         }
     }
     let (width, height) = (size.0 as i64, size.1 as i64);
-    for quad in batch.vertices.as_chunks::<{ 6 * VERTEX_FLOATS }>().0 {
+    let mut images = batch.images.iter().zip(atlases.images).peekable();
+    for (i, quad) in batch
+        .vertices
+        .as_chunks::<{ 6 * VERTEX_FLOATS }>()
+        .0
+        .iter()
+        .enumerate()
+    {
         // Quads are axis-aligned: the first vertex is the top-left corner,
         // the fifth the bottom-right one.
         let first = &quad[..VERTEX_FLOATS];
         let last = &quad[4 * VERTEX_FLOATS..5 * VERTEX_FLOATS];
         let [x0, y0] = [first[0], first[1]].map(|v| v.round() as i64);
         let [x1, y1] = [last[0], last[1]].map(|v| v.round() as i64);
+        if let Some((_, image)) = images.next_if(|((v, _), _)| *v == i * 6) {
+            if let Some(image) = image {
+                let uv = [first[2], first[3], last[2], last[3]];
+                paint_image(image, uv, [x0, y0, x1, y1], canvas, size, rows);
+            }
+            continue;
+        }
         let color = premultiply([first[4], first[5], first[6]], 1.0);
         let alpha = (first[7] * 255.0).round() as u32;
         let mode = first[8].round() as u8;
@@ -316,6 +349,47 @@ fn paint(
                     _ => blend_premultiplied(pixel, &atlases.color[texel * 4..][..4]),
                 }
             }
+        }
+    }
+}
+
+/// Draws the part `uv` (normalized) of an image into the pixel rectangle
+/// `[x0, y0, x1, y1]` of the rows marked in `rows`, sampling the nearest
+/// pixel.
+fn paint_image(
+    image: &Image,
+    uv: [f32; 4],
+    [x0, y0, x1, y1]: [i64; 4],
+    canvas: &mut [u8],
+    size: (u32, u32),
+    rows: &[bool],
+) {
+    let (width, height) = (size.0 as i64, size.1 as i64);
+    let (iw, ih) = (image.width as f32, image.height as f32);
+    let [u0, v0, u1, v1] = uv;
+    let (dw, dh) = ((x1 - x0).max(1) as f32, (y1 - y0).max(1) as f32);
+    for y in y0.max(0)..y1.min(height) {
+        if !rows[y as usize] {
+            continue;
+        }
+        let v = v0 + ((y - y0) as f32 + 0.5) / dh * (v1 - v0);
+        let ty = ((v * ih) as i64).clamp(0, ih as i64 - 1) as usize;
+        let row = (y * width) as usize * 4;
+        for x in x0.max(0)..x1.min(width) {
+            let u = u0 + ((x - x0) as f32 + 0.5) / dw * (u1 - u0);
+            let tx = ((u * iw) as i64).clamp(0, iw as i64 - 1) as usize;
+            let i = (ty * image.width as usize + tx) * 4;
+            let Some([r, g, b, a]) = image
+                .pixels
+                .get(i..i + 4)
+                .and_then(|p| <[u8; 4]>::try_from(p).ok())
+            else {
+                continue;
+            };
+            let a32 = u32::from(a);
+            let pre = |c: u8| ((u32::from(c) * a32 + 127) / 255) as u8;
+            let pixel = &mut canvas[row + x as usize * 4..][..4];
+            blend_premultiplied(pixel, &[pre(b), pre(g), pre(r), a]);
         }
     }
 }
@@ -359,6 +433,7 @@ mod tests {
         Atlases {
             coverage,
             color: &[],
+            images: &[],
         }
     }
 
@@ -506,6 +581,7 @@ mod tests {
         let atlases = Atlases {
             coverage: &[],
             color: &color,
+            images: &[],
         };
         paint(
             &batch,
@@ -517,6 +593,38 @@ mod tests {
         );
         assert_eq!(pixel(&canvas, 2, 0, 0), [128, 0, 50, 255]);
         assert_eq!(pixel(&canvas, 2, 1, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn images_are_scaled_and_blended() {
+        // Opaque red and half-transparent white, 2×1, drawn 4 pixels wide.
+        let image = Image {
+            uid: 1,
+            id: 0,
+            number: 0,
+            width: 2,
+            height: 1,
+            pixels: vec![255, 0, 0, 255, 255, 255, 255, 128],
+        };
+        let mut batch = Batch::default();
+        batch.image([0.0, 0.0, 4.0, 1.0], [0.0, 0.0, 1.0, 1.0], 1);
+        let images = [Some(&image)];
+        let atlases = Atlases {
+            coverage: &[],
+            color: &[],
+            images: &images,
+        };
+        let mut canvas = vec![0; 4 * 4];
+        paint(
+            &batch,
+            &atlases,
+            &mut canvas,
+            (4, 1),
+            [0, 0, 0, 255],
+            &[true],
+        );
+        assert_eq!(pixel(&canvas, 4, 1, 0), [0, 0, 255, 255]);
+        assert_eq!(pixel(&canvas, 4, 2, 0), [128, 128, 128, 255]);
     }
 
     #[test]

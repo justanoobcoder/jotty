@@ -370,11 +370,13 @@ pub fn run(
             Vec::new(),
         ),
     };
+    // The pixel size of the grid, from which programs work out the cell
+    // size for images.
     let window_size = WindowSize {
         cols: cols as u16,
         rows: lines as u16,
-        width: size.0 as u16,
-        height: size.1 as u16,
+        width: (cols * cell.width).min(u16::MAX.into()) as u16,
+        height: (lines * cell.height).min(u16::MAX.into()) as u16,
     };
     let term = crate::terminfo::resolve(&config.terminal.term, &crate::terminfo::search_dirs());
     log::info!("TERM={} (terminfo: {:?})", term.name, term.terminfo);
@@ -394,6 +396,7 @@ pub fn run(
     let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
     term.screen_mut()
         .set_default_colors(Theme::from_config(&config).default_colors());
+    term.screen_mut().set_cell_size(cell.width, cell.height);
     let font_points = config.font.size;
     let mut app = App {
         qh: qh.clone(),
@@ -519,8 +522,13 @@ impl App {
         }
         self.renderer.resize(self.physical_size());
         let (cols, rows) = self.grid_size();
-        self.term.screen_mut().resize(cols, rows);
-        let (w, h) = self.physical_size();
+        let cell = self.renderer.cell();
+        let screen = self.term.screen_mut();
+        screen.set_cell_size(cell.width, cell.height);
+        screen.resize(cols, rows);
+        // The pixel size of the grid, from which programs work out the
+        // cell size for images.
+        let (w, h) = (cols as u32 * cell.width, rows as u32 * cell.height);
         let size = WindowSize {
             cols: cols as u16,
             rows: rows as u16,

@@ -61,9 +61,13 @@ nothing surprises you.
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
 - Not implemented: the kitty keyboard protocol and `modifyOtherKeys`, OSC 52
-  clipboard access, grapheme cluster mode (2027), sixel/kitty graphics,
+  clipboard access, grapheme cluster mode (2027), sixel graphics,
   blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
   (logged at `debug` level).
+- **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
+  placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB per
+  screen; past that the oldest are evicted. Images in the history move with
+  the cursor's line when a width change reflows the text.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535

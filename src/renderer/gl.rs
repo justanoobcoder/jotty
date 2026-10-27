@@ -1,5 +1,6 @@
 //! OpenGL ES 3 rendering on a Wayland EGL surface.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 use glow::HasContext;
@@ -41,8 +42,15 @@ in vec4 v_color;
 in float v_mode;
 uniform sampler2D u_atlas;
 uniform sampler2D u_color;
+uniform sampler2D u_image;
 out vec4 o_color;
 void main() {
+    if (v_mode > 2.5) {
+        // An image, straight alpha.
+        vec4 c = texture(u_image, v_uv);
+        o_color = vec4(c.rgb * c.a, c.a) * v_color.a;
+        return;
+    }
     if (v_mode > 1.5) {
         // Color emoji, already premultiplied.
         o_color = texture(u_color, v_uv) * v_color.a;
@@ -154,6 +162,9 @@ pub struct Renderer {
     viewport_uniform: Option<glow::UniformLocation>,
     texture: glow::Texture,
     color_texture: glow::Texture,
+    /// Textures of the images drawn so far, by uid.
+    images: HashMap<u64, glow::Texture>,
+    max_texture_size: u32,
     atlas: Atlas,
     egl: Egl,
     pub fonts: Fonts,
@@ -210,6 +221,39 @@ unsafe fn create_texture(
     }
 }
 
+/// Uploads an image as a texture on texture unit 2. Images are scaled, so
+/// they are sampled with `LINEAR`.
+unsafe fn upload_image(
+    gl: &glow::Context,
+    image: &crate::terminal::graphics::Image,
+) -> Result<glow::Texture, String> {
+    unsafe {
+        let texture = gl.create_texture()?;
+        gl.active_texture(glow::TEXTURE2);
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            image.width as i32,
+            image.height as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(&image.pixels)),
+        );
+        for (param, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+            (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+        }
+        Ok(texture)
+    }
+}
+
 impl Renderer {
     /// # Safety
     /// `display_ptr` must be the connection's live `wl_display` and
@@ -249,6 +293,8 @@ impl Renderer {
             let viewport_uniform = gl.get_uniform_location(program, "u_viewport");
             gl.uniform_1_i32(gl.get_uniform_location(program, "u_atlas").as_ref(), 0);
             gl.uniform_1_i32(gl.get_uniform_location(program, "u_color").as_ref(), 1);
+            gl.uniform_1_i32(gl.get_uniform_location(program, "u_image").as_ref(), 2);
+            let max_texture_size = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as u32;
 
             let vao = gl.create_vertex_array()?;
             let vbo = gl.create_buffer()?;
@@ -281,6 +327,8 @@ impl Renderer {
                 viewport_uniform,
                 texture,
                 color_texture,
+                images: HashMap::new(),
+                max_texture_size,
                 atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
                 egl,
                 fonts,
@@ -349,6 +397,38 @@ impl Renderer {
             &mut self.atlas.cache(&mut self.fonts, upload),
         );
 
+        // Upload new images, and free those the program deleted.
+        let screen = frame.screen;
+        self.images.retain(|uid, texture| {
+            let live = screen.image(*uid).is_some();
+            if !live {
+                unsafe { gl.delete_texture(*texture) };
+            }
+            live
+        });
+        for &(_, uid) in &batch.images {
+            if self.images.contains_key(&uid) {
+                continue;
+            }
+            let Some(image) = screen.image(uid) else {
+                continue;
+            };
+            if image.width.max(image.height) > self.max_texture_size {
+                log::warn!(
+                    "image of {}x{} exceeds the texture size limit",
+                    image.width,
+                    image.height
+                );
+                continue;
+            }
+            match unsafe { upload_image(gl, image) } {
+                Ok(texture) => {
+                    self.images.insert(uid, texture);
+                }
+                Err(e) => log::warn!("cannot upload image: {e}"),
+            }
+        }
+
         let (w, h) = self.size;
         let [r, g, b] = theme.background.to_f32();
         let a = theme.opacity;
@@ -370,11 +450,23 @@ impl Renderer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.active_texture(glow::TEXTURE1);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.color_texture));
-            gl.draw_arrays(
-                glow::TRIANGLES,
-                0,
-                (batch.vertices.len() / VERTEX_FLOATS) as i32,
-            );
+            // Image quads need their own texture; draw the runs between them.
+            let draw = |first: usize, end: usize| {
+                if end > first {
+                    gl.draw_arrays(glow::TRIANGLES, first as i32, (end - first) as i32);
+                }
+            };
+            let mut start = 0;
+            gl.active_texture(glow::TEXTURE2);
+            for &(first, uid) in &batch.images {
+                draw(start, first);
+                if let Some(&texture) = self.images.get(&uid) {
+                    gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                    draw(first, first + 6);
+                }
+                start = first + 6;
+            }
+            draw(start, batch.vertices.len() / VERTEX_FLOATS);
         }
         self.egl
             .api
@@ -389,6 +481,9 @@ impl Drop for Renderer {
         unsafe {
             self.gl.delete_texture(self.texture);
             self.gl.delete_texture(self.color_texture);
+            for &texture in self.images.values() {
+                self.gl.delete_texture(texture);
+            }
             self.gl.delete_buffer(self.vbo);
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_program(self.program);

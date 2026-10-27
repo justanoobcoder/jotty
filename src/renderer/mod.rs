@@ -17,6 +17,7 @@ use crate::config::{Config, Rgb};
 use crate::font::{CellMetrics, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
+use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
 use crate::terminal::{Cell, Color, CursorShape, Flags, Screen, Underline};
 
 /// One of the two backends, which draw the same [`Batch`].
@@ -246,11 +247,15 @@ pub const VERTEX_FLOATS: usize = 9;
 #[derive(Debug, Default)]
 pub struct Batch {
     pub vertices: Vec<f32>,
+    /// The image quads, in drawing order: the index of the first vertex
+    /// and the image's uid.
+    pub images: Vec<(usize, u64)>,
 }
 
 impl Batch {
     /// Adds a quad covering `[x, y, width, height]`; `mode` 0 is a solid
-    /// color, 1 samples the glyph atlas at `uv`, 2 the color atlas.
+    /// color, 1 samples the glyph atlas at `uv`, 2 the color atlas, 3 an
+    /// image.
     fn quad(&mut self, [x, y, w, h]: [f32; 4], uv: [f32; 4], color: Rgb, alpha: f32, mode: f32) {
         let [r, g, b] = color.to_f32();
         let [u0, v0, u1, v1] = uv;
@@ -291,14 +296,136 @@ impl Batch {
         );
     }
 
+    /// Part of an image: `uv` normalized within it, drawn into `rect`.
+    fn image(&mut self, rect: [f32; 4], uv: [f32; 4], uid: u64) {
+        self.images.push((self.vertices.len() / VERTEX_FLOATS, uid));
+        self.quad(rect, uv, Rgb(255, 255, 255), 1.0, 3.0);
+    }
+
     #[cfg(test)]
     pub fn quads(&self) -> usize {
         self.vertices.len() / (6 * VERTEX_FLOATS)
     }
 
     fn append(&mut self, mut other: Batch) {
+        let base = self.vertices.len() / VERTEX_FLOATS;
+        self.images
+            .extend(other.images.iter().map(|&(first, uid)| (base + first, uid)));
         self.vertices.append(&mut other.vertices);
     }
+}
+
+/// Images with a z-index below this are drawn under cell backgrounds;
+/// others below 0 between backgrounds and text, the rest over text.
+const BELOW_BACKGROUNDS: i32 = i32::MIN / 2;
+
+/// Part of an image to draw.
+struct ImageQuad {
+    z: i32,
+    uid: u64,
+    rect: [f32; 4],
+    uv: [f32; 4],
+}
+
+impl ImageQuad {
+    /// The part of `source` (pixels of an image of `size`) drawn into
+    /// `rect`, cut to `clip`; `None` when nothing is left.
+    fn clipped(
+        rect: [f32; 4],
+        source: [f32; 4],
+        size: (u32, u32),
+        clip: [f32; 4],
+    ) -> Option<([f32; 4], [f32; 4])> {
+        let [x, y, w, h] = rect;
+        let x0 = x.max(clip[0]);
+        let y0 = y.max(clip[1]);
+        let x1 = (x + w).min(clip[0] + clip[2]);
+        let y1 = (y + h).min(clip[1] + clip[3]);
+        if x1 <= x0 || y1 <= y0 || w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        let [sx, sy, sw, sh] = source;
+        let (iw, ih) = (size.0 as f32, size.1 as f32);
+        let u = |px: f32| (sx + (px - x) / w * sw) / iw;
+        let v = |py: f32| (sy + (py - y) / h * sh) / ih;
+        Some(([x0, y0, x1 - x0, y1 - y0], [u(x0), v(y0), u(x1), v(y1)]))
+    }
+}
+
+/// The parts of images that placements show on the visible rows.
+fn placement_quads(frame: &Frame, m: CellMetrics, out: &mut Vec<ImageQuad>) {
+    let screen = frame.screen;
+    let images = screen.graphics();
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    let (ox, oy) = (frame.origin.0 as f32, frame.origin.1 as f32);
+    let clip = [ox, oy, screen.cols() as f32 * cw, screen.rows() as f32 * ch];
+    // The line shown in the top row.
+    let top = screen.grid().scrolled as i64 - screen.display_offset() as i64;
+    for p in images.placements().iter().filter(|p| !p.is_virtual) {
+        let Some(image) = images.image(p.image) else {
+            continue;
+        };
+        let (dx, dy) = (p.offset.0 as f32, p.offset.1 as f32);
+        let x = ox + p.col as f32 * cw + dx;
+        let y = oy + (p.line - top) as f32 * ch + dy;
+        let [sx, sy, sw, sh] = p.source.map(|v| v as f32);
+        let (w, h) = p.pixel_size((m.width, m.height));
+        if let Some((rect, uv)) = ImageQuad::clipped(
+            [x, y, w, h],
+            [sx, sy, sw, sh],
+            (image.width, image.height),
+            clip,
+        ) {
+            out.push(ImageQuad {
+                z: p.z,
+                uid: image.uid,
+                rect,
+                uv,
+            });
+        }
+    }
+}
+
+/// The part of an image a placeholder cell at `(px, py)` shows. The image
+/// is fit into its virtual placement's cells, keeping its aspect ratio, and
+/// centered.
+fn placeholder_quad(
+    screen: &Screen,
+    cell: PlaceholderCell,
+    (px, py): (f32, f32),
+    m: CellMetrics,
+) -> Option<ImageQuad> {
+    let images = screen.graphics();
+    let image = images.image_by_id(cell.image)?;
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    let placement = images.virtual_placement(image.uid, cell.placement);
+    let source = placement.map_or([0, 0, image.width, image.height], |p| p.source);
+    let (cols, rows) = match placement {
+        Some(p) => p.size_in_cells((m.width, m.height)),
+        None => (
+            image.width.div_ceil(m.width.max(1)),
+            image.height.div_ceil(m.height.max(1)),
+        ),
+    };
+    let [sx, sy, sw, sh] = source.map(|v| v as f32);
+    let (bw, bh) = (cols as f32 * cw, rows as f32 * ch);
+    let scale = (bw / sw).min(bh / sh);
+    let (w, h) = (sw * scale, sh * scale);
+    // The image's rectangle with this cell's top-left corner at (px, py).
+    let x = px - cell.col as f32 * cw + (bw - w) / 2.0;
+    let y = py - cell.row as f32 * ch + (bh - h) / 2.0;
+    let (rect, uv) = ImageQuad::clipped(
+        [x, y, w, h],
+        [sx, sy, sw, sh],
+        (image.width, image.height),
+        [px, py, cw, ch],
+    )?;
+    Some(ImageQuad {
+        z: placement.map_or(0, |p| p.z),
+        uid: image.uid,
+        rect,
+        uv,
+    })
 }
 
 /// Everything besides the screen that affects what is drawn.
@@ -344,16 +471,30 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         .cursor_color()
         .map_or(theme.cursor, |(r, g, b)| Rgb(r, g, b));
     let offset = screen.display_offset() as isize;
+    let mut images = Vec::new();
+    if !screen.graphics().is_empty() {
+        placement_quads(frame, m, &mut images);
+    }
 
     for y in 0..screen.rows() {
         let row = screen.visible_row(y);
         let line = y as isize - offset;
         let py = oy + y as f32 * ch;
+        // The placeholder cell to the left, which the next one continues.
+        let mut placeholder: Option<PlaceholderCell> = None;
         for x in 0..screen.cols() {
             let cell = row.cells.get(x).copied().unwrap_or_default();
             if cell.flags.contains(Flags::WIDE_SPACER) {
                 continue;
             }
+            let shown = (cell.c == PLACEHOLDER).then(|| {
+                let decoded =
+                    graphics::decode_placeholder(&cell, screen.cluster(cell.cluster), placeholder);
+                let px = ox + x as f32 * cw;
+                images.extend(placeholder_quad(screen, decoded, (px, py), m));
+                decoded
+            });
+            placeholder = shown;
             let span = if cell.flags.contains(Flags::WIDE) {
                 2.0
             } else {
@@ -387,7 +528,9 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 };
                 back.fill(px, py, cw * span, ch, bg, alpha);
             }
-            let glyph = if cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION) {
+            let glyph = if cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION)
+                || cell.c == PLACEHOLDER
+            {
                 None
             } else if cell.cluster != 0 {
                 let mut text = String::new();
@@ -451,17 +594,31 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         }
     }
 
+    let mut overlay = Batch::default();
     if let Some(label) = frame.label {
-        draw_label(&mut front, label, frame, theme, m, glyphs);
+        draw_label(&mut overlay, label, frame, theme, m, glyphs);
     }
     if let Some(text) = frame.search {
-        draw_search_bar(&mut front, text, frame, theme, m, glyphs);
+        draw_search_bar(&mut overlay, text, frame, theme, m, glyphs);
     } else if let Some(preedit) = frame.preedit {
-        draw_preedit(&mut front, preedit, frame, theme, cursor_color, m, glyphs);
+        draw_preedit(&mut overlay, preedit, frame, theme, cursor_color, m, glyphs);
     }
 
-    back.append(front);
-    back
+    // Images go in three layers by z-index: under the cell backgrounds,
+    // under the text, and over it; in placement order within a z-index.
+    images.sort_by_key(|i| i.z);
+    let mut batch = Batch::default();
+    let mut images = images.into_iter().peekable();
+    for (layer, end) in [(back, BELOW_BACKGROUNDS), (front, 0), (overlay, i32::MAX)] {
+        while let Some(image) = images.next_if(|i| i.z < end) {
+            batch.image(image.rect, image.uv, image.uid);
+        }
+        batch.append(layer);
+    }
+    for image in images {
+        batch.image(image.rect, image.uv, image.uid);
+    }
+    batch
 }
 
 /// Draws `text` over the right end of the top row, in inverse colors.
@@ -866,6 +1023,55 @@ mod tests {
         let ((x, y), color, mode) = quad_at(&batch, 0);
         assert_eq!((x, y, mode), (20.0, 0.0, 0.0));
         assert_eq!(color, theme().cursor.to_f32());
+    }
+
+    /// A terminal with a 2×2 image placed at (row 0, column 1) with `z`.
+    fn with_image(z: i32) -> Terminal {
+        let mut term = Terminal::new(4, 2, 0);
+        term.screen_mut().set_cell_size(10, 20);
+        term.feed(b"\x1b_Ga=t,i=1,f=24,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+        term.feed(format!("\x1b[1;2H\x1b_Ga=p,i=1,c=2,r=1,z={z},C=1\x1b\\x").as_bytes());
+        term
+    }
+
+    #[test]
+    fn images_are_layered_by_z_index() {
+        let mut glyphs = FakeGlyphs::default();
+        // Over the text: last.
+        let term = with_image(0);
+        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let last = batch.quads() - 1;
+        assert_eq!(batch.images.len(), 1);
+        assert_eq!(batch.images[0].0, last * 6);
+        let ((x, y), _, mode) = quad_at(&batch, last);
+        assert_eq!((x, y, mode), (10.0, 0.0, 3.0));
+        // Scaled to two cells.
+        let v = &batch.vertices[(last * 6 + 4) * VERTEX_FLOATS..];
+        assert_eq!((v[0], v[1], v[2], v[3]), (30.0, 20.0, 1.0, 1.0));
+        // Under the text: before the glyph.
+        let term = with_image(-1);
+        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let (_, _, mode) = quad_at(&batch, batch.quads() - 1);
+        assert_eq!(mode, 1.0);
+        assert_eq!(quad_at(&batch, batch.images[0].0 / 6).2, 3.0);
+    }
+
+    #[test]
+    fn placeholder_cells_show_their_part_of_the_image() {
+        let mut term = Terminal::new(4, 2, 0);
+        term.screen_mut().set_cell_size(10, 20);
+        term.feed(b"\x1b_Ga=T,U=1,i=5,f=24,s=2,v=2,c=2,r=1;AAAAAAAAAAAAAAAA\x1b\\");
+        // Image 5 in the foreground; row 0, columns 0 and 1 (inherited).
+        term.feed("\x1b[38;5;5m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}".as_bytes());
+        let mut glyphs = FakeGlyphs::default();
+        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        assert!(glyphs.0.is_empty());
+        assert_eq!(batch.images.len(), 2);
+        // The 2×2 image fits a 20×20 box in the 20×20 cells, centered.
+        let ((x, y), _, _) = quad_at(&batch, batch.images[1].0 / 6);
+        assert_eq!((x, y), (10.0, 0.0));
+        let v = &batch.vertices[batch.images[1].0 * VERTEX_FLOATS..];
+        assert_eq!((v[2], v[3]), (0.5, 0.0));
     }
 
     #[test]

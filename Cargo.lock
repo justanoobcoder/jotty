@@ -425,6 +425,7 @@ dependencies = [
  "khronos-egl",
  "libc",
  "log",
+ "miniz_oxide 0.8.9",
  "png",
  "regex",
  "serde",

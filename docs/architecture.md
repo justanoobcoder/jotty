@@ -28,7 +28,7 @@ on the CPU.
 | `main.rs` | Logging, CLI, config loading, error reporting | no |
 | `cli.rs` | Argument parsing | no |
 | `config.rs` | TOML config with defaults, validation and clamping | no |
-| `terminal/` | VT emulation: grid, scrollback, escape sequences | no |
+| `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty graphics | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
 | `input.rs` | Key → bytes encoding, mouse reports, paste encoding | xkb keysyms only |
@@ -106,6 +106,21 @@ cut off or padded instead.
 
 **Synchronized output.** While mode 2026 is set, the application holds
 drawing until it is reset, or for at most 150 ms.
+
+**Images (`terminal/graphics.rs`).** vte drops APC strings, so
+`Terminal::feed` takes `ESC _ … ESC \` out of the byte stream first (also
+when split across reads) and hands kitty graphics commands (`G…`) to the
+screen. Each screen buffer has its own `Graphics`: images decoded to RGBA
+(raw RGB/RGBA or PNG, optionally zlib-compressed, sent inline in chunks or
+read from a file, a temporary file or POSIX shared memory) and placements.
+A placement's row is counted from the grid's `scrolled` counter, so it
+moves into the history with the text; region scrolls, inserted and deleted
+lines, `ED 2`/`ED 3` and the alternate screen move or drop placements
+explicitly. Virtual placements (`U=1`) are drawn wherever a cell holds
+U+10EEEE: its foreground color gives the image id, its underline color the
+placement, and combining diacritics the image row and column. The screen
+also answers `CSI 14/16/18 t`, and the pty's window size carries the grid's
+size in pixels, from which programs compute the cell size.
 
 When a row scrolls off the top of the full-screen region on the primary
 screen, it moves into history. If the user is looking at history at that
@@ -204,6 +219,11 @@ or a copy into memory). Cells with a grapheme cluster ask for the whole
 cluster; continuation cells draw no glyph. The frame also carries the
 hovered link (underlined) and the search bar, drawn over the bottom row.
 
+Images become quads too (mode 3), with the image's uid recorded in
+`Batch::images`. By z-index they go under the cell backgrounds (below
+−2³⁰), between backgrounds and text (below 0), or over the text, and are
+clipped to the grid.
+
 **2. Drawing** (`renderer::gl`) uploads the batch into one vertex buffer and
 issues one `glDrawArrays`. A vertex has position, texture coordinate, color,
 and a mode (solid, glyph, or color glyph). A single shader handles all
@@ -213,7 +233,10 @@ compositor blends the window: the clear color is the background at
 `transparent_cell_backgrounds` is set. The atlas is a 2048×2048
 single-channel (`R8`) texture sampled with `NEAREST`, since glyphs sit on
 whole pixels, and color emoji go to a 1024×1024 `RGBA8` texture. When
-either fills up, both are cleared and the frame is redrawn.
+either fills up, both are cleared and the frame is redrawn. Each image is
+uploaded once as an `RGBA8` texture (sampled with `LINEAR`, as images are
+scaled) and freed when the program deletes it; the draw call is split at
+image quads to bind their texture.
 
 **2b. Drawing on the CPU** (`renderer::software`, the default) paints the
 same batch into an ARGB8888 `wl_shm` buffer: it clears to the background,
@@ -221,7 +244,7 @@ then fills each quad, blending glyph coverage from a 1024×1024 atlas in
 memory, or color emoji from a 512×512 BGRA atlas allocated on first use.
 Quads are axis-aligned and glyphs 1:1, so this is a plain blit with
 premultiplied-alpha blending, and the result matches the GL output pixel
-for pixel.
+for pixel. Images are scaled by sampling the nearest pixel.
 
 Only what changed is repainted. The window is divided into horizontal
 bands: the padding above the grid, one band per text row, and the rest.

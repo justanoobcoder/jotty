@@ -4,6 +4,7 @@
 //! all state and implements the control functions (a practical subset of
 //! xterm's, enough for shells, editors, pagers and tmux).
 
+pub mod graphics;
 pub mod grid;
 
 use std::collections::HashMap;
@@ -12,11 +13,30 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
+use graphics::Graphics;
 pub use grid::{Cell, Color, Flags, Grid, Mark, Row, Underline};
+
+/// The longest APC string kept; the rest of a longer one is dropped.
+const MAX_APC: usize = 64 << 20;
 
 pub struct Terminal {
     parser: vte::Parser,
     screen: Screen,
+    apc: Apc,
+}
+
+/// Where the byte stream is relative to an APC string (`ESC _ … ESC \`),
+/// which vte ignores; graphics commands come in them.
+#[derive(Default)]
+enum Apc {
+    #[default]
+    Outside,
+    /// An `ESC` ended the last read.
+    Escape,
+    /// Inside, with the body so far (`None` when it grew too long).
+    Body(Option<Vec<u8>>),
+    /// Inside, after an `ESC`.
+    BodyEscape(Option<Vec<u8>>),
 }
 
 impl Terminal {
@@ -24,12 +44,70 @@ impl Terminal {
         Terminal {
             parser: vte::Parser::new(),
             screen: Screen::new(cols, rows, scrollback),
+            apc: Apc::Outside,
         }
     }
 
-    /// Processes output from the child process.
-    pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.screen, bytes);
+    /// Processes output from the child process. APC strings are taken out
+    /// before the parser sees the bytes.
+    pub fn feed(&mut self, mut bytes: &[u8]) {
+        while let Some(&first) = bytes.first() {
+            match std::mem::take(&mut self.apc) {
+                Apc::Outside => {
+                    // The first `ESC _`, or an `ESC` at the end.
+                    let start = (0..bytes.len())
+                        .find(|&i| bytes[i] == 0x1b && bytes.get(i + 1).is_none_or(|&b| b == b'_'));
+                    let Some(i) = start else {
+                        self.parser.advance(&mut self.screen, bytes);
+                        return;
+                    };
+                    self.parser.advance(&mut self.screen, &bytes[..i]);
+                    if i + 1 == bytes.len() {
+                        self.apc = Apc::Escape;
+                        return;
+                    }
+                    self.apc = Apc::Body(Some(Vec::new()));
+                    bytes = &bytes[i + 2..];
+                }
+                Apc::Escape if first == b'_' => {
+                    self.apc = Apc::Body(Some(Vec::new()));
+                    bytes = &bytes[1..];
+                }
+                Apc::Escape => self.parser.advance(&mut self.screen, b"\x1b"),
+                Apc::Body(mut body) => {
+                    let end = bytes.iter().position(|&b| b == 0x1b);
+                    let part = &bytes[..end.unwrap_or(bytes.len())];
+                    if body
+                        .as_ref()
+                        .is_some_and(|b| b.len() + part.len() > MAX_APC)
+                    {
+                        log::debug!("APC string too long; dropping it");
+                        body = None;
+                    }
+                    if let Some(body) = &mut body {
+                        body.extend_from_slice(part);
+                    }
+                    match end {
+                        Some(i) => {
+                            self.apc = Apc::BodyEscape(body);
+                            bytes = &bytes[i + 1..];
+                        }
+                        None => {
+                            self.apc = Apc::Body(body);
+                            return;
+                        }
+                    }
+                }
+                Apc::BodyEscape(body) if first == b'\\' => {
+                    if let Some(body) = body {
+                        self.screen.apc_dispatch(&body);
+                    }
+                    bytes = &bytes[1..];
+                }
+                // Another escape sequence cuts the string short.
+                Apc::BodyEscape(_) => self.parser.advance(&mut self.screen, b"\x1b"),
+            }
+        }
     }
 
     pub fn screen(&self) -> &Screen {
@@ -215,6 +293,10 @@ pub struct Screen {
     display_offset: usize,
     /// Where the shell's prompt ended (OSC 133;B), as (row, column).
     prompt_end: Option<(usize, usize)>,
+    /// Images of the primary and alternate screen (kitty graphics).
+    graphics: [Graphics; 2],
+    /// The cell size in pixels, for pixel size reports.
+    cell_size: (u32, u32),
 }
 
 pub type Rgb = (u8, u8, u8);
@@ -307,6 +389,8 @@ impl Screen {
             dirty: true,
             display_offset: 0,
             prompt_end: None,
+            graphics: Default::default(),
+            cell_size: (10, 20),
         }
     }
 
@@ -585,6 +669,76 @@ impl Screen {
         }
     }
 
+    // ---- Graphics ---------------------------------------------------------
+
+    /// Sets the cell size in pixels, which sizes images in cells.
+    pub fn set_cell_size(&mut self, width: u32, height: u32) {
+        let size = (width.max(1), height.max(1));
+        self.cell_size = size;
+        for graphics in &mut self.graphics {
+            graphics.cell = size;
+        }
+        self.dirty = true;
+    }
+
+    /// The images of the screen being shown.
+    pub fn graphics(&self) -> &Graphics {
+        &self.graphics[self.alt_active as usize]
+    }
+
+    fn graphics_mut(&mut self) -> &mut Graphics {
+        &mut self.graphics[self.alt_active as usize]
+    }
+
+    /// An image of either screen by its uid.
+    pub fn image(&self, uid: u64) -> Option<&graphics::Image> {
+        self.graphics.iter().find_map(|g| g.image(uid))
+    }
+
+    /// The line of the top screen row, the unit placements are anchored in.
+    fn top_line(&self) -> i64 {
+        self.grid().scrolled as i64
+    }
+
+    /// Handles an APC string; kitty graphics commands start with `G`.
+    fn apc_dispatch(&mut self, body: &[u8]) {
+        self.last_printed = None;
+        self.cluster_start = None;
+        let Some(command) = body.strip_prefix(b"G") else {
+            return;
+        };
+        let top = self.top_line();
+        let ctx = graphics::Context {
+            top,
+            rows: self.rows,
+            cursor: (
+                top + self.cursor.row as i64,
+                self.cursor.col.min(self.cols - 1),
+            ),
+        };
+        let outcome = self.graphics_mut().command(command, &ctx);
+        if let Some(response) = outcome.response {
+            self.responses.extend_from_slice(response.as_bytes());
+        }
+        if let Some((cols, rows)) = outcome.moved {
+            // Past the image: after its last column, on its last row.
+            let mut col = self.cursor.col + cols as usize;
+            let mut row = self.cursor.row + rows as usize - 1;
+            if col >= self.cols {
+                col = 0;
+                row += 1;
+            }
+            if self.cursor.row <= self.scroll_bottom && row > self.scroll_bottom {
+                self.scroll_up(row - self.scroll_bottom);
+                row = self.scroll_bottom;
+            }
+            self.cursor.row = row.min(self.rows - 1);
+            self.cursor.col = col;
+            self.cursor.pending_wrap = false;
+        }
+        self.dirty = true;
+    }
+
     // ---- Resizing -------------------------------------------------------
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -598,7 +752,20 @@ impl Screen {
         self.last_printed = None;
         self.cluster_start = None;
         if cols != self.cols {
+            // Images stay by the primary cursor, as the text near it does.
+            let cursor_row = |s: &Screen| {
+                if s.alt_active {
+                    s.saved[0].map_or(0, |c| c.cursor.row)
+                } else {
+                    s.cursor.row
+                }
+            };
+            let before = cursor_row(self);
             self.reflow_primary(cols, rows);
+            let delta = cursor_row(self) as i64 - before as i64;
+            self.graphics[0].shift(i64::MIN, delta);
+            let first = self.primary.scrolled as i64 - self.primary.history.len() as i64;
+            self.graphics[0].clear(i64::MIN, first);
         } else {
             let primary_row = if self.alt_active {
                 self.saved[0].map_or(0, |s| s.cursor.row)
@@ -754,7 +921,20 @@ impl Screen {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         let template = self.cursor.template;
         let keep = top == 0 && !self.alt_active;
+        let line = self.top_line();
         let scrolled = self.grid_mut().scroll_up(top, bottom, n, &template, keep);
+        if keep {
+            // Images in the region went up with the screen; those below it
+            // stay, and those past the history are gone.
+            let graphics = &mut self.graphics[0];
+            graphics.shift(line + bottom as i64 + 1, scrolled as i64);
+            let first = self.primary.scrolled as i64 - self.primary.history.len() as i64;
+            graphics.clear(i64::MIN, first);
+        } else {
+            let n = n.min(bottom + 1 - top) as i64;
+            self.graphics_mut()
+                .scroll(line + top as i64, line + bottom as i64, n);
+        }
         if keep {
             self.prompt_end = self
                 .prompt_end
@@ -772,7 +952,17 @@ impl Screen {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         let template = self.cursor.template;
         self.grid_mut().scroll_down(top, bottom, n, &template);
+        self.scroll_graphics(top, bottom, -(n as i64));
         self.dirty = true;
+    }
+
+    /// Moves the images in rows `top..=bottom` up by `n` rows (down when
+    /// negative), as the region's text moved.
+    fn scroll_graphics(&mut self, top: usize, bottom: usize, n: i64) {
+        let line = self.top_line();
+        let n = n.clamp(-((bottom + 1 - top) as i64), (bottom + 1 - top) as i64);
+        self.graphics_mut()
+            .scroll(line + top as i64, line + bottom as i64, n);
     }
 
     // ---- Editing --------------------------------------------------------------
@@ -853,6 +1043,7 @@ impl Screen {
         let template = self.cursor.template;
         let bottom = self.scroll_bottom;
         self.grid_mut().scroll_down(row, bottom, n, &template);
+        self.scroll_graphics(row, bottom, -(n as i64));
         self.carriage_return();
         self.dirty = true;
     }
@@ -865,6 +1056,7 @@ impl Screen {
         let template = self.cursor.template;
         let bottom = self.scroll_bottom;
         self.grid_mut().scroll_up(row, bottom, n, &template, false);
+        self.scroll_graphics(row, bottom, n as i64);
         self.carriage_return();
         self.dirty = true;
     }
@@ -1004,6 +1196,7 @@ impl Screen {
         self.alt_active = on;
         if on && clear {
             self.erase_rows(0, self.rows);
+            self.graphics[1].clear_all();
         }
         self.display_offset = 0;
         self.dirty = true;
@@ -1022,6 +1215,7 @@ impl Screen {
             1047 => {
                 if self.alt_active && !on {
                     self.erase_rows(0, self.rows);
+                    self.graphics[1].clear_all();
                 }
                 self.set_alt_screen(on, false);
             }
@@ -1153,8 +1347,10 @@ impl Screen {
     fn reset(&mut self) {
         let scrollback = self.primary.max_history;
         let default_colors = self.default_colors.clone();
+        let (width, height) = self.cell_size;
         *self = Screen::new(self.cols, self.rows, scrollback);
         self.set_default_colors(default_colors);
+        self.set_cell_size(width, height);
     }
 
     /// The current attributes as SGR parameters, for DECRQSS replies.
@@ -1425,10 +1621,17 @@ impl Perform for Screen {
                         self.erase_rows(0, row);
                         self.erase_cells(row, 0, col + 1);
                     }
-                    2 => self.erase_rows(0, self.rows),
+                    2 => {
+                        self.erase_rows(0, self.rows);
+                        let top = self.top_line();
+                        let bottom = top + self.rows as i64;
+                        self.graphics_mut().clear(top, bottom);
+                    }
                     3 => {
                         self.grid_mut().clear_history();
                         self.display_offset = 0;
+                        let top = self.top_line();
+                        self.graphics_mut().clear(i64::MIN, top);
                     }
                     _ => {}
                 }
@@ -1497,6 +1700,19 @@ impl Perform for Screen {
                     self.scroll_top = top;
                     self.scroll_bottom = bottom;
                     self.goto(0, 0);
+                }
+            }
+            ([], 't') => {
+                let (cw, ch) = self.cell_size;
+                let (cols, rows) = (self.cols as u32, self.rows as u32);
+                let report = match raw(0) {
+                    14 => Some(format!("\x1b[4;{};{}t", rows * ch, cols * cw)),
+                    16 => Some(format!("\x1b[6;{ch};{cw}t")),
+                    18 => Some(format!("\x1b[8;{rows};{cols}t")),
+                    _ => None,
+                };
+                if let Some(report) = report {
+                    self.responses.extend_from_slice(report.as_bytes());
                 }
             }
             ([], 's') => self.save_cursor(),

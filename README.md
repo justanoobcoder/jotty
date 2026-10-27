@@ -22,6 +22,9 @@ A minimal terminal emulator for Wayland, written in Rust.
 - **Modern text.** Grapheme clusters, color emoji with their sequences,
   reflow on resize, fractional scaling, synchronized output, hyperlinks and
   clickable URLs, scrollback search, and the primary selection.
+- **Images.** The kitty graphics protocol, so image previews in yazi,
+  `kitten icat`, timg or chafa show real pixels, including through tmux
+  with Unicode placeholders.
 - **Minimal.** About 11k lines of Rust including tests, one TOML config
   file, no tabs or splits. Use your compositor or tmux for those.
 
