@@ -440,21 +440,29 @@ impl Fonts {
 
         // Symbols can stick out of the cell (☺ in DejaVu Sans Mono, ♥ in
         // JetBrains Mono) and would overlap their neighbors: shrink them to
-        // fit, and center them. Letters keep their shape, italic overhangs
-        // included, and so do Nerd Font glyphs: icons are sized by their
-        // font, and powerline separators must reach the cell edges.
+        // fit, centered across the cell and on the baseline. Letters keep
+        // their shape, italic overhangs included, and so do Nerd Font
+        // glyphs: icons are sized by their font, and powerline separators
+        // must reach the cell edges.
         let b = outline.px_bounds();
         let fit = !wide
             && !is_private_use(c)
             && !c.is_alphanumeric()
             && (b.min.x < 0.0 || b.max.x > m.width as f32);
         if fit {
-            // Rounding the bounds outward can add a pixel.
-            let factor =
-                ((m.width as f32 - 1.0).max(1.0) / b.width()).min(m.height as f32 / b.height());
-            if factor < 1.0 {
+            let (w, h) = (m.width as f32, m.height as f32);
+            // Rounding the bounds outward can add a pixel: shrink a pixel
+            // more if the first try doesn't fit.
+            for width in [w, w - 1.0] {
+                let factor = (width.max(1.0) / b.width()).min(h / b.height());
+                if factor >= 1.0 {
+                    break;
+                }
                 let scale = PxScale::from(scale.y * factor);
                 outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
+                if outline.px_bounds().width() <= w {
+                    break;
+                }
             }
         }
 
@@ -477,7 +485,9 @@ impl Fonts {
         let (left, top) = if fill_slot {
             ((slot_width as i32 - width as i32) / 2, centered_top)
         } else if fit {
-            ((m.width as i32 - width as i32) / 2, centered_top)
+            // Keep it on the baseline unless that leaves it out of the cell.
+            let top = (bounds.min.y as i32).clamp(0, (m.height as i32 - height as i32).max(0));
+            ((m.width as i32 - width as i32) / 2, top)
         } else if is_icon(c) && ink_height <= m.height as i32 {
             // Icon fonts center glyphs on the font's math axis, which sits
             // above the cell's middle; center them in the cell instead.
@@ -1397,6 +1407,8 @@ mod tests {
             if let Some(glyph) = fonts.rasterize(c, Style::Regular, false) {
                 assert!(glyph.left >= 0, "{c}");
                 assert!(glyph.left + glyph.width as i32 <= m.width as i32, "{c}");
+                assert!(glyph.top >= 0, "{c}");
+                assert!(glyph.top + glyph.height as i32 <= m.height as i32, "{c}");
             }
         }
 
