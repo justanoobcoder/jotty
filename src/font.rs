@@ -988,6 +988,12 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                     }
                 }
             }
+            // Black triangles filling half the cell, so they join the
+            // wedges and diagonals around them: ◢ ◣ ◤ ◥.
+            '◢' => canvas.shape(255, |u, v| u + v > 1.0),
+            '◣' => canvas.shape(255, |u, v| v > u),
+            '◤' => canvas.shape(255, |u, v| u + v < 1.0),
+            '◥' => canvas.shape(255, |u, v| v < u),
             _ if draw_legacy(&mut canvas, c, s) => {}
             _ => return None,
         }
@@ -1522,6 +1528,21 @@ mod tests {
             assert_eq!(coverage(&glyph, x, y), 255, "{c} corner");
             assert_eq!(coverage(&glyph, w - 1 - x, h - 1 - y), 0, "{c} opposite");
         }
+
+        // Black triangles are halves of the cell: ◢ and ◤ split it along
+        // the same diagonal.
+        let (lower, upper) = (box_glyph('◢', m).unwrap(), box_glyph('◤', m).unwrap());
+        assert_eq!(
+            (coverage(&lower, w - 1, h - 1), coverage(&lower, 0, 0)),
+            (255, 0)
+        );
+        assert!(
+            lower
+                .data
+                .iter()
+                .zip(&upper.data)
+                .all(|(&p, &q)| p.max(q) > 0)
+        );
 
         // The checker boards are each other's inverse.
         let (a, b) = (box_glyph('🮕', m).unwrap(), box_glyph('🮖', m).unwrap());
