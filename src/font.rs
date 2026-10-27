@@ -908,6 +908,32 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                     }
                 }
             }
+            // Braille: square dots on a 2×4 grid spaced evenly across
+            // cells, so braille graphs line up like pixels.
+            '\u{2801}'..='\u{28FF}' => {
+                let bits = c as u32 - 0x2800;
+                let size = (w / 4).min(h / 8).max(1);
+                let start = |i: u32, cells: u32, length: u32| {
+                    ((2 * i + 1) * length / (2 * cells)).saturating_sub(size / 2)
+                };
+                // Dots 1–3 and 7 down the left column, 4–6 and 8 down the
+                // right, as bits 0–7.
+                for (bit, column, row) in [
+                    (0, 0, 0),
+                    (1, 0, 1),
+                    (2, 0, 2),
+                    (3, 1, 0),
+                    (4, 1, 1),
+                    (5, 1, 2),
+                    (6, 0, 3),
+                    (7, 1, 3),
+                ] {
+                    if bits & (1 << bit) != 0 {
+                        let (x, y) = (start(column, 2, w), start(row, 4, h));
+                        canvas.fill(x, y, x + size, y + size, 255);
+                    }
+                }
+            }
             _ => return None,
         }
     }
@@ -1140,6 +1166,37 @@ mod tests {
                 assert_eq!(ink(&arc, x, false), row, "{c} at its side edge");
                 assert_eq!(ink(&arc, y, true), column, "{c} at its end edge");
             }
+        }
+    }
+
+    #[test]
+    fn braille_dots_are_evenly_spaced() {
+        let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
+        let (w, h) = (m.width, m.height);
+        assert!(box_glyph('\u{2800}', m).is_none());
+        // Dot 1 alone is in the top left quarter.
+        let one = box_glyph('⠁', m).unwrap();
+        let first_ink = one.data.iter().position(|&p| p > 0).unwrap() as u32;
+        assert!(first_ink % w < w / 2 && first_ink / w < h / 4);
+        // All eight dots: the gaps between them, including those to the
+        // next cell over, are equal (within a pixel of rounding).
+        let full = box_glyph('⣿', m).unwrap();
+        let starts = |ink: Vec<u32>, size: u32| {
+            let mut starts: Vec<u32> = ink
+                .iter()
+                .copied()
+                .filter(|&i| i == 0 || !ink.contains(&(i - 1)))
+                .collect();
+            starts.push(starts[0] + size);
+            starts.windows(2).map(|p| p[1] - p[0]).collect::<Vec<_>>()
+        };
+        let corner = full.data.iter().position(|&p| p > 0).unwrap() as u32;
+        let row = ink(&full, corner / w, true);
+        let column = ink(&full, corner % w, false);
+        for (pitches, cells) in [(starts(row, w), 2), (starts(column, h), 4)] {
+            assert_eq!(pitches.len(), cells, "{pitches:?}");
+            let (lo, hi) = (pitches.iter().min().unwrap(), pitches.iter().max().unwrap());
+            assert!(hi - lo <= 1, "{pitches:?}");
         }
     }
 
