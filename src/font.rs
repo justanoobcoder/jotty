@@ -245,6 +245,10 @@ pub struct Fonts {
     loaded: HashMap<(FontFile, Style), usize>,
     /// Face index for each style.
     styles: [usize; 4],
+    /// Families searched, in order, for characters the primary faces lack:
+    /// the configured fallbacks, then the primary family, so fontconfig
+    /// picks fonts like it (DejaVu Sans Mono rather than DejaVu Sans for
+    /// a monospace font), then any font.
     fallback_families: Vec<String>,
     /// Face covering a character none of the primary faces have.
     fallback: HashMap<char, Option<usize>>,
@@ -265,7 +269,7 @@ impl Fonts {
             files: HashMap::new(),
             loaded: HashMap::new(),
             styles: [0; 4],
-            fallback_families: fallback.to_vec(),
+            fallback_families: fallback.iter().cloned().chain([family.into()]).collect(),
             fallback: HashMap::new(),
             emoji: None,
             px,
