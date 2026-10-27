@@ -989,6 +989,25 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                     }
                 }
             }
+            // Double diagonals, as two light ones a stroke to either side:
+            // corner to corner, shifted across so they continue into the
+            // next cells, and chevrons, shifted down and up.
+            '\u{1CC1F}' | '\u{1CC20}' | '\u{1CE09}' | '\u{1CE0A}' => {
+                // Shifts that put the lines a stroke from the middle at
+                // right angles to them.
+                let (wf, hf, t) = (w as f32, h as f32, s as f32);
+                let across = t * wf.hypot(hf) / hf;
+                let half = wf / 2.0;
+                let down = t * half.hypot(hf / 2.0) / half;
+                let (points, shift): (&[usize], (f32, f32)) = match c {
+                    '\u{1CC1F}' => (&[2, 6], (across, 0.0)),
+                    '\u{1CC20}' => (&[0, 8], (across, 0.0)),
+                    '\u{1CE09}' => (&[6, 4, 8], (0.0, down)),
+                    _ => (&[0, 4, 2], (0.0, down)),
+                };
+                draw_polyline(&mut canvas, s, points, shift);
+                draw_polyline(&mut canvas, s, points, (-shift.0, -shift.1));
+            }
             // Black triangles filling half the cell, so they join the
             // wedges and diagonals around them: ◢ ◣ ◤ ◥.
             // A circle over a 4×4 block of cells, with another a block of
@@ -1147,6 +1166,23 @@ fn draw_circles(
     }
 }
 
+/// Draws a light line through `points` of a 3×3 grid over the cell,
+/// numbered across then down, moved by `shift` pixels. The corners are the
+/// cell's, as for ╱ and ╲, and the middles are where ─ and │ run.
+fn draw_polyline(canvas: &mut Canvas, stroke: u32, points: &[usize], shift: (f32, f32)) {
+    let (w, h) = (canvas.width as f32, canvas.height as f32);
+    let s = stroke as f32;
+    let xs = [0.0, band_start(stroke, canvas.width) as f32 + s / 2.0, w];
+    let ys = [0.0, band_start(stroke, canvas.height) as f32 + s / 2.0, h];
+    let point = |i: usize| (xs[i % 3] + shift.0, ys[i / 3] + shift.1);
+    canvas.stroke(s, |x, y| {
+        points
+            .windows(2)
+            .map(|p| segment_distance(x, y, point(p[0]), point(p[1])))
+            .fold(f32::INFINITY, f32::min)
+    });
+}
+
 /// Draws the Symbols for Legacy Computing (U+1FB00–U+1FBEF) that are
 /// made of blocks, wedges, shades and lines, so that they tile like the
 /// block elements. Returns `false` for other characters.
@@ -1303,6 +1339,29 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             draw_arms(canvas, stroke, [0, 0, 1, 1]);
             let x = band_start(stroke, w);
             canvas.fill(x, h / 3, x + stroke, h - h / 3, 255);
+        }
+        // Light diagonals between corners, edge middles and the center,
+        // as points numbered across then down a 3×3 grid.
+        0xD0..=0xDF => {
+            let points: &[usize] = [
+                &[5, 6][..],
+                &[2, 3],
+                &[0, 5],
+                &[3, 8],
+                &[0, 7],
+                &[1, 8],
+                &[2, 7],
+                &[1, 6],
+                &[0, 4, 2],
+                &[2, 4, 8],
+                &[6, 4, 8],
+                &[0, 4, 6],
+                &[0, 7, 2],
+                &[2, 3, 8],
+                &[6, 1, 8],
+                &[0, 5, 6],
+            ][(i - 0xD0) as usize];
+            draw_polyline(canvas, stroke, points, (0.0, 0.0));
         }
         // Half circles centered on the top, right, bottom or left edge, so
         // two cells make a circle a cell wide: white, then black.
@@ -1594,10 +1653,12 @@ mod tests {
         let (w, h) = (m.width, m.height);
         let ranges = [
             '\u{1FB00}'..='\u{1FBAF}',
-            '\u{1FBE0}'..='\u{1FBE3}',
+            '\u{1FBD0}'..='\u{1FBE3}',
             '\u{1FBE8}'..='\u{1FBEF}',
             '\u{1CC30}'..='\u{1CC3F}',
             '\u{1CE00}'..='\u{1CE01}',
+            '\u{1CC1F}'..='\u{1CC20}',
+            '\u{1CE09}'..='\u{1CE0A}',
         ];
         for c in ranges.into_iter().flatten() {
             if c == '\u{1FB93}' {
