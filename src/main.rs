@@ -1,4 +1,4 @@
-//! jotty: a minimal, Wayland-native, GPU-accelerated terminal emulator.
+//! jotty: an opinionated, Wayland-native terminal emulator.
 
 mod app;
 mod cli;

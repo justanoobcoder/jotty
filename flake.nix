@@ -1,5 +1,5 @@
 {
-  description = "jotty - a minimal, Wayland-native, GPU-accelerated terminal emulator";
+  description = "jotty - an opinionated, Wayland-native terminal emulator";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -25,7 +25,7 @@
       packages = forAllSystems (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "jotty";
-          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+          version = (fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = pkgs.lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
@@ -56,7 +56,7 @@
           '';
 
           meta = {
-            description = "Minimal Wayland-native GPU-accelerated terminal emulator";
+            description = "Opinionated Wayland-native terminal emulator";
             license = pkgs.lib.licenses.mit;
             mainProgram = "jotty";
             platforms = pkgs.lib.platforms.linux;

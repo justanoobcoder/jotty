@@ -3,9 +3,9 @@ name = "jotty"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A minimal, Wayland-native, GPU-accelerated terminal emulator"
+description = "An opinionated, Wayland-native terminal emulator"
 license = "MIT"
-authors = ["Nguyễn Hồng Hiệp"]
+authors = ["Nguyen Hong Hiep"]
 
 [dependencies]
 ab_glyph = { version = "0.2.32", features = ["variable-fonts"] }
@@ -14,7 +14,7 @@ glow = "0.18.0"
 khronos-egl = { version = "6.0.0", features = ["static"] }
 libc = "0.2.191"
 log = "0.4.34"
-miniz_oxide = "0.8"
+miniz_oxide = "0.9.1"
 png = "0.18"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -28,7 +28,7 @@ vte = "0.15.0"
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }
-xkbcommon = { version = "0.8", default-features = false }
+xkbcommon = { version = "0.9.0", default-features = false }
 yeslogic-fontconfig-sys = "6.0.1"
 
 [profile.release]
@@ -43,7 +43,7 @@ section = "x11"
 priority = "optional"
 depends = "$auto"
 extended-description = """\
-A minimal terminal emulator for Wayland: GPU or CPU rendering, input methods \
+An opinionated terminal emulator for Wayland: GPU or CPU rendering, input methods \
 with surrounding text, grapheme clusters and color emoji, reflow, scrollback \
 search, clickable links and a vi mode."""
 assets = [

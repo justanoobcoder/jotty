@@ -2,7 +2,7 @@
 Type=Application
 Name=jotty
 GenericName=Terminal
-Comment=A minimal Wayland terminal emulator
+Comment=An opinionated Wayland terminal emulator
 Exec=jotty
 Icon=jotty
 Terminal=false

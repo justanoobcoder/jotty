@@ -1,4 +1,4 @@
-# Maintainer: Nguyễn Hồng Hiệp
+# Maintainer: Nguyen Hong Hiep <syaorancode@gmail.com>
 #
 # Builds jotty from a release tarball. The release workflow builds it from
 # the tagged source with the version filled in; it also works for the AUR.
@@ -6,7 +6,7 @@
 pkgname=jotty
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='A minimal, Wayland-native terminal emulator'
+pkgdesc='An opinionated, Wayland-native terminal emulator'
 arch=('x86_64' 'aarch64')
 url='https://github.com/justanoobcoder/jotty'
 license=('MIT')
