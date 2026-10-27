@@ -441,10 +441,11 @@ impl Fonts {
         // Symbols can stick out of the cell (☺ in DejaVu Sans Mono, ♥ in
         // JetBrains Mono) and would overlap their neighbors: shrink them to
         // fit, and center them. Letters keep their shape, italic overhangs
-        // included.
+        // included, and so do Nerd Font glyphs: icons are sized by their
+        // font, and powerline separators must reach the cell edges.
         let b = outline.px_bounds();
         let fit = !wide
-            && !is_icon(c)
+            && !is_private_use(c)
             && !c.is_alphanumeric()
             && (b.min.x < 0.0 || b.max.x > m.width as f32);
         if fit {
@@ -932,6 +933,13 @@ fn ink_rows(data: &[u8], width: u32, threshold: u8) -> Option<(u32, u32)> {
     Some((first, rows.next_back().unwrap_or(first)))
 }
 
+/// Characters in the Private Use Areas, where Nerd Fonts put their icons
+/// and powerline symbols.
+fn is_private_use(c: char) -> bool {
+    matches!(c,
+        '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
+}
+
 /// Icons in the Private Use Areas, as used by Nerd Fonts, except powerline
 /// separators (U+E0A0–U+E0D7), which must keep their position to line up
 /// with the cell backgrounds next to them.
@@ -1241,6 +1249,10 @@ mod tests {
         assert!(is_icon('\u{F08C7}')); // nf-md-arch
         assert!(!is_icon('\u{E0B0}')); // powerline arrow
         assert!(!is_icon('\u{E0B6}')); // powerline round cap
+        // Powerline separators and icons are never shrunk to fit the cell.
+        assert!(is_private_use('\u{E0B0}'));
+        assert!(is_private_use('\u{F43A}'));
+        assert!(!is_private_use('☺'));
         assert!(!is_icon('A'));
         assert!(!is_icon('中'));
     }
