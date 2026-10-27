@@ -4,20 +4,18 @@
 
 # jotty
 
-A minimal terminal emulator for Wayland, written in Rust.
+An opinionated terminal emulator for Wayland, written in Rust.
 
 - **Wayland native.** It speaks Wayland directly through
   [smithay-client-toolkit](https://github.com/Smithay/client-toolkit). There
   is no X11 code path and no GTK, winit or SDL layer.
 - **Input methods with surrounding text.** It implements
   `text-input-unstable-v3`, including surrounding text. Input methods such as
-  fcitx5 or IBus can show preedit text inline, commit text, and delete text
-  around the cursor (useful for Vietnamese, Chinese, Japanese, Korean, and so
-  on).
+  fcitx5 or IBus can commit text, and delete text around the cursor.
 - **Light on memory, GPU optional.** By default it draws on the CPU into
-  shared memory, repainting only the rows that changed, in about 20 MiB.
+  shared memory, repainting only the rows that changed, in about 30+ MiB.
   With `renderer = "gpu"` it draws with OpenGL ES 3 instead (one draw call
-  per frame), at the cost of the 100+ MiB a GPU driver takes. Either way,
+  per frame), at the cost of the 120+ MiB a GPU driver takes. Either way,
   frames are paced by the compositor's frame callbacks.
 - **Modern text.** Grapheme clusters, color emoji with their sequences,
   reflow on resize, fractional scaling, synchronized output, hyperlinks and
@@ -25,8 +23,8 @@ A minimal terminal emulator for Wayland, written in Rust.
 - **Images.** The kitty graphics protocol, so image previews in yazi,
   `kitten icat`, timg or chafa show real pixels, including through tmux
   with Unicode placeholders.
-- **Minimal.** About 11k lines of Rust including tests, one TOML config
-  file, no tabs or splits. Use your compositor or tmux for those.
+- **Vi mode.** Move over the screen and scrollback with vim keys, select
+  by character, line or block, yank, and search, all without the mouse.
 
 ## Install
 
