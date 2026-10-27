@@ -442,17 +442,18 @@ impl Fonts {
             outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
         }
 
-        // Symbols can stick out of the cell (☺ in DejaVu Sans Mono, ♥ in
-        // JetBrains Mono) and would overlap their neighbors: shrink them to
-        // fit, centered across the cell and on the baseline. Letters keep
-        // their shape, italic overhangs included, and so do Nerd Font
-        // glyphs: icons are sized by their font, and powerline separators
-        // must reach the cell edges.
+        // Symbols can stick out of the cell (♥ in JetBrains Mono) and would
+        // overlap their neighbors: shrink them to fit, centered across the
+        // cell and on the baseline. A pixel of overhang is left alone, as
+        // fonts draw ● and ○ a little wider than the cell on purpose.
+        // Letters keep their shape, italic overhangs included, and so do
+        // Nerd Font glyphs: icons are sized by their font, and powerline
+        // separators must reach the cell edges.
         let b = outline.px_bounds();
         let fit = !wide
             && !is_private_use(c)
             && !c.is_alphanumeric()
-            && (b.min.x < 0.0 || b.max.x > m.width as f32);
+            && (b.min.x < -1.0 || b.max.x > m.width as f32 + 1.0);
         if fit {
             let (w, h) = (m.width as f32, m.height as f32);
             // Rounding the bounds outward can add a pixel: shrink a pixel
@@ -1021,6 +1022,21 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                 };
                 draw_circles(&mut canvas, s, &centers, wf / 2.0, false);
             }
+            // Half discs with their flat side on the cell edge, so ◗ and ◖
+            // round off whatever is next to them and pairs make a circle a
+            // cell wide.
+            '◖' | '◗' => {
+                let x = if c == '◖' { w as f32 } else { 0.0 };
+                draw_circles(&mut canvas, s, &[(x, h as f32 / 2.0)], w as f32 / 2.0, true);
+            }
+            // The upper and lower halves of a disc a cell wide.
+            '⯊' | '⯋' => {
+                let (wf, hf) = (w as f32, h as f32);
+                let upper = c == '⯊';
+                canvas.shape(255, |u, v| {
+                    (v < 0.5) == upper && (u * wf - wf / 2.0).hypot(v * hf - hf / 2.0) < wf / 2.0
+                });
+            }
             '◢' => canvas.shape(255, |u, v| u + v > 1.0),
             '◣' => canvas.shape(255, |u, v| v > u),
             '◤' => canvas.shape(255, |u, v| u + v < 1.0),
@@ -1302,12 +1318,17 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             );
         }
         // Black quarter circles centered on the top right, bottom left,
-        // bottom right or top left corner: four make a circle two cells
-        // wide.
+        // bottom right or top left corner: four make a circle a cell wide.
         0xEC..=0xEF => {
             let (w, h) = (w as f32, h as f32);
             let center = [(w, 0.0), (0.0, h), (w, h), (0.0, 0.0)];
-            draw_circles(canvas, stroke, &[center[(i - 0xEC) as usize]], w, true);
+            draw_circles(
+                canvas,
+                stroke,
+                &[center[(i - 0xEC) as usize]],
+                w / 2.0,
+                true,
+            );
         }
         _ => return false,
     }
@@ -1842,8 +1863,9 @@ mod tests {
         // Symbols, often from a fallback font, stay inside their cell.
         for c in ['☺', '♀', '♥'] {
             if let Some(glyph) = fonts.rasterize(c, Style::Regular, false) {
-                assert!(glyph.left >= 0, "{c}");
-                assert!(glyph.left + glyph.width as i32 <= m.width as i32, "{c}");
+                // A pixel of overhang is allowed on either side.
+                assert!(glyph.left >= -1, "{c}");
+                assert!(glyph.left + glyph.width as i32 <= m.width as i32 + 1, "{c}");
                 assert!(glyph.top >= 0, "{c}");
                 assert!(glyph.top + glyph.height as i32 <= m.height as i32, "{c}");
             }
