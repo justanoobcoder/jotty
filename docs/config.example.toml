@@ -9,8 +9,12 @@
 family = "monospace"
 # Size in points at 96 DPI; multiplied by the output's scale factor.
 size = 11.0
+# Points font_larger and font_smaller add or remove, per key press or
+# wheel notch.
+size_step = 1.0
 # Families tried, in order, for characters the main font lacks. After these,
-# fontconfig picks any installed font that has the character.
+# fontconfig picks a font like the main one that has the character, then
+# any installed font that has it.
 fallback = []
 
 [window]

@@ -976,8 +976,12 @@ impl App {
             Action::ScrollPageDown => self.term.screen_mut().scroll_display(-page),
             Action::ScrollToTop => self.term.screen_mut().scroll_display(isize::MAX),
             Action::ScrollToBottom => self.term.screen_mut().reset_display(),
-            Action::FontLarger => self.set_font_points(self.font_points + 1.0),
-            Action::FontSmaller => self.set_font_points(self.font_points - 1.0),
+            Action::FontLarger => {
+                self.set_font_points(self.font_points + self.config.font.size_step)
+            }
+            Action::FontSmaller => {
+                self.set_font_points(self.font_points - self.config.font.size_step)
+            }
             Action::FontReset => self.set_font_points(self.config.font.size),
             Action::Search => self.start_search(Direction::Older),
             Action::ViMode => {

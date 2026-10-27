@@ -115,6 +115,9 @@ pub struct FontConfig {
     pub family: String,
     /// Font size in points (at 96 DPI and a scale factor of 1).
     pub size: f32,
+    /// Points added or removed by `font_larger` and `font_smaller`, per
+    /// key press or wheel notch.
+    pub size_step: f32,
     /// Families tried, in order, for characters the primary font lacks.
     pub fallback: Vec<String>,
 }
@@ -124,6 +127,7 @@ impl Default for FontConfig {
         Self {
             family: "monospace".into(),
             size: 11.0,
+            size_step: 1.0,
             fallback: Vec::new(),
         }
     }
@@ -359,6 +363,7 @@ impl Config {
     /// Clamps values that would otherwise break rendering.
     fn sanitize(&mut self) {
         self.font.size = self.font.size.clamp(4.0, 200.0);
+        self.font.size_step = self.font.size_step.clamp(0.1, 10.0);
         self.window.opacity = self.window.opacity.clamp(0.0, 1.0);
         self.window.columns = self.window.columns.max(2);
         self.window.lines = self.window.lines.max(1);
@@ -461,8 +466,10 @@ mod tests {
 
     #[test]
     fn clamps_values() {
-        let config = Config::parse("[font]\nsize = 0\n[window]\nopacity = 3.0").unwrap();
+        let config =
+            Config::parse("[font]\nsize = 0\nsize_step = -1\n[window]\nopacity = 3.0").unwrap();
         assert_eq!(config.font.size, 4.0);
+        assert_eq!(config.font.size_step, 0.1);
         assert_eq!(config.window.opacity, 1.0);
     }
 

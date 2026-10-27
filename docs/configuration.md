@@ -31,17 +31,24 @@ default value. A test checks that it matches the built-in defaults.
 | --- | --- | --- | --- |
 | `family` | string | `"monospace"` | A fontconfig family name (`fc-list : family`) or a generic name. |
 | `size` | float | `11.0` | Size in points at 96 DPI. It is multiplied by the output scale, and clamped to 4–200. |
+| `size_step` | float | `1.0` | Points that `font_larger` and `font_smaller` add or remove, per key press or wheel notch. Clamped to 0.1–10. |
 | `fallback` | list of strings | `[]` | Families tried, in order, for characters the main font lacks. |
 
 jotty asks fontconfig for the regular, bold, italic and bold-italic faces of
 `family`. If a character is missing, it tries the regular face, then each
-`fallback` family, then any installed font that has the character. Color
+`fallback` family, then a font fontconfig considers like `family` (DejaVu
+Sans Mono rather than DejaVu Sans for a monospace font), then any installed
+font that has the character. Symbols that stick out of the cell by more
+than a pixel, such as ♥ in some fonts, are shrunk to fit. Color
 (bitmap emoji) fonts are skipped because jotty can't draw them; see
 [known issues](known-issues.md).
 
-Box-drawing characters (`─│┌┐└┘├┤┬┴┼` and their heavy and rounded forms) and
-block elements (`█▀▄▌▐░▒▓▁…▇▏…▉`) are drawn by jotty itself. They fill the
-cell exactly, whatever the font.
+Box-drawing characters (`─│┌┐└┘├┤┬┴┼` with their heavy, double, dashed,
+rounded and diagonal forms), block elements (`█▀▄▌▐░▒▓▁…▇▏…▉▖…▟`), braille
+(`⣿`), the black triangles `◢◣◤◥` and the Symbols for Legacy Computing
+(sextants, wedges, checker boards, and the circle and diagonal pieces) are
+drawn by jotty itself. They fill the cell exactly, whatever the font, so
+they join across cells.
 
 Example:
 
@@ -223,7 +230,7 @@ Actions you don't list keep their defaults.
 | `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
 | `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
 | `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
-| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by a point |
+| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by `font.size_step` |
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract`, `ctrl+wheel_down` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
