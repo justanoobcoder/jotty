@@ -629,97 +629,262 @@ fn draw_wave(data: &mut [u8], width: u32, height: u32, period: u32, thickness: u
     }
 }
 
+/// Arm weights (up, down, left, right) of U+2500–U+257F, sixteen
+/// characters per row: 0 none, 1 light, 2 heavy, 3 double. `----` marks
+/// the dashed, rounded and diagonal lines, which are drawn separately.
+const BOX_ARMS: [&str; 8] = [
+    "0011 0022 1100 2200 ---- ---- ---- ---- ---- ---- ---- ---- 0101 0102 0201 0202",
+    "0110 0120 0210 0220 1001 1002 2001 2002 1010 1020 2010 2020 1101 1102 2101 1201",
+    "2201 2102 1202 2202 1110 1120 2110 1210 2210 2120 1220 2220 0111 0121 0112 0122",
+    "0211 0221 0212 0222 1011 1021 1012 1022 2011 2021 2012 2022 1111 1121 1112 1122",
+    "2111 1211 2211 2121 2112 1221 1212 2122 1222 2221 2212 2222 ---- ---- ---- ----",
+    "0033 3300 0103 0301 0303 0130 0310 0330 1003 3001 3003 1030 3010 3030 1103 3301",
+    "3303 1130 3310 3330 0133 0311 0333 1033 3011 3033 1133 3311 3333 ---- ---- ----",
+    "---- ---- ---- ---- 0010 1000 0001 0100 0020 2000 0002 0200 0012 1200 0021 2100",
+];
+
 /// Line weights of the four arms (up, down, left, right) of a box-drawing
-/// character: 0 none, 1 light, 2 heavy.
+/// character made of straight lines meeting at the center.
 fn box_arms(c: char) -> Option<[u8; 4]> {
-    Some(match c {
-        '─' => [0, 0, 1, 1],
-        '━' => [0, 0, 2, 2],
-        '│' => [1, 1, 0, 0],
-        '┃' => [2, 2, 0, 0],
-        '┌' | '╭' => [0, 1, 0, 1],
-        '┏' => [0, 2, 0, 2],
-        '┐' | '╮' => [0, 1, 1, 0],
-        '┓' => [0, 2, 2, 0],
-        '└' | '╰' => [1, 0, 0, 1],
-        '┗' => [2, 0, 0, 2],
-        '┘' | '╯' => [1, 0, 1, 0],
-        '┛' => [2, 0, 2, 0],
-        '├' => [1, 1, 0, 1],
-        '┣' => [2, 2, 0, 2],
-        '┤' => [1, 1, 1, 0],
-        '┫' => [2, 2, 2, 0],
-        '┬' => [0, 1, 1, 1],
-        '┳' => [0, 2, 2, 2],
-        '┴' => [1, 0, 1, 1],
-        '┻' => [2, 0, 2, 2],
-        '┼' => [1, 1, 1, 1],
-        '╋' => [2, 2, 2, 2],
-        '╴' => [0, 0, 1, 0],
-        '╵' => [1, 0, 0, 0],
-        '╶' => [0, 0, 0, 1],
-        '╷' => [0, 1, 0, 0],
-        _ => return None,
-    })
+    let index = (c as u32).checked_sub(0x2500).filter(|&i| i < 0x80)? as usize;
+    let entry = BOX_ARMS[index / 16].split(' ').nth(index % 16)?;
+    let mut arms = [0; 4];
+    for (arm, digit) in arms.iter_mut().zip(entry.bytes()) {
+        *arm = digit.checked_sub(b'0').filter(|&d| d <= 3)?;
+    }
+    Some(arms)
+}
+
+/// Start of a band `thickness` wide centered in `size`.
+fn band_start(thickness: u32, size: u32) -> u32 {
+    (size - thickness.min(size)) / 2
+}
+
+/// A coverage bitmap the size of a cell.
+struct Canvas {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl Canvas {
+    fn new(width: u32, height: u32) -> Canvas {
+        Canvas {
+            width,
+            height,
+            data: vec![0; (width * height) as usize],
+        }
+    }
+
+    /// Sets the pixels in `x0..x1` × `y0..y1`, clipped to the canvas.
+    fn fill(&mut self, x0: u32, y0: u32, x1: u32, y1: u32, value: u8) {
+        for y in y0.min(self.height)..y1.min(self.height) {
+            for x in x0.min(self.width)..x1.min(self.width) {
+                self.data[(y * self.width + x) as usize] = value;
+            }
+        }
+    }
+
+    /// Draws an antialiased line `thickness` wide, given the distance from
+    /// a point to its center line.
+    fn stroke(&mut self, thickness: f32, distance: impl Fn(f32, f32) -> f32) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let d = distance(x as f32 + 0.5, y as f32 + 0.5);
+                let coverage = (thickness / 2.0 + 0.5 - d).clamp(0.0, 1.0);
+                let px = &mut self.data[(y * self.width + x) as usize];
+                *px = (*px).max((coverage * 255.0).round() as u8);
+            }
+        }
+    }
+}
+
+/// Draws straight box-drawing lines meeting at the center. A double line
+/// is drawn as one wide band whose middle is then cleared.
+fn draw_arms(canvas: &mut Canvas, stroke: u32, arms: [u8; 4]) {
+    let (w, h) = (canvas.width, canvas.height);
+    let thickness = |weight: u8| stroke * u32::from(weight);
+    let band = |t: u32, size: u32| (band_start(t, size), band_start(t, size) + t);
+    let [up, down, left, right] = arms;
+    let (vertical, horizontal) = (thickness(up.max(down)), thickness(left.max(right)));
+    // Arms run past the center to the far side of the band crossing them,
+    // or of their own band when nothing crosses.
+    let (x0, x1) = band(if vertical > 0 { vertical } else { horizontal }, w);
+    let (y0, y1) = band(if horizontal > 0 { horizontal } else { vertical }, h);
+    if up > 0 {
+        let (a, b) = band(thickness(up), w);
+        canvas.fill(a, 0, b, y1, 255);
+    }
+    if down > 0 {
+        let (a, b) = band(thickness(down), w);
+        canvas.fill(a, y0, b, h, 255);
+    }
+    if left > 0 {
+        let (a, b) = band(thickness(left), h);
+        canvas.fill(0, a, x1, b, 255);
+    }
+    if right > 0 {
+        let (a, b) = band(thickness(right), h);
+        canvas.fill(x0, a, w, b, 255);
+    }
+
+    // The gap between the two lines of a double band.
+    let gap = |size: u32| {
+        let a = band_start(3 * stroke, size) + stroke;
+        (a, a + stroke)
+    };
+    // Spans along an axis where the gaps of its double arms (`before`,
+    // `after`) are cleared, given the arms crossing them.
+    let spans = |size: u32, [before, after]: [u8; 2], [p, q]: [u8; 2]| {
+        let (lo, hi) = if p == 3 || q == 3 {
+            // Double lines crossing: each pair of lines turns a corner.
+            let (g0, g1) = gap(size);
+            (g1, g0)
+        } else if p.max(q) > 0 && !(before == 3 && after == 3 && (p == 0 || q == 0)) {
+            // A single line crossing or turning the corner spans the gap.
+            band(thickness(p.max(q)), size)
+        } else {
+            // Nothing crosses, or a single line meets the double line in a
+            // tee and stops at its near side.
+            (size, 0)
+        };
+        [
+            (before == 3).then_some((0, lo)),
+            (after == 3).then_some((hi, size)),
+        ]
+    };
+    let (g0, g1) = gap(h);
+    for (a, b) in spans(w, [left, right], [up, down]).into_iter().flatten() {
+        canvas.fill(a, g0, b, g1, 0);
+    }
+    let (g0, g1) = gap(w);
+    for (a, b) in spans(h, [up, down], [left, right]).into_iter().flatten() {
+        canvas.fill(g0, a, g1, b, 0);
+    }
+}
+
+/// Draws `count` dashes per cell, each centered in its share of the cell.
+fn draw_dashes(canvas: &mut Canvas, thickness: u32, count: u32, vertical: bool) {
+    let (length, across) = if vertical {
+        (canvas.height, canvas.width)
+    } else {
+        (canvas.width, canvas.height)
+    };
+    let a = band_start(thickness, across);
+    for i in 0..count {
+        let (from, to) = (i * length / count, (i + 1) * length / count);
+        let gap = ((to - from) / 3).max(1);
+        let (from, to) = (from + gap / 2, to - (gap - gap / 2));
+        if vertical {
+            canvas.fill(a, from, a + thickness, to, 255);
+        } else {
+            canvas.fill(from, a, to, a + thickness, 255);
+        }
+    }
+}
+
+/// Draws a rounded corner: a quarter circle joining the middles of the
+/// edges toward `dx` (1 right, -1 left) and `dy` (1 down, -1 up), meeting
+/// the straight lines of the neighboring cells.
+fn draw_arc(canvas: &mut Canvas, stroke: u32, dx: f32, dy: f32) {
+    let (w, h) = (canvas.width as f32, canvas.height as f32);
+    let s = stroke as f32;
+    let mx = band_start(stroke, canvas.width) as f32 + s / 2.0;
+    let my = band_start(stroke, canvas.height) as f32 + s / 2.0;
+    let r = (if dx > 0.0 { w - mx } else { mx }).min(if dy > 0.0 { h - my } else { my });
+    let (cx, cy) = (mx + dx * r, my + dy * r);
+    canvas.stroke(s, |x, y| {
+        let (vx, vy) = (x - cx, y - cy);
+        let arc = if vx * dx <= 0.0 && vy * dy <= 0.0 {
+            (vx.hypot(vy) - r).abs()
+        } else {
+            f32::INFINITY
+        };
+        // Straight runs from the arc's ends to the edges.
+        let horizontal = if vx * dx >= 0.0 {
+            (y - my).abs()
+        } else {
+            vx.hypot(y - my)
+        };
+        let vertical = if vy * dy >= 0.0 {
+            (x - mx).abs()
+        } else {
+            (x - mx).hypot(vy)
+        };
+        arc.min(horizontal).min(vertical)
+    });
 }
 
 /// Draws box-drawing and block characters to fill the cell exactly, so
 /// lines join across cells regardless of the font's metrics.
 fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
     let (w, h) = (m.width, m.height);
-    let mut data = vec![0u8; (w * h) as usize];
-    let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32, value: u8| {
-        for y in y0.min(h)..y1.min(h) {
-            for x in x0.min(w)..x1.min(w) {
-                data[(y * w + x) as usize] = value;
-            }
-        }
-    };
+    let s = m.stroke;
+    let mut canvas = Canvas::new(w, h);
+    let eighth_h = |n: u32| (h * n + 4) / 8;
+    let eighth_w = |n: u32| (w * n + 4) / 8;
     if let Some(arms) = box_arms(c) {
-        let thickness = |weight: u8| m.stroke * u32::from(weight);
-        let heaviest = thickness(*arms.iter().max().unwrap());
-        let (cx, cy) = ((w - heaviest.min(w)) / 2, (h - heaviest.min(h)) / 2);
-        let [up, down, left, right] = arms.map(thickness);
-        let center = |t: u32, size: u32| (size - t.min(size)) / 2;
-        if up > 0 {
-            fill(center(up, w), 0, center(up, w) + up, cy + heaviest, 255);
-        }
-        if down > 0 {
-            fill(center(down, w), cy, center(down, w) + down, h, 255);
-        }
-        if left > 0 {
-            fill(
-                0,
-                center(left, h),
-                cx + heaviest,
-                center(left, h) + left,
-                255,
-            );
-        }
-        if right > 0 {
-            fill(cx, center(right, h), w, center(right, h) + right, 255);
-        }
+        draw_arms(&mut canvas, s, arms);
     } else {
-        let eighth_h = |n: u32| (h * n + 4) / 8;
-        let eighth_w = |n: u32| (w * n + 4) / 8;
         match c {
-            '█' => fill(0, 0, w, h, 255),
-            '▀' => fill(0, 0, w, eighth_h(4), 255),
-            '▔' => fill(0, 0, w, eighth_h(1), 255),
-            '▕' => fill(w - eighth_w(1), 0, w, h, 255),
-            '▐' => fill(w - eighth_w(4), 0, w, h, 255),
-            '░' => fill(0, 0, w, h, 64),
-            '▒' => fill(0, 0, w, h, 128),
-            '▓' => fill(0, 0, w, h, 192),
+            // Triple and quadruple dashes: light and heavy, horizontal and
+            // vertical.
+            '┄'..='┋' => {
+                let i = c as u32 - '┄' as u32;
+                draw_dashes(&mut canvas, s * (1 + i % 2), 3 + i / 4, i / 2 % 2 == 1);
+            }
+            '╌'..='╏' => {
+                let i = c as u32 - '╌' as u32;
+                draw_dashes(&mut canvas, s * (1 + i % 2), 2, i / 2 == 1);
+            }
+            '╭' => draw_arc(&mut canvas, s, 1.0, 1.0),
+            '╮' => draw_arc(&mut canvas, s, -1.0, 1.0),
+            '╯' => draw_arc(&mut canvas, s, -1.0, -1.0),
+            '╰' => draw_arc(&mut canvas, s, 1.0, -1.0),
+            // Diagonals from corner to corner, so they join across cells.
+            '╱'..='╳' => {
+                let (wf, hf) = (w as f32, h as f32);
+                let length = wf.hypot(hf);
+                if c != '╲' {
+                    canvas.stroke(s as f32, |x, y| (hf * x + wf * y - wf * hf).abs() / length);
+                }
+                if c != '╱' {
+                    canvas.stroke(s as f32, |x, y| (hf * x - wf * y).abs() / length);
+                }
+            }
+            '█' => canvas.fill(0, 0, w, h, 255),
+            '▀' => canvas.fill(0, 0, w, eighth_h(4), 255),
+            '▔' => canvas.fill(0, 0, w, eighth_h(1), 255),
+            '▕' => canvas.fill(w - eighth_w(1), 0, w, h, 255),
+            '▐' => canvas.fill(w - eighth_w(4), 0, w, h, 255),
+            '░' => canvas.fill(0, 0, w, h, 64),
+            '▒' => canvas.fill(0, 0, w, h, 128),
+            '▓' => canvas.fill(0, 0, w, h, 192),
             // Lower one eighth to seven eighths (including the lower half).
             '▁'..='▇' => {
                 let n = c as u32 - '▁' as u32 + 1;
-                fill(0, h - eighth_h(n), w, h, 255);
+                canvas.fill(0, h - eighth_h(n), w, h, 255);
             }
             // Left seven eighths down to one eighth (including the left half).
             '▉'..='▏' => {
                 let n = 7 - (c as u32 - '▉' as u32);
-                fill(0, 0, eighth_w(n), h, 255);
+                canvas.fill(0, 0, eighth_w(n), h, 255);
+            }
+            // Quadrants, as bits: upper left 1, upper right 2, lower left
+            // 4, lower right 8.
+            '▖'..='▟' => {
+                let bits = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14][(c as u32 - '▖' as u32) as usize];
+                let (mx, my) = (eighth_w(4), eighth_h(4));
+                for (bit, x0, y0, x1, y1) in [
+                    (1, 0, 0, mx, my),
+                    (2, mx, 0, w, my),
+                    (4, 0, my, mx, h),
+                    (8, mx, my, w, h),
+                ] {
+                    if bits & bit != 0 {
+                        canvas.fill(x0, y0, x1, y1, 255);
+                    }
+                }
             }
             _ => return None,
         }
@@ -729,7 +894,7 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
         height: h,
         left: 0,
         top: 0,
-        data,
+        data: canvas.data,
         color: false,
     })
 }
@@ -865,6 +1030,107 @@ mod tests {
         assert!((0..w).any(|x| coverage(&corner, x, h - 1) > 0));
         assert!((0..h).all(|y| coverage(&corner, 0, y) == 0));
         assert!((0..w).all(|x| coverage(&corner, x, 0) == 0));
+    }
+
+    #[test]
+    fn whole_box_drawing_range_is_drawn() {
+        let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
+        for c in '\u{2500}'..='\u{259F}' {
+            let glyph = box_glyph(c, m).unwrap_or_else(|| panic!("{c} not drawn"));
+            assert!(glyph.data.iter().any(|&p| p > 0), "{c} is blank");
+        }
+    }
+
+    /// Ink in a column (or row, when `row`) of a glyph, as indices.
+    fn ink(glyph: &Glyph, index: u32, row: bool) -> Vec<u32> {
+        let (len, cov): (u32, Box<dyn Fn(u32) -> u8>) = if row {
+            (glyph.width, Box::new(|x| coverage(glyph, x, index)))
+        } else {
+            (glyph.height, Box::new(|y| coverage(glyph, index, y)))
+        };
+        (0..len).filter(|&i| cov(i) > 127).collect()
+    }
+
+    #[test]
+    fn double_lines_join() {
+        let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
+        let (w, h) = (m.width, m.height);
+        // ═ is two lines across the cell; ║ two lines down it.
+        let horizontal = ink(&box_glyph('═', m).unwrap(), 0, false);
+        assert_eq!(horizontal.len(), 2);
+        assert_eq!(horizontal, ink(&box_glyph('═', m).unwrap(), w - 1, false));
+        let vertical = ink(&box_glyph('║', m).unwrap(), 0, true);
+        assert_eq!(vertical.len(), 2);
+        // Each corner and tee continues them at its edges.
+        for c in ['╔', '╦', '╬', '╠', '╚'] {
+            let glyph = box_glyph(c, m).unwrap();
+            assert_eq!(ink(&glyph, w - 1, false), horizontal, "{c}");
+        }
+        for c in ['╔', '╦', '╬', '╣', '╗'] {
+            let glyph = box_glyph(c, m).unwrap();
+            assert_eq!(ink(&glyph, h - 1, true), vertical, "{c}");
+        }
+        // The outer lines of ╔ meet; the inner ones turn a corner inside.
+        let corner = box_glyph('╔', m).unwrap();
+        assert_eq!(coverage(&corner, vertical[0], horizontal[0]), 255);
+        assert_eq!(coverage(&corner, vertical[1], horizontal[0] + 1), 0);
+        assert_eq!(coverage(&corner, vertical[1], horizontal[1]), 255);
+    }
+
+    #[test]
+    fn single_line_stops_at_a_double_tee() {
+        let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
+        let lines = ink(&box_glyph('═', m).unwrap(), 0, false);
+        let middle = ink(&box_glyph('│', m).unwrap(), 0, true)[0];
+        // ╤ reaches only the lower line; ╪ crosses both, and so does ╒,
+        // which turns into the upper one.
+        let tee = box_glyph('╤', m).unwrap();
+        assert_eq!(coverage(&tee, middle, lines[0] + 1), 0);
+        for c in ['╪', '╒'] {
+            let glyph = box_glyph(c, m).unwrap();
+            assert_eq!(coverage(&glyph, middle, lines[0] + 1), 255, "{c}");
+        }
+    }
+
+    #[test]
+    fn arcs_meet_straight_lines() {
+        for m in [
+            CellMetrics::new(10.0, 16.0, -5.0, 0.0),
+            CellMetrics::new(11.0, 24.0, -8.0, 0.0),
+        ] {
+            let (w, h) = (m.width, m.height);
+            let row = ink(&box_glyph('─', m).unwrap(), 0, false);
+            let column = ink(&box_glyph('│', m).unwrap(), 0, true);
+            for (c, x, y) in [
+                ('╭', w - 1, h - 1),
+                ('╮', 0, h - 1),
+                ('╯', 0, 0),
+                ('╰', w - 1, 0),
+            ] {
+                let arc = box_glyph(c, m).unwrap();
+                assert_eq!(ink(&arc, x, false), row, "{c} at its side edge");
+                assert_eq!(ink(&arc, y, true), column, "{c} at its end edge");
+            }
+        }
+    }
+
+    #[test]
+    fn dashes_and_quadrants() {
+        let m = CellMetrics::new(12.0, 16.0, -5.0, 0.0);
+        let row = ink(&box_glyph('─', m).unwrap(), 0, false)[0];
+        let dashes = |c| {
+            let glyph = box_glyph(c, m).unwrap();
+            let ink = ink(&glyph, row, true);
+            ink.windows(2).filter(|p| p[1] != p[0] + 1).count() + 1
+        };
+        assert_eq!((dashes('╌'), dashes('┄'), dashes('┈')), (2, 3, 4));
+
+        let quadrants = box_glyph('▚', m).unwrap();
+        let (w, h) = (m.width, m.height);
+        assert_eq!(coverage(&quadrants, 0, 0), 255);
+        assert_eq!(coverage(&quadrants, w - 1, 0), 0);
+        assert_eq!(coverage(&quadrants, 0, h - 1), 0);
+        assert_eq!(coverage(&quadrants, w - 1, h - 1), 255);
     }
 
     fn columns_with_ink(glyph: &Glyph) -> Vec<u32> {
