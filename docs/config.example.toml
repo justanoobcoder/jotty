@@ -54,9 +54,6 @@ term = "auto"
 scrollback = 10000
 # Draw bold text in the first eight colors with their bright variants.
 bold_is_bright = true
-# Double-click a command's output to select all of it. Needs shell
-# integration (OSC 133); see docs/configuration.md.
-double_click_selects_output = false
 
 [colors]
 foreground = "#dcdcdc"

@@ -79,7 +79,7 @@ stream into printable characters and control functions, and calls the
 Each `Row` also keeps the last OSC 133 mark set on it (prompt, command line
 or output start), which moves into the history with the row and is cleared
 when the row is erased. `Screen::command_output` walks these marks to find
-the output a double click selects.
+the output a Ctrl+double click selects.
 
 A `Cell` (24 bytes) is a `char`, foreground and background colors
 (default, 256-color index or RGB), attribute flags, an underline style

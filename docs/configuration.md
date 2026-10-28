@@ -128,7 +128,6 @@ To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
 | `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
 | `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
-| `double_click_selects_output` | bool | `false` | Double-clicking a command's output selects all of it instead of a word. Needs [shell integration](#shell-integration). |
 
 ### `TERM` and terminfo
 
@@ -356,13 +355,12 @@ to the second is selected, in either direction, even across a long stretch
 of history. A plain click or Escape cancels the mark. Shift+dragging still
 selects as usual.
 
-**Selecting a command's output.** With
-`terminal.double_click_selects_output = true`, double-clicking anywhere in
-a command's output selects all of it instead of a word, from the line after
-the command to the line before the next prompt, without trailing blank
-lines. Copy it as usual. This needs the shell to mark its prompts and
-commands (see [Shell integration](#shell-integration)); on prompts and
-command lines, a double click still selects a word.
+**Selecting a command's output.** Ctrl+double-clicking anywhere in a
+command's output selects all of it, from the line after the command to the
+line before the next prompt, without trailing blank lines. Copy it as
+usual. This needs the shell to mark its prompts and commands (see
+[Shell integration](#shell-integration)); on prompts and command lines, a
+Ctrl+double click selects a word.
 
 **Primary selection.** Selecting text also makes it the primary
 selection, and a middle click pastes the primary selection, as is usual on
@@ -457,7 +455,7 @@ first kind in alphabetical order wins.
 Shells can mark where their prompt starts (`OSC 133 ; A`), where the prompt
 ends and the command line starts (`B`), and where the command's output
 starts (`C`). jotty uses these marks for two things: the text it reports to
-input methods, and selecting a command's output with a double click.
+input methods, and selecting a command's output with a Ctrl+double click.
 
 Input methods ask the application for the text around the cursor, so they can
 correct or replace what was typed. A terminal doesn't really know which text

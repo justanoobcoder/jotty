@@ -1053,12 +1053,8 @@ impl App {
     }
 
     /// A selection of the whole command output under `point`, for a
-    /// double click, if that is enabled. Otherwise a double click selects
-    /// a word.
+    /// Ctrl+double click.
     fn output_selection(&self, point: Point) -> Option<Selection> {
-        if !self.config.terminal.double_click_selects_output {
-            return None;
-        }
         let screen = self.term.screen();
         let (first, last) = screen.command_output(point.line)?;
         let end = screen.row_at(last)?.cells.len().saturating_sub(1);
@@ -2106,9 +2102,10 @@ impl PointerHandler for App {
                     self.last_click = Some((*time, point, clicks));
                     let screen = self.term.screen();
                     let selection = match clicks {
-                        2 => self
+                        2 if self.modifiers.ctrl => self
                             .output_selection(point)
                             .or_else(|| Selection::word(screen, point)),
+                        2 => Selection::word(screen, point),
                         3 => Some(Selection::line(screen, point)),
                         _ => None,
                     };

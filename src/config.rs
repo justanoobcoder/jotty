@@ -196,9 +196,6 @@ pub struct TerminalConfig {
     pub scrollback: usize,
     /// Render bold text with the bright variant of the first eight colors.
     pub bold_is_bright: bool,
-    /// Double-clicking a command's output selects all of it (needs the
-    /// shell to mark commands with OSC 133).
-    pub double_click_selects_output: bool,
 }
 
 impl Default for TerminalConfig {
@@ -208,7 +205,6 @@ impl Default for TerminalConfig {
             term: "auto".into(),
             scrollback: 10_000,
             bold_is_bright: true,
-            double_click_selects_output: false,
         }
     }
 }
