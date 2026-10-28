@@ -1,6 +1,7 @@
 //! The Wayland application: window, input, clipboard, input method and the
 //! event loop tying them to the terminal and the renderer.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -74,7 +75,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 use crate::config::{Config, RendererKind};
 use crate::font::{Fonts, points_to_px};
 use crate::ime::{ImeState, Surrounding};
-use crate::input::{self, KeyModes, MouseAction, MouseButton, MouseEvent};
+use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
 use crate::pty::{Pty, WindowSize};
@@ -214,6 +215,9 @@ pub struct App {
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
+    /// Keys whose press went to the program, by key code, so that their
+    /// release goes there too (kitty keyboard protocol).
+    sent_keys: HashSet<u32>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
     /// The primary selection: set by selecting text, pasted by middle click.
@@ -451,6 +455,7 @@ pub fn run(
         pointer_inside: false,
         conn: conn.clone(),
         last_click: None,
+        sent_keys: HashSet::new(),
         shift_mark: None,
         shift_press: false,
         data_device: None,
@@ -734,7 +739,16 @@ impl App {
             .copied()
     }
 
-    fn handle_key(&mut self, event: KeyEvent) {
+    fn key_modes(&self) -> KeyModes {
+        let screen = self.term.screen();
+        KeyModes {
+            app_cursor: screen.modes.app_cursor,
+            app_keypad: screen.modes.app_keypad,
+            keyboard: screen.keyboard_flags(),
+        }
+    }
+
+    fn handle_key(&mut self, event: KeyEvent, action: KeyAction) {
         if self.search.is_some() {
             return self.search_key(&event);
         }
@@ -755,15 +769,32 @@ impl App {
         if self.vi.is_some() {
             return self.vi_key(&event, base);
         }
-        let modes = self.term.screen().modes;
-        let modes = KeyModes {
-            app_cursor: modes.app_cursor,
-            app_keypad: modes.app_keypad,
+        let key = Key {
+            keysym: event.keysym,
+            base,
+            text: event.utf8.as_deref(),
+            action,
         };
-        if let Some(bytes) =
-            input::encode_key(event.keysym, event.utf8.as_deref(), self.modifiers, modes)
-        {
+        if let Some(bytes) = input::encode(&key, self.modifiers, self.key_modes()) {
+            self.sent_keys.insert(event.raw_code);
             self.scroll_to_bottom();
+            self.send(&bytes);
+        }
+    }
+
+    /// Reports a key release to the program, if it got the press and asked
+    /// for releases.
+    fn release(&mut self, event: KeyEvent) {
+        if !self.sent_keys.remove(&event.raw_code) {
+            return;
+        }
+        let key = Key {
+            keysym: event.keysym,
+            base: self.base_keysym(event.raw_code),
+            text: event.utf8.as_deref(),
+            action: KeyAction::Release,
+        };
+        if let Some(bytes) = input::encode(&key, self.modifiers, self.key_modes()) {
             self.send(&bytes);
         }
     }
@@ -1818,7 +1849,7 @@ impl SeatHandler for App {
                     &seat,
                     None,
                     self.loop_handle.clone(),
-                    Box::new(|app, _, event| app.handle_key(event)),
+                    Box::new(|app, _, event| app.handle_key(event, KeyAction::Repeat)),
                 );
                 match keyboard {
                     Ok(keyboard) => self.keyboard = Some(keyboard),
@@ -1923,7 +1954,7 @@ impl KeyboardHandler for App {
         event: KeyEvent,
     ) {
         self.last_serial = serial;
-        self.handle_key(event);
+        self.handle_key(event, KeyAction::Press);
     }
 
     fn repeat_key(
@@ -1934,7 +1965,7 @@ impl KeyboardHandler for App {
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event);
+        self.handle_key(event, KeyAction::Repeat);
     }
 
     fn release_key(
@@ -1943,8 +1974,9 @@ impl KeyboardHandler for App {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        self.release(event);
     }
 
     fn update_modifiers(

@@ -297,7 +297,21 @@ pub struct Screen {
     graphics: [Graphics; 2],
     /// The cell size in pixels, for pixel size reports.
     cell_size: (u32, u32),
+    /// Kitty keyboard protocol flags of the primary and alternate screen,
+    /// with the flags saved by pushes.
+    keyboard: [KeyboardFlags; 2],
 }
+
+/// The kitty keyboard protocol's progressive enhancement flags of a screen.
+#[derive(Debug, Clone, Default)]
+struct KeyboardFlags {
+    current: u8,
+    /// Flags saved by `CSI > u`, newest last.
+    stack: Vec<u8>,
+}
+
+/// How many pushed keyboard flags a screen keeps.
+const KEYBOARD_STACK: usize = 16;
 
 pub type Rgb = (u8, u8, u8);
 
@@ -391,6 +405,7 @@ impl Screen {
             prompt_end: None,
             graphics: Default::default(),
             cell_size: (10, 20),
+            keyboard: Default::default(),
         }
     }
 
@@ -679,6 +694,45 @@ impl Screen {
             graphics.cell = size;
         }
         self.dirty = true;
+    }
+
+    /// The kitty keyboard protocol flags in effect (progressive
+    /// enhancements; 0 for legacy key encoding).
+    pub fn keyboard_flags(&self) -> u8 {
+        self.keyboard[self.alt_active as usize].current
+    }
+
+    /// Handles the kitty keyboard protocol's `CSI … u` sequences: query
+    /// (`?`), push (`>`), pop (`<`) and set (`=`).
+    fn keyboard_mode(&mut self, marker: u8, args: &[u16]) {
+        let flags = &mut self.keyboard[self.alt_active as usize];
+        let arg = |i: usize| args.get(i).copied();
+        match marker {
+            b'?' => {
+                let reply = format!("\x1b[?{}u", flags.current);
+                self.responses.extend_from_slice(reply.as_bytes());
+            }
+            b'>' => {
+                if flags.stack.len() == KEYBOARD_STACK {
+                    flags.stack.remove(0);
+                }
+                flags.stack.push(flags.current);
+                flags.current = arg(0).unwrap_or(0).min(31) as u8;
+            }
+            b'<' => {
+                for _ in 0..arg(0).unwrap_or(1).max(1) {
+                    flags.current = flags.stack.pop().unwrap_or(0);
+                }
+            }
+            _ => {
+                let value = arg(0).unwrap_or(0).min(31) as u8;
+                flags.current = match arg(1).unwrap_or(1) {
+                    2 => flags.current | value,
+                    3 => flags.current & !value,
+                    _ => value,
+                };
+            }
+        }
     }
 
     /// The images of the screen being shown.
@@ -1197,6 +1251,7 @@ impl Screen {
         if on && clear {
             self.erase_rows(0, self.rows);
             self.graphics[1].clear_all();
+            self.keyboard[1] = KeyboardFlags::default();
         }
         self.display_offset = 0;
         self.dirty = true;
@@ -1717,6 +1772,7 @@ impl Perform for Screen {
             }
             ([], 's') => self.save_cursor(),
             ([], 'u') => self.restore_cursor(),
+            ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, &args),
             ([b' '], 'q') => {
                 self.cursor_shape = match raw(0) {
                     3 | 4 => CursorShape::Underline,

@@ -31,7 +31,7 @@ on the CPU.
 | `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty graphics | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
-| `input.rs` | Key → bytes encoding, mouse reports, paste encoding | xkb keysyms only |
+| `input.rs` | Key → bytes encoding (xterm and the kitty keyboard protocol), mouse reports, paste encoding | xkb keysyms only |
 | `keybinds.rs` | Configurable key bindings for jotty's actions | xkb keysyms only |
 | `ime.rs` | Input-method state machine and the surrounding-text approximation | no |
 | `selection.rs` | Text selection in history-aware coordinates; words, lines, following output | no |
@@ -157,6 +157,20 @@ sequences:
   already.
 
 Key repeat is done client-side by SCTK's calloop timer.
+
+**Kitty keyboard protocol.** A program can turn on the protocol's
+progressive enhancements with `CSI > flags u` (and restore them with
+`CSI < u`, set them with `CSI = flags ; mode u`, query them with
+`CSI ? u`). Each screen keeps its own flags and a stack of 16 pushed ones,
+so an editor on the alternate screen doesn't change the shell's. With any
+flag set, `input::encode` uses `CSI number ; modifiers u` (or the
+`CSI 1 ; modifiers A`/`~` forms of functional keys): Escape and keys with
+Ctrl, Alt or Super are no longer ambiguous, so Shift+Enter, Ctrl+I and Tab
+all differ. The other flags add repeat and release events (a release is
+sent only for keys whose press went to the program), the shifted key,
+every key as an escape code including modifier keys, and the key's text.
+Plain Enter, Tab and Backspace keep their usual bytes unless every key is
+reported.
 
 Pointer events go through the same split. When the program has enabled
 mouse reporting (the terminal tracks DECSET 9/1000/1002/1003 and 1006) and

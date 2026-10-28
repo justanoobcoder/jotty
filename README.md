@@ -23,6 +23,9 @@ An opinionated terminal emulator for Wayland, written in Rust.
 - **Images.** The kitty graphics protocol, so image previews in yazi,
   `kitten icat`, timg or chafa show real pixels, including through tmux
   with Unicode placeholders.
+- **Every key distinct.** The kitty keyboard protocol, so programs that
+  ask for it (Claude Code, Neovim, Helix, fish, yazi) can tell Shift+Enter,
+  Ctrl+I and Escape apart from Enter, Tab and Alt sequences.
 - **Vi mode.** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
 

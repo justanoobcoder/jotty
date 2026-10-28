@@ -60,7 +60,7 @@ nothing surprises you.
   still work, but ncurses programs don't recognize them by name.
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
-- Not implemented: the kitty keyboard protocol and `modifyOtherKeys`, OSC 52
+- Not implemented: `modifyOtherKeys`, OSC 52
   clipboard access, grapheme cluster mode (2027), sixel graphics,
   blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
   (logged at `debug` level).
@@ -73,7 +73,10 @@ nothing surprises you.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
   entries per terminal; beyond that, new ones are dropped (the text stays).
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
-  plain key in some cases, as in classic xterm.
+  plain key in some cases, as in classic xterm, unless the program turns on
+  the kitty keyboard protocol.
+- The kitty keyboard protocol reports no *base layout key* (the key's
+  meaning on a US layout) among the alternate keys, only the shifted key.
 
 ## Input method (text-input-v3)
 

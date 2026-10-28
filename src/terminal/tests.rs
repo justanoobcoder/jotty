@@ -989,3 +989,32 @@ fn reports_pixel_sizes() {
         b"\x1b[6;18;9t\x1b[4;432;720t\x1b[8;24;80t"
     );
 }
+
+#[test]
+fn keyboard_flags_push_pop_and_set() {
+    let mut t = term(10, 2);
+    t.feed(b"\x1b[?u");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b[?0u");
+    t.feed(b"\x1b[>1u\x1b[>29u");
+    assert_eq!(t.screen().keyboard_flags(), 29);
+    t.feed(b"\x1b[=2;3u");
+    assert_eq!(t.screen().keyboard_flags(), 29);
+    t.feed(b"\x1b[=2;2u");
+    assert_eq!(t.screen().keyboard_flags(), 31);
+    t.feed(b"\x1b[<u");
+    assert_eq!(t.screen().keyboard_flags(), 1);
+    t.feed(b"\x1b[<5u");
+    assert_eq!(t.screen().keyboard_flags(), 0);
+    // `CSI u` without a marker still restores the cursor.
+    t.feed(b"ab\x1b[s\x1b[1;1H\x1b[u");
+    assert_eq!(t.screen().cursor(), (0, 2));
+}
+
+#[test]
+fn screens_have_their_own_keyboard_flags() {
+    let mut t = term(10, 2);
+    t.feed(b"\x1b[>1u\x1b[?1049h");
+    assert_eq!(t.screen().keyboard_flags(), 0);
+    t.feed(b"\x1b[>15u\x1b[?1049l");
+    assert_eq!(t.screen().keyboard_flags(), 1);
+}

@@ -1,5 +1,6 @@
 //! Translates key presses into the bytes a terminal application expects,
-//! and recognizes jotty's own shortcuts.
+//! and recognizes jotty's own shortcuts. Keys use xterm's encoding unless
+//! the program turned on the kitty keyboard protocol.
 
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 
@@ -10,6 +11,52 @@ use crate::terminal::MouseMode;
 pub struct KeyModes {
     pub app_cursor: bool,
     pub app_keypad: bool,
+    /// The kitty keyboard protocol flags; 0 for xterm's encoding.
+    pub keyboard: u8,
+}
+
+/// Kitty keyboard protocol flags (progressive enhancements).
+pub mod kitty {
+    /// Escape, and keys with Ctrl, Alt or Super, as `CSI u`.
+    pub const DISAMBIGUATE: u8 = 1;
+    /// Repeat and release events.
+    pub const EVENTS: u8 = 2;
+    /// The shifted key besides the unshifted one.
+    pub const ALTERNATES: u8 = 4;
+    /// Every key as an escape code, text included.
+    pub const ALL_KEYS: u8 = 8;
+    /// The text of a key in its escape code (with `ALL_KEYS`).
+    pub const TEXT: u8 = 16;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    Press,
+    Repeat,
+    Release,
+}
+
+/// A key event to encode.
+#[derive(Debug, Clone, Copy)]
+pub struct Key<'a> {
+    pub keysym: Keysym,
+    /// The key's symbol without modifiers, in the active layout.
+    pub base: Option<Keysym>,
+    /// The UTF-8 text xkb produced.
+    pub text: Option<&'a str>,
+    pub action: KeyAction,
+}
+
+/// Encodes a key event with the kitty keyboard protocol when the program
+/// turned it on, otherwise as xterm does (only presses and repeats).
+pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
+    if modes.keyboard != 0 {
+        return encode_kitty(key, mods, modes);
+    }
+    if key.action == KeyAction::Release {
+        return None;
+    }
+    encode_key(key.keysym, key.text, mods, modes)
 }
 
 /// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl.
@@ -126,6 +173,249 @@ fn control_byte(c: char, keysym: Keysym) -> Option<u8> {
         _ if keysym == Keysym::space => Some(0x00),
         _ => None,
     }
+}
+
+/// The kitty protocol's number for a key without text, and the final byte
+/// of its escape code.
+fn functional_key(keysym: Keysym) -> Option<(u32, u8)> {
+    let raw = keysym.raw();
+    Some(match keysym {
+        Keysym::Escape => (27, b'u'),
+        Keysym::Return => (13, b'u'),
+        Keysym::Tab | Keysym::ISO_Left_Tab => (9, b'u'),
+        Keysym::BackSpace => (127, b'u'),
+        Keysym::Insert => (2, b'~'),
+        Keysym::Delete => (3, b'~'),
+        Keysym::Left => (1, b'D'),
+        Keysym::Right => (1, b'C'),
+        Keysym::Up => (1, b'A'),
+        Keysym::Down => (1, b'B'),
+        Keysym::Page_Up => (5, b'~'),
+        Keysym::Page_Down => (6, b'~'),
+        Keysym::Home => (1, b'H'),
+        Keysym::End => (1, b'F'),
+        Keysym::Caps_Lock => (57358, b'u'),
+        Keysym::Scroll_Lock => (57359, b'u'),
+        Keysym::Num_Lock => (57360, b'u'),
+        Keysym::Print => (57361, b'u'),
+        Keysym::Pause => (57362, b'u'),
+        Keysym::Menu => (57363, b'u'),
+        Keysym::F1 => (1, b'P'),
+        Keysym::F2 => (1, b'Q'),
+        Keysym::F3 => (13, b'~'),
+        Keysym::F4 => (1, b'S'),
+        Keysym::F5 => (15, b'~'),
+        Keysym::F6 => (17, b'~'),
+        Keysym::F7 => (18, b'~'),
+        Keysym::F8 => (19, b'~'),
+        Keysym::F9 => (20, b'~'),
+        Keysym::F10 => (21, b'~'),
+        Keysym::F11 => (23, b'~'),
+        Keysym::F12 => (24, b'~'),
+        Keysym::KP_Decimal => (57409, b'u'),
+        Keysym::KP_Divide => (57410, b'u'),
+        Keysym::KP_Multiply => (57411, b'u'),
+        Keysym::KP_Subtract => (57412, b'u'),
+        Keysym::KP_Add => (57413, b'u'),
+        Keysym::KP_Enter => (57414, b'u'),
+        Keysym::KP_Equal => (57415, b'u'),
+        Keysym::KP_Separator => (57416, b'u'),
+        Keysym::KP_Left => (57417, b'u'),
+        Keysym::KP_Right => (57418, b'u'),
+        Keysym::KP_Up => (57419, b'u'),
+        Keysym::KP_Down => (57420, b'u'),
+        Keysym::KP_Page_Up => (57421, b'u'),
+        Keysym::KP_Page_Down => (57422, b'u'),
+        Keysym::KP_Home => (57423, b'u'),
+        Keysym::KP_End => (57424, b'u'),
+        Keysym::KP_Insert => (57425, b'u'),
+        Keysym::KP_Delete => (57426, b'u'),
+        Keysym::KP_Begin => (1, b'E'),
+        Keysym::Shift_L => (57441, b'u'),
+        Keysym::Control_L => (57442, b'u'),
+        Keysym::Alt_L => (57443, b'u'),
+        Keysym::Super_L => (57444, b'u'),
+        Keysym::Hyper_L => (57445, b'u'),
+        Keysym::Meta_L => (57446, b'u'),
+        Keysym::Shift_R => (57447, b'u'),
+        Keysym::Control_R => (57448, b'u'),
+        Keysym::Alt_R => (57449, b'u'),
+        Keysym::Super_R => (57450, b'u'),
+        Keysym::Hyper_R => (57451, b'u'),
+        Keysym::Meta_R => (57452, b'u'),
+        Keysym::ISO_Level3_Shift => (57453, b'u'),
+        Keysym::ISO_Level5_Shift => (57454, b'u'),
+        // F13–F35 and KP_0–KP_9 are consecutive in both numberings.
+        _ if (Keysym::F13.raw()..=Keysym::F35.raw()).contains(&raw) => {
+            (57376 + raw - Keysym::F13.raw(), b'u')
+        }
+        _ if (Keysym::KP_0.raw()..=Keysym::KP_9.raw()).contains(&raw) => {
+            (57399 + raw - Keysym::KP_0.raw(), b'u')
+        }
+        _ => {
+            // Media keys (XF86Audio…).
+            let number = match raw {
+                0x1008_ff14 => 57428,
+                0x1008_ff31 => 57429,
+                0x1008_ff15 => 57432,
+                0x1008_ff97 => 57433,
+                0x1008_ff3e => 57434,
+                0x1008_ff17 => 57435,
+                0x1008_ff16 => 57436,
+                0x1008_ff1c => 57437,
+                0x1008_ff11 => 57438,
+                0x1008_ff13 => 57439,
+                0x1008_ff12 => 57440,
+                _ => return None,
+            };
+            (number, b'u')
+        }
+    })
+}
+
+/// The kitty protocol's modifier bits: shift, alt, ctrl, super, then caps
+/// lock (64) and num lock (128).
+fn kitty_modifiers(mods: Modifiers) -> u32 {
+    u32::from(mods.shift)
+        | u32::from(mods.alt) << 1
+        | u32::from(mods.ctrl) << 2
+        | u32::from(mods.logo) << 3
+        | u32::from(mods.caps_lock) << 6
+        | u32::from(mods.num_lock) << 7
+}
+
+/// The bit a modifier key sets, so its own press or release can be
+/// reflected (the compositor reports the new state only afterwards).
+fn own_modifier(keysym: Keysym) -> u32 {
+    match keysym {
+        Keysym::Shift_L | Keysym::Shift_R => 1,
+        Keysym::Alt_L | Keysym::Alt_R => 2,
+        Keysym::Control_L | Keysym::Control_R => 4,
+        Keysym::Super_L | Keysym::Super_R => 8,
+        Keysym::Caps_Lock => 64,
+        Keysym::Num_Lock => 128,
+        _ => 0,
+    }
+}
+
+/// Encodes a key with the kitty keyboard protocol, following the flags in
+/// `modes.keyboard`.
+fn encode_kitty(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
+    use kitty::*;
+    let flags = modes.keyboard;
+    let all_keys = flags & ALL_KEYS != 0;
+    let disambiguate = flags & DISAMBIGUATE != 0 || all_keys;
+    let events = flags & EVENTS != 0;
+    let release = key.action == KeyAction::Release;
+    if release && !events {
+        return None;
+    }
+    let legacy = || {
+        if release {
+            None
+        } else {
+            encode_key(key.keysym, key.text, mods, modes)
+        }
+    };
+    // Text without control characters, which a key event can carry.
+    let text = key
+        .text
+        .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    let functional = functional_key(key.keysym);
+    let is_keypad = (Keysym::KP_Space.raw()..=Keysym::KP_Equal.raw()).contains(&key.keysym.raw());
+    // A key that types text: a character key, or a keypad key with Num Lock.
+    let types_text = functional.is_none() || (is_keypad && text.is_some());
+    let mut bits = kitty_modifiers(mods);
+    let own = own_modifier(key.keysym);
+    let is_modifier = own != 0 || key.keysym.is_modifier_key();
+    if is_modifier {
+        if !all_keys {
+            return None;
+        }
+        if release {
+            bits &= !own;
+        } else {
+            bits |= own;
+        }
+    }
+    let held = mods.ctrl || mods.alt || mods.logo;
+
+    if !all_keys {
+        if types_text {
+            // Text goes as is; events aren't reported for it.
+            if release {
+                return None;
+            }
+            if !held {
+                return text.map(|t| t.as_bytes().to_vec());
+            }
+            if !disambiguate {
+                return legacy();
+            }
+            // Lock keys don't count for text keys.
+            bits &= !(64 | 128);
+        } else if matches!(functional, Some((13 | 9 | 127, b'u'))) {
+            // Enter, Tab and Backspace stay as they were without other
+            // modifiers, so `reset` can be typed if a program leaves the
+            // mode on; they have no release events.
+            if release || !disambiguate || !(held || mods.shift) {
+                return legacy();
+            }
+        } else if !disambiguate && !release {
+            return legacy();
+        }
+    }
+
+    let (number, final_byte) = match functional {
+        Some(f) if !types_text || is_keypad => f,
+        _ => (key_number(key).or(text.map(|_| 0))?, b'u'),
+    };
+    let mut out = format!("\x1b[{number}");
+    if flags & ALTERNATES != 0 && types_text && mods.shift {
+        let shifted = key.keysym.key_char().map(u32::from);
+        if let Some(shifted) = shifted.filter(|&c| c != number) {
+            out.push_str(&format!(":{shifted}"));
+        }
+    }
+    let event = match key.action {
+        KeyAction::Press => 1,
+        KeyAction::Repeat if events => 2,
+        KeyAction::Repeat => 1,
+        KeyAction::Release => 3,
+    };
+    let text = text.filter(|_| all_keys && flags & TEXT != 0 && !release);
+    if bits != 0 || event != 1 || text.is_some() {
+        out.push_str(&format!(";{}", bits + 1));
+        if event != 1 {
+            out.push_str(&format!(":{event}"));
+        }
+    }
+    if let Some(text) = text {
+        let codes: Vec<String> = text.chars().map(|c| u32::from(c).to_string()).collect();
+        out.push_str(&format!(";{}", codes.join(":")));
+    }
+    // `CSI 1 A` is sent as `CSI A` when nothing follows the number.
+    if final_byte != b'u' && final_byte != b'~' && out == "\x1b[1" {
+        out.truncate(2);
+    }
+    out.push(final_byte as char);
+    Some(out.into_bytes())
+}
+
+/// The Unicode code point of a character key without modifiers (lower
+/// case), from the active layout.
+fn key_number(key: &Key) -> Option<u32> {
+    let c = key
+        .base
+        .and_then(Keysym::key_char)
+        .or_else(|| key.keysym.key_char())
+        .filter(|c| !c.is_control())?;
+    let mut lower = c.to_lowercase();
+    let c = match (lower.next(), lower.next()) {
+        (Some(l), None) => l,
+        _ => c,
+    };
+    Some(u32::from(c))
 }
 
 /// Wraps pasted text for the child: strips control characters that could
@@ -273,6 +563,196 @@ mod tests {
 
     fn enc(keysym: Keysym, text: Option<&str>, mods: Modifiers) -> Vec<u8> {
         encode_key(keysym, text, mods, KeyModes::default()).unwrap()
+    }
+
+    /// Encodes a press, repeat or release with kitty keyboard `flags`.
+    fn kitty(
+        keysym: Keysym,
+        base: Keysym,
+        text: Option<&str>,
+        mods: Modifiers,
+        flags: u8,
+        action: KeyAction,
+    ) -> Option<String> {
+        let key = Key {
+            keysym,
+            base: Some(base),
+            text,
+            action,
+        };
+        let modes = KeyModes {
+            keyboard: flags,
+            ..KeyModes::default()
+        };
+        encode(&key, mods, modes).map(|b| String::from_utf8(b).unwrap())
+    }
+
+    fn press(keysym: Keysym, text: Option<&str>, mods: Modifiers, flags: u8) -> Option<String> {
+        kitty(keysym, keysym, text, mods, flags, KeyAction::Press)
+    }
+
+    #[test]
+    fn disambiguate_keeps_plain_keys_and_encodes_the_rest() {
+        let f = kitty::DISAMBIGUATE;
+        assert_eq!(press(Keysym::a, Some("a"), NONE, f).unwrap(), "a");
+        assert_eq!(
+            kitty(Keysym::A, Keysym::a, Some("A"), SHIFT, f, KeyAction::Press).unwrap(),
+            "A"
+        );
+        assert_eq!(press(Keysym::Return, Some("\r"), NONE, f).unwrap(), "\r");
+        assert_eq!(
+            press(Keysym::Return, Some("\r"), SHIFT, f).unwrap(),
+            "\x1b[13;2u"
+        );
+        assert_eq!(press(Keysym::BackSpace, None, NONE, f).unwrap(), "\x7f");
+        assert_eq!(press(Keysym::Tab, None, NONE, f).unwrap(), "\t");
+        assert_eq!(
+            press(Keysym::ISO_Left_Tab, None, SHIFT, f).unwrap(),
+            "\x1b[9;2u"
+        );
+        assert_eq!(press(Keysym::Escape, None, NONE, f).unwrap(), "\x1b[27u");
+        assert_eq!(
+            press(Keysym::c, Some("\x03"), CTRL, f).unwrap(),
+            "\x1b[99;5u"
+        );
+        assert_eq!(press(Keysym::a, Some("a"), ALT, f).unwrap(), "\x1b[97;3u");
+        assert_eq!(
+            kitty(
+                Keysym::A,
+                Keysym::a,
+                Some("\x01"),
+                CTRL_SHIFT,
+                f,
+                KeyAction::Press
+            )
+            .unwrap(),
+            "\x1b[97;6u"
+        );
+        assert_eq!(press(Keysym::Up, None, NONE, f).unwrap(), "\x1b[A");
+        assert_eq!(press(Keysym::Up, None, CTRL, f).unwrap(), "\x1b[1;5A");
+        assert_eq!(press(Keysym::F3, None, NONE, f).unwrap(), "\x1b[13~");
+        assert_eq!(press(Keysym::F13, None, NONE, f).unwrap(), "\x1b[57376u");
+        assert_eq!(press(Keysym::Page_Up, None, SHIFT, f).unwrap(), "\x1b[5;2~");
+        // Keypad keys: text with Num Lock, their own numbers otherwise.
+        assert_eq!(press(Keysym::KP_1, Some("1"), NONE, f).unwrap(), "1");
+        assert_eq!(
+            press(Keysym::KP_Enter, Some("\r"), NONE, f).unwrap(),
+            "\x1b[57414u"
+        );
+        assert_eq!(
+            press(Keysym::KP_1, Some("1"), CTRL, f).unwrap(),
+            "\x1b[57400;5u"
+        );
+        // Modifier keys and releases are not reported.
+        assert_eq!(press(Keysym::Shift_L, None, NONE, f), None);
+        assert_eq!(
+            kitty(Keysym::Up, Keysym::Up, None, NONE, f, KeyAction::Release),
+            None
+        );
+    }
+
+    #[test]
+    fn lock_modifiers_only_count_for_keys_without_text() {
+        let f = kitty::DISAMBIGUATE;
+        let caps = Modifiers {
+            caps_lock: true,
+            num_lock: true,
+            ..CTRL
+        };
+        assert_eq!(
+            press(Keysym::a, Some("\x01"), caps, f).unwrap(),
+            "\x1b[97;5u"
+        );
+        assert_eq!(
+            press(Keysym::Escape, None, caps, f).unwrap(),
+            "\x1b[27;197u"
+        );
+        let num = Modifiers {
+            num_lock: true,
+            ..NONE
+        };
+        assert_eq!(press(Keysym::Return, Some("\r"), num, f).unwrap(), "\r");
+    }
+
+    #[test]
+    fn event_types() {
+        let f = kitty::DISAMBIGUATE | kitty::EVENTS;
+        let up = |action| kitty(Keysym::Up, Keysym::Up, None, NONE, f, action);
+        assert_eq!(up(KeyAction::Press).unwrap(), "\x1b[A");
+        assert_eq!(up(KeyAction::Repeat).unwrap(), "\x1b[1;1:2A");
+        assert_eq!(up(KeyAction::Release).unwrap(), "\x1b[1;1:3A");
+        let release = |keysym, text| kitty(keysym, keysym, text, NONE, f, KeyAction::Release);
+        assert_eq!(release(Keysym::a, Some("a")), None);
+        assert_eq!(release(Keysym::Return, Some("\r")), None);
+        assert_eq!(release(Keysym::Escape, None).unwrap(), "\x1b[27;1:3u");
+    }
+
+    #[test]
+    fn alternate_keys() {
+        let f = kitty::DISAMBIGUATE | kitty::ALTERNATES;
+        assert_eq!(
+            kitty(
+                Keysym::A,
+                Keysym::a,
+                Some("\x01"),
+                CTRL_SHIFT,
+                f,
+                KeyAction::Press
+            )
+            .unwrap(),
+            "\x1b[97:65;6u"
+        );
+        assert_eq!(
+            press(Keysym::a, Some("\x01"), CTRL, f).unwrap(),
+            "\x1b[97;5u"
+        );
+    }
+
+    #[test]
+    fn all_keys_with_text() {
+        let f = kitty::DISAMBIGUATE | kitty::EVENTS | kitty::ALL_KEYS | kitty::TEXT;
+        assert_eq!(
+            press(Keysym::a, Some("a"), NONE, f).unwrap(),
+            "\x1b[97;1;97u"
+        );
+        assert_eq!(
+            kitty(Keysym::A, Keysym::a, Some("A"), SHIFT, f, KeyAction::Press).unwrap(),
+            "\x1b[97;2;65u"
+        );
+        assert_eq!(
+            kitty(Keysym::a, Keysym::a, Some("a"), NONE, f, KeyAction::Release).unwrap(),
+            "\x1b[97;1:3u"
+        );
+        assert_eq!(
+            press(Keysym::Return, Some("\r"), NONE, f).unwrap(),
+            "\x1b[13u"
+        );
+        // A modifier key reports its own state change.
+        assert_eq!(
+            press(Keysym::Shift_L, None, NONE, f).unwrap(),
+            "\x1b[57441;2u"
+        );
+        assert_eq!(
+            kitty(
+                Keysym::Shift_L,
+                Keysym::Shift_L,
+                None,
+                SHIFT,
+                f,
+                KeyAction::Release
+            )
+            .unwrap(),
+            "\x1b[57441;1:3u"
+        );
+    }
+
+    #[test]
+    fn legacy_encoding_without_flags() {
+        assert_eq!(press(Keysym::Return, Some("\r"), SHIFT, 0).unwrap(), "\r");
+        assert_eq!(
+            kitty(Keysym::a, Keysym::a, Some("a"), NONE, 0, KeyAction::Release),
+            None
+        );
     }
 
     #[test]
