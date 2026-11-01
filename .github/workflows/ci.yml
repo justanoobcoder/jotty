@@ -1,9 +1,20 @@
 name: CI
 
+# Docs, packaging and helper scripts never reach the build or the tests, so
+# changes to them alone skip CI.
 on:
   push:
-    branches: [main]
+    branches: [main, cachix]
+    paths-ignore: &ignored
+      - "**.md"
+      - "docs/**"
+      - LICENSE
+      - .gitignore
+      - packaging/**
+      - scripts/**
+      - .github/workflows/release.yml
   pull_request:
+    paths-ignore: *ignored
   workflow_dispatch:
 
 # A newer push to the same branch or pull request cancels older runs.
@@ -82,6 +93,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+      # Pulls from the cache; only pushes to the cachix branch upload what
+      # this job built (Cachix leaves out what cache.nixos.org already has),
+      # so main and pull requests can't fill the cache.
+      - uses: cachix/cachix-action@v17
+        with:
+          name: justanoobcoder
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.ref != 'refs/heads/cachix' }}
       # Builds the package (running the tests), clippy and rustfmt in the
       # sandbox, and checks that the terminfo entry stays small enough.
       - run: nix flake check --print-build-logs
