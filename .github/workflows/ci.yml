@@ -1,13 +1,13 @@
 name: CI
 
-# Docs, packaging and helper scripts never reach the build or the tests, so
-# changes to them alone skip CI.
+# Markdown, packaging and helper scripts never reach the build or the tests
+# (the package's src in flake.nix leaves them out), so changes to them alone
+# skip CI. docs/config.example.toml is not ignored: a test parses it.
 on:
   push:
     branches: [main, cachix]
     paths-ignore: &ignored
       - "**.md"
-      - "docs/**"
       - LICENSE
       - .gitignore
       - packaging/**

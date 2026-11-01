@@ -26,7 +26,18 @@
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "jotty";
           version = (fromTOML (builtins.readFile ./Cargo.toml)).package.version;
-          src = pkgs.lib.cleanSource ./.;
+          # Only what the build reads, so commits that touch docs alone build
+          # the derivation already in the Cachix cache.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./src
+              ./extra
+              ./docs/config.example.toml
+            ];
+          };
           cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = [
