@@ -51,6 +51,15 @@ nix run .               # try it
 nix profile install .   # install into your profile
 ```
 
+Builds are cached on [Cachix](https://justanoobcoder.cachix.org), so Nix
+downloads jotty instead of compiling it. Add the cache with
+`cachix use justanoobcoder`, or in `nix.conf`:
+
+```
+extra-substituters = https://justanoobcoder.cachix.org
+extra-trusted-public-keys = justanoobcoder.cachix.org-1:D2/vJZSn8o8Fpsxzbjc9tHo2/D1ejBUqc4r71UvDVyk=
+```
+
 In a NixOS or home-manager configuration, add this repository as a flake
 input and put its package in your packages:
 

@@ -36,7 +36,7 @@ nix fmt             # formats flake.nix
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
+`.github/workflows/ci.yml` runs on pushes to `main` and `cachix` and on pull requests:
 
 | Job | Runs |
 | --- | --- |
@@ -48,6 +48,16 @@ nix fmt             # formats flake.nix
 
 Warnings fail every job. When raising `rust-version`, update the
 toolchain in the minimum-version job too.
+
+Only pushes to the `cachix` branch upload the Nix build to the
+`justanoobcoder` Cachix cache (token in the repository secret
+`CACHIX_AUTH_TOKEN`); `git push origin main:cachix` publishes `main` as it
+is. Pushes that touch only Markdown, `LICENSE`, `.gitignore`, `packaging/`,
+`scripts/` or the release workflow skip CI (`paths-ignore`). That is safe
+for `cachix` because the package's `src` holds only `Cargo.toml`,
+`Cargo.lock`, `src/`, `extra/` and `docs/config.example.toml`, so such
+commits build the derivation already in the cache. A file the build reads
+elsewhere must join that fileset.
 
 ## Releasing
 
