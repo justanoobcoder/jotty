@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use unicode_width::UnicodeWidthChar;
 
 use crate::config::{Config, Rgb};
-use crate::font::{CellMetrics, Style};
+use crate::font::{CellMetrics, Style, is_icon};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
@@ -543,7 +543,16 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                         .is_some_and(|c| c.flags.contains(Flags::CONTINUATION));
                 glyphs.cluster(&text, style_of(&cell), wide)
             } else if cell.c != ' ' {
-                glyphs.glyph(cell.c, style_of(&cell), span > 1.0)
+                // A Nerd Font icon followed by a space gets both cells, as in
+                // kitty and Ghostty; otherwise it is shrunk to fit its own.
+                let wide = span > 1.0
+                    || is_icon(cell.c)
+                        && row.cells.get(x + 1).is_some_and(|next| {
+                            next.c == ' '
+                                && next.cluster == 0
+                                && !next.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
+                        });
+                glyphs.glyph(cell.c, style_of(&cell), wide)
             } else {
                 None
             };
@@ -765,7 +774,9 @@ mod tests {
     /// Records requested glyphs and underlines; every glyph is a 1×1 bitmap
     /// at the cell origin.
     #[derive(Default)]
-    struct FakeGlyphs(Vec<(char, Style)>, Vec<(Underline, u32)>);
+    /// Records the glyphs drawn, the underlines, and the glyphs drawn in a
+    /// two-cell slot.
+    struct FakeGlyphs(Vec<(char, Style)>, Vec<(Underline, u32)>, Vec<char>);
 
     impl GlyphCache for FakeGlyphs {
         fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
@@ -784,8 +795,11 @@ mod tests {
             self.glyph(text.chars().next()?, style, wide)
         }
 
-        fn glyph(&mut self, c: char, style: Style, _wide: bool) -> Option<GlyphInfo> {
+        fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
             self.0.push((c, style));
+            if wide {
+                self.2.push(c);
+            }
             Some(GlyphInfo {
                 uv: [0.0; 4],
                 width: 1,
@@ -1023,6 +1037,20 @@ mod tests {
         let ((x, y), color, mode) = quad_at(&batch, 0);
         assert_eq!((x, y, mode), (20.0, 0.0, 0.0));
         assert_eq!(color, theme().cursor.to_f32());
+    }
+
+    #[test]
+    fn icons_followed_by_a_space_get_two_cells() {
+        // Arch logo then a space, a powerline arrow right after the second
+        // icon, and an icon in the last column.
+        let mut term = Terminal::new(6, 2, 0);
+        term.feed("\u{F08C7} \u{F43A}\u{E0B0} \u{E7A8}".as_bytes());
+        let mut glyphs = FakeGlyphs::default();
+        build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        assert_eq!(glyphs.2, ['\u{F08C7}']);
+        // Powerline separators are not icons, even before a space.
+        let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
+        assert_eq!(drawn, ['\u{F08C7}', '\u{F43A}', '\u{E0B0}', '\u{E7A8}']);
     }
 
     /// A terminal with a 2×2 image placed at (row 0, column 1) with `z`.

@@ -431,8 +431,10 @@ impl Fonts {
         // A narrow glyph in a two-cell slot, as for emoji presentation
         // sequences (`❄` + VS16): enlarge it to fill the slot like an emoji
         // would, and center it.
+        // Icons keep the size their font gives them (they only shrink, below).
+        let icon = is_icon(c);
         let slot_width = 2.0 * m.width as f32;
-        let fill_slot = wide && c.width() == Some(1);
+        let fill_slot = wide && c.width() == Some(1) && !icon;
         if fill_slot {
             let b = outline.px_bounds();
             let factor = (slot_width * 0.9 / b.width())
@@ -447,25 +449,33 @@ impl Fonts {
         // cell and on the baseline. A pixel of overhang is left alone, as
         // fonts draw ● and ○ a little wider than the cell on purpose.
         // Letters keep their shape, italic overhangs included, and so do
-        // Nerd Font glyphs: icons are sized by their font, and powerline
-        // separators must reach the cell edges.
+        // powerline separators, which must reach the cell edges.
+        // Nerd Font icons are often wider than a cell, and anything drawn in
+        // the next cell would cover the part that sticks out: they shrink to
+        // fit their slot, which is two cells when a space follows them (see
+        // `renderer::build`), and are centered in it.
         let b = outline.px_bounds();
-        let fit = !wide
-            && !is_private_use(c)
-            && !c.is_alphanumeric()
-            && (b.min.x < -1.0 || b.max.x > m.width as f32 + 1.0);
+        let (w, h) = (m.width as f32, m.height as f32);
+        let slot = if wide { slot_width } else { w };
+        let fit = if icon {
+            b.width() > slot + 1.0 || b.height() > h
+        } else {
+            !wide
+                && !is_private_use(c)
+                && !c.is_alphanumeric()
+                && (b.min.x < -1.0 || b.max.x > w + 1.0)
+        };
         if fit {
-            let (w, h) = (m.width as f32, m.height as f32);
             // Rounding the bounds outward can add a pixel: shrink a pixel
             // more if the first try doesn't fit.
-            for width in [w, w - 1.0] {
+            for width in [slot, slot - 1.0] {
                 let factor = (width.max(1.0) / b.width()).min(h / b.height());
                 if factor >= 1.0 {
                     break;
                 }
                 let scale = PxScale::from(scale.y * factor);
                 outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
-                if outline.px_bounds().width() <= w {
+                if outline.px_bounds().width() <= slot {
                     break;
                 }
             }
@@ -489,14 +499,14 @@ impl Fonts {
         let centered_top = (m.height as i32 - ink_height) / 2 - ink.0 as i32;
         let (left, top) = if fill_slot {
             ((slot_width as i32 - width as i32) / 2, centered_top)
+        } else if icon && ink_height <= m.height as i32 {
+            // Icon fonts center glyphs on the font's math axis, which sits
+            // above the cell's middle; center them in the slot instead.
+            ((slot as i32 - width as i32) / 2, centered_top)
         } else if fit {
             // Keep it on the baseline unless that leaves it out of the cell.
             let top = (bounds.min.y as i32).clamp(0, (m.height as i32 - height as i32).max(0));
             ((m.width as i32 - width as i32) / 2, top)
-        } else if is_icon(c) && ink_height <= m.height as i32 {
-            // Icon fonts center glyphs on the font's math axis, which sits
-            // above the cell's middle; center them in the cell instead.
-            (bounds.min.x as i32, centered_top)
         } else {
             (bounds.min.x as i32, bounds.min.y as i32)
         };
@@ -1416,7 +1426,7 @@ fn is_private_use(c: char) -> bool {
 /// Icons in the Private Use Areas, as used by Nerd Fonts, except powerline
 /// separators (U+E0A0–U+E0D7), which must keep their position to line up
 /// with the cell backgrounds next to them.
-fn is_icon(c: char) -> bool {
+pub fn is_icon(c: char) -> bool {
     matches!(c,
         '\u{E000}'..='\u{E09F}'
         | '\u{E0D8}'..='\u{F8FF}'
@@ -1904,6 +1914,21 @@ mod tests {
                 (top_gap - bottom_gap).abs() <= 1,
                 "{top_gap} vs {bottom_gap}"
             );
+        }
+
+        // Icons never stick out of their slot, one cell or two, and are
+        // centered across it.
+        for c in ['\u{F08C7}', '\u{F43A}', '\u{E7A8}'] {
+            for (wide, cells) in [(false, 1), (true, 2)] {
+                let Some(icon) = fonts.rasterize(c, Style::Regular, wide) else {
+                    continue;
+                };
+                let slot = cells * m.width as i32;
+                let right_gap = slot - (icon.left + icon.width as i32);
+                assert!(icon.left >= -1 && right_gap >= -1, "{c:?} {wide}");
+                assert!((icon.left - right_gap).abs() <= 1, "{c:?} {wide}");
+                assert!(icon.height <= m.height, "{c:?} {wide}");
+            }
         }
 
         // Thai ส + ำ is one cluster over two cells: ส keeps its size and
