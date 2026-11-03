@@ -3,6 +3,9 @@
 jotty reads `$XDG_CONFIG_HOME/jotty/config.toml`, which falls back to
 `~/.config/jotty/config.toml`. Use `jotty --config PATH` to read another file.
 
+With home-manager, `programs.jotty.settings` writes this file from Nix
+(see the [README](../README.md#install)).
+
 Every option has a default, so the file is optional and may contain only what
 you change. Unknown keys and invalid values are errors:
 

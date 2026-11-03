@@ -71,6 +71,32 @@ input and put its package in your packages:
 }
 ```
 
+With home-manager, the flake's module installs jotty and writes its
+config from Nix. `settings` takes the options of
+[docs/configuration.md](docs/configuration.md), and jotty reloads them on
+every `home-manager switch`:
+
+```nix
+{
+  imports = [ inputs.jotty.homeManagerModules.default ];
+
+  programs.jotty = {
+    enable = true;
+    settings = {
+      font = {
+        family = "JetBrains Mono";
+        size = 12.0;
+      };
+      window.opacity = 0.9;
+      keybinds.copy_or_interrupt = [ "ctrl+c" ];
+    };
+  };
+}
+```
+
+Set `programs.jotty.package = null` to manage only the config of a jotty
+installed some other way.
+
 From source (needs Rust 1.88+, and the development files for wayland,
 libxkbcommon, libEGL/libglvnd and fontconfig):
 
