@@ -2,10 +2,12 @@ name: CI
 
 # Markdown, packaging and helper scripts never reach the build or the tests
 # (the package's src in flake.nix leaves them out), so changes to them alone
-# skip CI. docs/config.example.toml is not ignored: a test parses it.
+# skip CI. docs/config.example.toml is not ignored: a test parses it. The
+# home-manager module is outside the src too, but users follow the cachix
+# branch, which only `publish` moves, so a module change must run.
 on:
   push:
-    branches: [main, cachix]
+    branches: [main]
     paths-ignore: &ignored
       - "**.md"
       - LICENSE
@@ -93,14 +95,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      # Pulls from the cache; only pushes to the cachix branch upload what
-      # this job built (Cachix leaves out what cache.nixos.org already has),
-      # so main and pull requests can't fill the cache.
+      # Pulls from the cache; builds of main upload what this job built
+      # (Cachix leaves out what cache.nixos.org already has). Pull requests
+      # only pull. A full cache drops its least recently used paths.
       - uses: cachix/cachix-action@v17
         with:
           name: justanoobcoder
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ github.ref != 'refs/heads/cachix' }}
+          skipPush: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
       # Builds the package (running the tests), clippy and rustfmt in the
       # sandbox, and checks that the terminfo entry stays small enough.
       - run: nix flake check --print-build-logs
+
+  # Users follow the cachix branch, so it only ever points at a commit that
+  # passed every job and whose build is already in the cache: installs never
+  # miss it mid-build.
+  publish:
+    name: Move the cachix branch
+    needs: [fmt, clippy, test, msrv, nix]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Skips a commit main has dropped (a force push) or that cachix is
+      # already at or past (a rerun of an older build).
+      - run: |
+          git fetch origin   # main may have moved while the build ran
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || exit 0
+          if git rev-parse -q --verify origin/cachix >/dev/null; then
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/cachix && exit 0
+          fi
+          git push --force origin "$GITHUB_SHA:refs/heads/cachix"

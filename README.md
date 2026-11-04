@@ -44,11 +44,11 @@ packages for x86_64 and aarch64 (the Arch package is x86_64 only):
 `SHA256SUMS` lists their checksums. The packages install the terminfo
 entry, a desktop entry and the icon, so app launchers list jotty.
 
-With Nix flakes, from a checkout:
+With Nix flakes:
 
 ```sh
-nix run .               # try it
-nix profile install .   # install into your profile
+nix run github:justanoobcoder/jotty/cachix               # try it
+nix profile install github:justanoobcoder/jotty/cachix   # install into your profile
 ```
 
 Builds are cached on [Cachix](https://justanoobcoder.cachix.org), so Nix
@@ -60,12 +60,18 @@ extra-substituters = https://justanoobcoder.cachix.org
 extra-trusted-public-keys = justanoobcoder.cachix.org-1:D2/vJZSn8o8Fpsxzbjc9tHo2/D1ejBUqc4r71UvDVyk=
 ```
 
+The `cachix` branch always points at the newest commit of `main` whose
+build is already in the cache; following `main` itself can pull in a
+commit CI is still building, which then compiles locally. Don't set
+`inputs.nixpkgs.follows` on jotty: another nixpkgs changes the build, and
+the cache no longer has it.
+
 In a NixOS or home-manager configuration, add this repository as a flake
 input and put its package in your packages:
 
 ```nix
 {
-  inputs.jotty.url = "github:justanoobcoder/jotty";
+  inputs.jotty.url = "github:justanoobcoder/jotty/cachix";
   # ...
   environment.systemPackages = [ inputs.jotty.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 }

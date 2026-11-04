@@ -36,7 +36,7 @@ nix fmt             # formats flake.nix
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pushes to `main` and `cachix` and on pull requests:
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
 
 | Job | Runs |
 | --- | --- |
@@ -45,19 +45,27 @@ nix fmt             # formats flake.nix
 | Build and test | `cargo build --release` and `cargo test` on Ubuntu, with fonts installed so the font and emoji tests run |
 | Minimum Rust version | `cargo build` with Rust 1.88, the `rust-version` in `Cargo.toml` |
 | Nix flake check | `nix flake check`: the package with its tests, clippy and rustfmt in the sandbox, and the terminfo size check |
+| Move the cachix branch | on `main` only, after every other job passes: points `cachix` at the commit |
 
 Warnings fail every job. When raising `rust-version`, update the
 toolchain in the minimum-version job too.
 
-Only pushes to the `cachix` branch upload the Nix build to the
-`justanoobcoder` Cachix cache (token in the repository secret
-`CACHIX_AUTH_TOKEN`); `git push origin main:cachix` publishes `main` as it
-is. Pushes that touch only Markdown, `LICENSE`, `.gitignore`, `packaging/`,
-`scripts/` or the release workflow skip CI (`paths-ignore`). That is safe
-for `cachix` because the package's `src` holds only `Cargo.toml`,
-`Cargo.lock`, `src/`, `extra/` and `docs/config.example.toml`, so such
-commits build the derivation already in the cache. A file the build reads
-elsewhere must join that fileset.
+Builds of `main` upload the Nix build to the `justanoobcoder` Cachix cache
+(token in the repository secret `CACHIX_AUTH_TOKEN`; pull requests only
+pull). Once every job has passed, the `publish` job moves the `cachix`
+branch to that commit. Users follow `cachix`, so it only ever points at a
+cached build: never push to it by hand. A newer push to `main` cancels a
+running build, so only the latest of a burst gets cached. The free cache
+holds 5 GB; when full, Cachix drops the least recently used paths, which
+only costs a rebuild to someone pinned to an old commit.
+
+Pushes that touch only Markdown, `LICENSE`, `.gitignore`, `packaging/`,
+`scripts/` or the release workflow skip CI (`paths-ignore`), so `cachix`
+lags behind them until the next build, which is harmless: the package's
+`src` holds only `Cargo.toml`, `Cargo.lock`, `src/`, `extra/` and
+`docs/config.example.toml`. A file the build reads elsewhere must join that
+fileset. The home-manager module is outside it too, but its changes do run
+CI, or users on `cachix` would never get them.
 
 ## Releasing
 
