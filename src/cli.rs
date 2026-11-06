@@ -1,5 +1,7 @@
 //! Command-line arguments.
 
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
@@ -17,7 +19,7 @@ Options:
 pub struct Options {
     pub config: Option<PathBuf>,
     /// Program and arguments to run instead of the shell.
-    pub command: Option<Vec<String>>,
+    pub command: Option<Vec<OsString>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,27 +29,29 @@ pub enum Parsed {
     Version,
 }
 
-pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
+/// Parses the arguments, which needn't be UTF-8: paths and commands are
+/// passed on as they are.
+pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String> {
     let mut options = Options::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => return Ok(Parsed::Help),
-            "-V" | "--version" => return Ok(Parsed::Version),
-            "-c" | "--config" => {
+        match arg.as_bytes() {
+            b"-h" | b"--help" => return Ok(Parsed::Help),
+            b"-V" | b"--version" => return Ok(Parsed::Version),
+            b"-c" | b"--config" => {
                 let path = args.next().ok_or("--config needs a path")?;
                 options.config = Some(path.into());
             }
-            "-e" | "--command" => {
-                let command: Vec<String> = args.by_ref().collect();
+            b"-e" | b"--command" => {
+                let command: Vec<OsString> = args.by_ref().collect();
                 if command.is_empty() {
                     return Err("--command needs a program".into());
                 }
                 options.command = Some(command);
             }
             _ => {
-                if let Some(path) = arg.strip_prefix("--config=") {
-                    options.config = Some(path.into());
+                if let Some(path) = arg.as_bytes().strip_prefix(b"--config=") {
+                    options.config = Some(OsStr::from_bytes(path).into());
                 } else {
                     return Err(format!("unknown argument {arg:?}"));
                 }
@@ -62,7 +66,17 @@ mod tests {
     use super::*;
 
     fn run(args: &[&str]) -> Result<Parsed, String> {
-        parse(args.iter().map(|s| s.to_string()))
+        parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn arguments_need_not_be_utf8() {
+        let name = OsStr::from_bytes(b"caf\xe9.txt").to_os_string();
+        let args = ["-e".into(), "vim".into(), name.clone()];
+        let Ok(Parsed::Run(options)) = parse(args) else {
+            panic!()
+        };
+        assert_eq!(options.command.unwrap(), ["vim".into(), name]);
     }
 
     #[test]

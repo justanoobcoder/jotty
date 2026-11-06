@@ -1,6 +1,7 @@
 //! Pseudo-terminal: spawns the child process and exchanges bytes with it.
 
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -64,7 +65,12 @@ const MAX_QUEUED_RESPONSES: usize = 1 << 20;
 
 impl Pty {
     /// Spawns `program` with `args` on a new pseudo-terminal.
-    pub fn spawn(program: &str, args: &[String], term: &Term, size: WindowSize) -> io::Result<Pty> {
+    pub fn spawn(
+        program: impl AsRef<OsStr>,
+        args: &[OsString],
+        term: &Term,
+        size: WindowSize,
+    ) -> io::Result<Pty> {
         let (mut master, mut slave) = (0, 0);
         let winsize = size.to_winsize();
         // SAFETY: openpty writes two descriptors into the provided pointers.

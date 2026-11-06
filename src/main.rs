@@ -28,7 +28,7 @@ use config::Config;
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    let options = match cli::parse(std::env::args().skip(1)) {
+    let options = match cli::parse(std::env::args_os().skip(1)) {
         Ok(Parsed::Run(options)) => options,
         Ok(Parsed::Help) => {
             print!("{}", cli::USAGE);

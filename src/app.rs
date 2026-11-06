@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -280,7 +281,7 @@ pub struct App {
 pub fn run(
     config: Config,
     config_path: Option<PathBuf>,
-    command: Option<Vec<String>>,
+    command: Option<Vec<OsString>>,
 ) -> Result<(), Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
@@ -415,7 +416,8 @@ pub fn run(
                 .terminal
                 .shell
                 .clone()
-                .unwrap_or_else(crate::pty::default_shell),
+                .unwrap_or_else(crate::pty::default_shell)
+                .into(),
             Vec::new(),
         ),
     };
