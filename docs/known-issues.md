@@ -58,7 +58,8 @@ nothing surprises you.
 - The terminfo entry must stay under 4096 bytes compiled (unibilium, used
   by Neovim, rejects larger files). The Nix build checks this. To fit, it
   leaves out the names of Ctrl+Alt navigation keys (`kUP7`, ...); the keys
-  still work, but ncurses programs don't recognize them by name.
+  still work, but ncurses programs don't recognize them by name. `Sync` is left
+  out too; programs find synchronized output by asking (DECRQM, mode 2026).
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
 - Not implemented: `modifyOtherKeys`, OSC 52
