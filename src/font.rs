@@ -416,6 +416,15 @@ impl Fonts {
         if let Some(glyph) = self.rasterize_color(c.encode_utf8(&mut [0; 4]), wide) {
             return Some(glyph);
         }
+        self.rasterize_text(c, style, wide)
+    }
+
+    /// Like `rasterize`, always in the text font: a coverage bitmap, never
+    /// a color emoji.
+    fn rasterize_text(&mut self, c: char, style: Style, wide: bool) -> Option<Glyph> {
+        if c == ' ' {
+            return None;
+        }
         if let Some(glyph) = box_glyph(c, self.metrics) {
             return Some(glyph);
         }
@@ -538,7 +547,12 @@ impl Fonts {
         // A narrow character fills a two-cell slot only when nothing else
         // is drawn in it, as for emoji presentation sequences (`❄` + VS16).
         let spacing = chars.clone().any(|c| c.width().unwrap_or(0) > 0);
-        let mut glyph = self.rasterize(base, style, wide && !spacing);
+        // VS15 asks for the text form, which `rasterize` wouldn't know.
+        let mut glyph = if text.contains('\u{fe0e}') {
+            self.rasterize_text(base, style, wide && !spacing)
+        } else {
+            self.rasterize(base, style, wide && !spacing)
+        };
         let cell = self.metrics.width as i32;
         // The cell the last character drawn starts in, and its width.
         let (mut col, mut cols) = (0, if wide && !spacing { 2 } else { 1 });
@@ -548,7 +562,12 @@ impl Fonts {
             if width == 0 && is_joiner_or_selector(c) {
                 continue;
             }
-            let Some(mut part) = self.rasterize(c, style, false) else {
+            // A color bitmap has no room for marks, which `overlay` can only
+            // combine with other coverage bitmaps.
+            if glyph.as_ref().is_some_and(|g| g.color) {
+                break;
+            }
+            let Some(mut part) = self.rasterize_text(c, style, false) else {
                 continue;
             };
             if width > 0 {
@@ -1487,6 +1506,30 @@ pub fn points_to_px(points: f32, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vs15_asks_for_the_text_form_in_a_cluster() {
+        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+            return;
+        };
+        let glyph = fonts.rasterize_cluster("\u{231a}\u{fe0e}", Style::Regular, true);
+        assert!(glyph.is_none_or(|g| !g.color));
+    }
+
+    #[test]
+    fn marks_are_not_combined_with_a_color_glyph() {
+        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+            return;
+        };
+        // A color bitmap has four bytes per pixel, which must stay intact.
+        if let Some(glyph) = fonts.rasterize_cluster("\u{1f600}\u{301}", Style::Regular, true) {
+            let bytes = if glyph.color { 4 } else { 1 };
+            assert_eq!(
+                glyph.data.len(),
+                (glyph.width * glyph.height * bytes) as usize
+            );
+        }
+    }
 
     #[test]
     fn style_selection() {

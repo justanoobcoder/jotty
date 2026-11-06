@@ -11,7 +11,8 @@ pub mod software;
 
 use std::borrow::Cow;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::{Config, Rgb};
 use crate::font::{CellMetrics, Style, is_icon};
@@ -721,11 +722,15 @@ fn draw_preedit(
 
     let mut col = start;
     let mut cursor_col = None;
-    for (i, c) in preedit.text.char_indices() {
-        if preedit.cursor.is_some_and(|(begin, _)| begin == i) {
+    // By grapheme: an input method may send a letter and its tone mark apart.
+    for (i, text) in preedit.text.grapheme_indices(true) {
+        if preedit
+            .cursor
+            .is_some_and(|(begin, _)| (i..i + text.len()).contains(&begin))
+        {
             cursor_col = Some(col);
         }
-        let width = c.width().unwrap_or(0);
+        let width = text.width().min(2);
         if width == 0 {
             continue;
         }
@@ -734,7 +739,12 @@ fn draw_preedit(
         }
         let w = cw * width as f32;
         batch.fill(col_x(col), py, w, ch, theme.background, theme.opacity);
-        if let Some(glyph) = glyphs.glyph(c, Style::Regular, width == 2) {
+        let mut chars = text.chars();
+        let glyph = match (chars.next(), chars.next()) {
+            (Some(c), None) => glyphs.glyph(c, Style::Regular, width == 2),
+            _ => glyphs.cluster(text, Style::Regular, width == 2),
+        };
+        if let Some(glyph) = glyph {
             batch.glyph(col_x(col), py, &glyph, theme.foreground);
         }
         batch.rect(
@@ -776,7 +786,12 @@ mod tests {
     #[derive(Default)]
     /// Records the glyphs drawn, the underlines, and the glyphs drawn in a
     /// two-cell slot.
-    struct FakeGlyphs(Vec<(char, Style)>, Vec<(Underline, u32)>, Vec<char>);
+    struct FakeGlyphs(
+        Vec<(char, Style)>,
+        Vec<(Underline, u32)>,
+        Vec<char>,
+        Vec<String>,
+    );
 
     impl GlyphCache for FakeGlyphs {
         fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
@@ -792,6 +807,7 @@ mod tests {
         }
 
         fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo> {
+            self.3.push(text.to_string());
             self.glyph(text.chars().next()?, style, wide)
         }
 
@@ -1266,6 +1282,24 @@ mod tests {
         // Per character: background, glyph, underline; plus the beam.
         let beam = quad_at(&batch, batch.quads() - 1);
         assert_eq!(beam.0, (40.0, 0.0));
+    }
+
+    #[test]
+    fn preedit_keeps_marks_sent_apart_from_their_letter() {
+        let term = Terminal::new(10, 1, 0);
+        let preedit = Preedit {
+            text: "e\u{301}a".into(),
+            cursor: Some((3, 3)),
+        };
+        let mut f = frame(term.screen());
+        f.preedit = Some(&preedit);
+        let mut glyphs = FakeGlyphs::default();
+        let batch = build(&f, &theme(), METRICS, &mut glyphs);
+        let clusters = glyphs.3.clone();
+        assert_eq!(clusters, ["e\u{301}"]);
+        // The mark takes no cell: the cursor is after the one letter.
+        let beam = quad_at(&batch, batch.quads() - 1);
+        assert_eq!(beam.0.0, METRICS.width as f32);
     }
 
     #[test]
