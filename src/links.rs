@@ -86,7 +86,7 @@ impl Detector {
         at: Point,
         resolve: impl Fn(&str) -> Option<String>,
     ) -> Option<Link> {
-        let line = LineText::new(screen, at)?;
+        let line = LineText::around(screen, at, LINK_REACH)?;
         let index = line.index_of(at)?;
         let offset = line.cells[index].offset;
         let link = |start: usize, end: usize, target: String, kind: Option<usize>| Link {
@@ -180,6 +180,11 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
     })
 }
 
+/// How many rows of a wrapped line around the pointer are searched for links.
+/// This runs on every pointer motion while Ctrl is held, and a line can wrap
+/// over the whole history; no link is that long.
+const LINK_REACH: isize = 64;
+
 /// Whether a target can be given to a launcher as its argument. Programs can
 /// set a hyperlink's target to anything, and an option isn't a place to open.
 pub fn is_openable(target: &str) -> bool {
@@ -189,6 +194,16 @@ pub fn is_openable(target: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_lines_are_searched_only_around_the_pointer() {
+        let mut t = crate::terminal::Terminal::new(10, 5, 1000);
+        t.feed("x".repeat(5000).as_bytes());
+        let at = Point { line: -100, col: 0 };
+        let line = LineText::around(t.screen(), at, LINK_REACH).unwrap();
+        assert!(line.first >= at.line - LINK_REACH && line.last <= at.line + LINK_REACH);
+        assert!(line.cells.len() <= 10 * (2 * LINK_REACH as usize + 1));
+    }
 
     #[test]
     fn targets_that_look_like_options_are_not_opened() {

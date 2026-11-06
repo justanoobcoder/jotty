@@ -275,6 +275,8 @@ pub struct App {
     links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
+    /// The cell the pointer was last checked for a link in.
+    hover_cell: Option<Point>,
     /// When a link was last clicked.
     last_link_click: Option<u32>,
     pointer_inside: bool,
@@ -529,6 +531,7 @@ pub fn run(
         reload_pending: false,
         links,
         hovered_link: None,
+        hover_cell: None,
         last_link_click: None,
         pointer_inside: false,
         conn: conn.clone(),
@@ -2429,7 +2432,12 @@ impl PointerHandler for App {
             if matches!(event.kind, PointerEventKind::Motion { .. })
                 && (self.modifiers.ctrl || self.hovered_link.is_some())
             {
-                self.update_hovered_link();
+                // Motion within a cell can't change the link under it.
+                let cell = self.point_at(event.position);
+                if self.hover_cell != Some(cell) {
+                    self.hover_cell = Some(cell);
+                    self.update_hovered_link();
+                }
             }
             match &event.kind {
                 PointerEventKind::Enter { .. } => {

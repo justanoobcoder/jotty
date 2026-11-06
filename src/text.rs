@@ -27,9 +27,16 @@ pub struct LineText {
 impl LineText {
     /// The logical line that the row at `at.line` belongs to.
     pub fn new(screen: &Screen, at: Point) -> Option<LineText> {
+        Self::around(screen, at, isize::MAX)
+    }
+
+    /// Like `new`, with at most `reach` rows of the line on either side of
+    /// `at`: a line can wrap over the whole history.
+    pub fn around(screen: &Screen, at: Point, reach: isize) -> Option<LineText> {
         screen.row_at(at.line)?;
+        let limit = at.line.saturating_add(reach);
         let mut first = at.line;
-        while screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
+        while at.line - first < reach && screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
             first -= 1;
         }
         let mut text = String::new();
@@ -48,7 +55,7 @@ impl LineText {
                 });
                 screen.cell_text(cell, &mut text);
             }
-            if !row.wrapped {
+            if !row.wrapped || line >= limit {
                 break;
             }
             line += 1;
