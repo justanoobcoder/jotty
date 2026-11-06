@@ -6,8 +6,7 @@
 
 pub mod graphics;
 pub mod grid;
-
-use std::collections::HashMap;
+mod strings;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -15,12 +14,17 @@ use vte::{Params, Perform};
 
 use graphics::Graphics;
 pub use grid::{Cell, Color, Flags, Grid, Mark, Row, Underline};
+use strings::StringTable;
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
+/// The longest OSC string kept (vte drops the rest): room for long
+/// hyperlinks and notifications, but an unterminated OSC can't grow
+/// without bound.
+const MAX_OSC_BYTES: usize = 16 << 10;
 
 pub struct Terminal {
-    parser: vte::Parser,
+    parser: vte::Parser<MAX_OSC_BYTES>,
     screen: Screen,
     apc: Apc,
 }
@@ -42,7 +46,7 @@ enum Apc {
 impl Terminal {
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         Terminal {
-            parser: vte::Parser::new(),
+            parser: vte::Parser::new_with_size(),
             screen: Screen::new(cols, rows, scrollback),
             apc: Apc::Outside,
         }
@@ -270,10 +274,9 @@ pub struct Screen {
     /// Colors set by the program with OSC 4, 10 and 11.
     colors: ColorOverrides,
     /// Hyperlink targets (OSC 8); a cell's `link` is an index + 1.
-    links: Vec<String>,
+    links: StringTable,
     /// Grapheme cluster tails; a cell's `cluster` is an index + 1.
-    clusters: Vec<String>,
-    cluster_ids: HashMap<String, u16>,
+    clusters: StringTable,
     /// The first cell of the grapheme cluster being printed, which later
     /// characters of the cluster join.
     cluster_start: Option<(usize, usize)>,
@@ -377,6 +380,8 @@ pub struct Notification {
 const MAX_PENDING_NOTIFICATIONS: usize = 4;
 /// Characters kept of a notification's title and body.
 const MAX_NOTIFICATION_TEXT: usize = 1024;
+/// Characters kept of a window title (OSC 0/2).
+const MAX_TITLE_CHARS: usize = 256;
 
 fn truncate(mut s: String, max_chars: usize) -> String {
     if let Some((i, _)) = s.char_indices().nth(max_chars) {
@@ -384,6 +389,11 @@ fn truncate(mut s: String, max_chars: usize) -> String {
     }
     s
 }
+
+/// How many characters a grapheme cluster keeps after its first one.
+/// Real clusters (a family emoji, stacked Vietnamese marks) need far
+/// fewer; more only come from floods of combining marks.
+const MAX_CLUSTER_CHARS: usize = 32;
 
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
@@ -413,9 +423,8 @@ impl Screen {
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
-            links: Vec::new(),
-            clusters: Vec::new(),
-            cluster_ids: HashMap::new(),
+            links: StringTable::default(),
+            clusters: StringTable::default(),
             cluster_start: None,
             default_colors: DefaultColors::default(),
             last_printed: None,
@@ -628,10 +637,7 @@ impl Screen {
 
     /// The characters after a cell's `c` in its grapheme cluster.
     pub fn cluster(&self, id: u16) -> &str {
-        usize::from(id)
-            .checked_sub(1)
-            .and_then(|i| self.clusters.get(i))
-            .map_or("", String::as_str)
+        self.clusters.get(id).unwrap_or("")
     }
 
     /// A cell's whole text: its character and the rest of its cluster.
@@ -644,18 +650,52 @@ impl Screen {
     }
 
     /// The id of a cluster tail, adding it if new; `None` when all ids are
-    /// used.
+    /// in use even after dropping unused ones.
     fn intern_cluster(&mut self, tail: &str) -> Option<u16> {
-        if let Some(&id) = self.cluster_ids.get(tail) {
+        if let Some(id) = self.clusters.find(tail) {
             return Some(id);
         }
-        if self.clusters.len() >= usize::from(u16::MAX) {
-            return None;
+        if self.clusters.is_full() {
+            self.collect_strings();
         }
-        self.clusters.push(tail.to_string());
-        let id = self.clusters.len() as u16;
-        self.cluster_ids.insert(tail.to_string(), id);
-        Some(id)
+        self.clusters.insert(tail)
+    }
+
+    /// Drops the hyperlinks and cluster tails no cell refers to any more,
+    /// renumbering the rest, so that the tables don't fill up over a long
+    /// session.
+    fn collect_strings(&mut self) {
+        let mut links = self.links.unused();
+        let mut clusters = self.clusters.unused();
+        let mut mark = |cell: &Cell| {
+            links[usize::from(cell.link)] = true;
+            clusters[usize::from(cell.cluster)] = true;
+        };
+        for grid in [&self.primary, &self.alternate] {
+            for row in grid.rows.iter().chain(&grid.history) {
+                row.cells.iter().for_each(&mut mark);
+            }
+        }
+        mark(&self.cursor.template);
+        for saved in self.saved.iter().flatten() {
+            mark(&saved.cursor.template);
+        }
+        let links = self.links.retain(&links);
+        let clusters = self.clusters.retain(&clusters);
+        let remap = |cell: &mut Cell| {
+            cell.link = links[usize::from(cell.link)];
+            cell.cluster = clusters[usize::from(cell.cluster)];
+        };
+        for grid in [&mut self.primary, &mut self.alternate] {
+            for row in grid.rows.iter_mut().chain(&mut grid.history) {
+                row.cells.iter_mut().for_each(remap);
+            }
+        }
+        remap(&mut self.cursor.template);
+        for saved in self.saved.iter_mut().flatten() {
+            remap(&mut saved.cursor.template);
+        }
+        self.dirty = true;
     }
 
     /// Adds `c` to the grapheme cluster being printed, if it continues it.
@@ -683,7 +723,12 @@ impl Screen {
         if width > 0 && (wraps || row != self.cursor.row) {
             return false;
         }
-        if let Some(id) = self.intern_cluster(&text[base..]) {
+        // Past the limit the character is still consumed, so that a flood of
+        // combining marks costs constant time each, but it isn't kept.
+        let tail = &text[base..];
+        if tail.chars().count() <= MAX_CLUSTER_CHARS
+            && let Some(id) = self.intern_cluster(tail)
+        {
             self.grid_mut().rows[row].cells[col].cluster = id;
         }
         self.dirty = true;
@@ -695,25 +740,26 @@ impl Screen {
         }
         true
     }
+
     pub fn link(&self, id: u16) -> Option<&str> {
-        let index = usize::from(id).checked_sub(1)?;
-        self.links.get(index).map(String::as_str)
+        self.links.get(id)
     }
 
     /// Starts (`uri` non-empty) or ends a hyperlink (OSC 8). Identical
-    /// targets share an id; when all ids are used, new links are ignored.
+    /// targets share an id; when all ids are used by cells still on the
+    /// screen or in the history, new links are ignored.
     fn set_link(&mut self, uri: &str) {
-        self.cursor.template.link = if uri.is_empty() {
-            0
-        } else if let Some(i) = self.links.iter().rposition(|l| l == uri) {
-            (i + 1) as u16
-        } else if self.links.len() < usize::from(u16::MAX) {
-            self.links.push(uri.to_string());
-            self.links.len() as u16
-        } else {
+        self.cursor.template.link = 0;
+        if uri.is_empty() {
+            return;
+        }
+        if self.links.find(uri).is_none() && self.links.is_full() {
+            self.collect_strings();
+        }
+        self.cursor.template.link = self.links.insert(uri).unwrap_or_else(|| {
             log::debug!("too many hyperlinks; ignoring {uri}");
             0
-        };
+        });
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
@@ -1979,7 +2025,9 @@ impl Perform for Screen {
                     .map(|p| String::from_utf8_lossy(p))
                     .collect::<Vec<_>>()
                     .join(";");
-                self.title = Some(title);
+                // Wayland messages are limited to 4096 bytes; a longer
+                // title would get the window disconnected.
+                self.title = Some(truncate(title, MAX_TITLE_CHARS));
                 self.title_changed = true;
             }
             // ConEmu uses OSC 9 ; <number> ; … for other things (9;4 is a

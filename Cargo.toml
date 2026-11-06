@@ -24,7 +24,7 @@ ttf-parser = "0.25"
 unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
-vte = "0.15.0"
+vte = { version = "0.15.0", default-features = false }
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }

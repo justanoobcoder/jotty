@@ -74,7 +74,12 @@ nothing surprises you.
   `OSC 777`. Clicking a notification focuses the window only with a
   notification daemon that sends activation tokens.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
-  entries per terminal; beyond that, new ones are dropped (the text stays).
+  entries per terminal. When one fills, entries no cell uses any more are
+  dropped; only when 65535 are still on the screen or in the history are
+  new ones dropped (the text stays).
+- Limits against runaway output: a grapheme cluster keeps at most 32
+  characters after its first one, a window title 256 characters, and an
+  OSC string 16 KiB; the rest is dropped.
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
   plain key in some cases, as in classic xterm, unless the program turns on
   the kitty keyboard protocol.

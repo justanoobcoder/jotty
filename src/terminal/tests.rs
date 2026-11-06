@@ -1075,3 +1075,55 @@ fn notifications_are_bounded() {
     assert_eq!(n.len(), 4);
     assert_eq!(n[0].body.chars().count(), 1024);
 }
+
+#[test]
+fn long_titles_and_osc_strings_are_cut() {
+    let mut t = term(10, 1);
+    let long = "x".repeat(100_000);
+    t.feed(format!("\x1b]0;{long}\x07").as_bytes());
+    let title = t.screen_mut().take_title().unwrap();
+    assert_eq!(title.len(), MAX_TITLE_CHARS);
+    t.feed(format!("\x1b]8;;{long}\x1b\\a").as_bytes());
+    let link = t.screen().link(cell(&t, 0, 0).link).unwrap();
+    assert!(link.len() < MAX_OSC_BYTES);
+}
+
+#[test]
+fn combining_mark_floods_take_linear_time() {
+    let mut t = term(10, 2);
+    let mut input = b"a".to_vec();
+    for _ in 0..200_000 {
+        input.extend_from_slice("\u{301}".as_bytes());
+    }
+    let start = std::time::Instant::now();
+    t.feed(&input);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    let tail = t.screen().cluster(cell(&t, 0, 0).cluster);
+    assert_eq!(tail.chars().count(), MAX_CLUSTER_CHARS);
+    assert_eq!(t.screen().cursor(), (0, 1));
+}
+
+#[test]
+fn unused_clusters_are_dropped_when_the_table_fills() {
+    // Without history, every cluster scrolls away and its id is freed.
+    let mut t = Terminal::new(10, 2, 0);
+    for i in 0..70_000u32 {
+        let a = char::from_u32(0x300 + i % 0x70).unwrap();
+        let b = char::from_u32(0x300 + (i / 0x70) % 0x70).unwrap();
+        t.feed(format!("e{a}{b}\r\n").as_bytes());
+    }
+    t.feed("e\u{323}\u{302}".as_bytes());
+    let c = cell(&t, 1, 0);
+    assert_eq!(t.screen().cluster(c.cluster), "\u{323}\u{302}");
+}
+
+#[test]
+fn unused_hyperlinks_are_dropped_when_the_table_fills() {
+    let mut t = Terminal::new(10, 2, 0);
+    for i in 0..70_000 {
+        t.feed(format!("\x1b]8;;https://x/{i}\x1b\\a\x1b]8;;\x1b\\\r\n").as_bytes());
+    }
+    t.feed(b"\x1b]8;;https://last\x1b\\b");
+    let c = cell(&t, 1, 0);
+    assert_eq!(t.screen().link(c.link), Some("https://last"));
+}
