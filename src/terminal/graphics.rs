@@ -9,9 +9,10 @@
 //! [`PLACEHOLDER`] show parts of them instead.
 
 use std::ffi::{CString, OsString};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -765,7 +766,13 @@ fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String
 }
 
 fn read_file(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, String> {
-    let file = File::open(path).map_err(|e| format!("EBADF: {e}"))?;
+    // Without O_NONBLOCK, opening a FIFO waits for a writer, forever if
+    // there is none, and the whole terminal hangs. Regular files ignore it.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .map_err(|e| format!("EBADF: {e}"))?;
     read_from(file, offset, size)
 }
 
@@ -924,6 +931,22 @@ mod tests {
 
     fn run(g: &mut Graphics, command: &str) -> Outcome {
         g.command(command.as_bytes(), &ctx())
+    }
+
+    #[test]
+    fn reading_a_fifo_fails_instead_of_blocking() {
+        let dir = std::env::temp_dir().join(format!("jotty-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        let c = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `c` is a valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (done, wait) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || done.send(read_file(&path, 0, 0)).unwrap());
+        let result = wait.recv_timeout(std::time::Duration::from_secs(5));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(result.expect("read_file blocked on a FIFO").is_err());
     }
 
     #[test]
