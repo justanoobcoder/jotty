@@ -331,6 +331,13 @@ fn repeat_last_character() {
 }
 
 #[test]
+fn repeat_is_limited_to_a_row() {
+    let mut t = term(10, 3);
+    t.feed(b"x\x1b[65535b");
+    assert_eq!(lines(&t), ["xxxxxxxxxx", "x", ""]);
+}
+
+#[test]
 fn bell() {
     let mut t = term(10, 1);
     t.feed(b"\x07");

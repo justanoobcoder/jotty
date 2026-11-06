@@ -1810,8 +1810,11 @@ impl Perform for Screen {
             ([], 'S') => self.scroll_up(arg(0, 1)),
             ([], 'T') => self.scroll_down(arg(0, 1)),
             ([], 'b') => {
+                // At most a row's worth: programs repeat within a line, and
+                // a huge count in 8 bytes would otherwise cost a screenful
+                // of work each.
                 if let Some(c) = self.last_char {
-                    for _ in 0..arg(0, 1).min(self.cols * self.rows) {
+                    for _ in 0..arg(0, 1).min(self.cols) {
                         self.print_char(c);
                     }
                 }
