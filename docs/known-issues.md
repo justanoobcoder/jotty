@@ -65,21 +65,28 @@ nothing surprises you.
   blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
   (logged at `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
-  placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB per
-  screen; past that the oldest are evicted. Images in the history move with
+  placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,
+  1024 images and 4096 placements per screen; past that the oldest are
+  evicted. Images are decoded on the event loop, so a very large one stalls
+  the window while it decodes. Images in the history move with
   the cursor's line when a width change reflows the text.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and
   `OSC 777`. Clicking a notification focuses the window only with a
   notification daemon that sends activation tokens.
+  A burst of 4 is shown, then one every 2 seconds; the rest are dropped, as
+  they are for 30 seconds after failing to reach the session bus.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
   entries per terminal. When one fills, entries no cell uses any more are
   dropped; only when 65535 are still on the screen or in the history are
   new ones dropped (the text stays).
 - Limits against runaway output: a grapheme cluster keeps at most 32
   characters after its first one, a window title 256 characters, and an
-  OSC string 16 KiB; the rest is dropped.
+  OSC string 16 KiB; the rest is dropped. `CSI n b` (REP) repeats at most
+  a row's worth. Replies to queries are dropped while over 1 MiB of input
+  waits for a program that isn't reading, and a paste over 64 MiB is
+  refused.
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
   plain key in some cases, as in classic xterm, unless the program turns on
   the kitty keyboard protocol.

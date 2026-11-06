@@ -2,14 +2,19 @@
 //! small D-Bus client of its own: it authenticates to the session bus,
 //! calls `Notify`, and reads the signals that say a notification was
 //! clicked, so the window can be focused with the activation token that
-//! came with the click. The socket is read from the event loop.
+//! came with the click.
+//!
+//! [`Bus::connect`] blocks, so it runs on a thread of its own. The connected
+//! bus is non-blocking and belongs to the event loop: what the socket can't
+//! take yet stays in a bounded queue, so a hung bus or daemon can't freeze
+//! the window.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
@@ -23,6 +28,12 @@ const MAX_MESSAGE: usize = 1 << 20;
 /// Notifications remembered for their clicks. A daemon that never reports
 /// closing them would otherwise grow the list forever.
 const MAX_SHOWN: usize = 32;
+/// Messages waiting for the socket, before notifications get dropped.
+const MAX_OUTGOING: usize = 1 << 16;
+/// Notifications that can be shown at once after a quiet time...
+const NOTIFICATION_BURST: f64 = 4.0;
+/// ...and how fast that allowance comes back.
+const NOTIFICATIONS_PER_SECOND: f64 = 0.5;
 
 const METHOD_CALL: u8 = 1;
 const METHOD_RETURN: u8 = 2;
@@ -45,10 +56,42 @@ struct Shown {
     token: Option<String>,
 }
 
+/// Limits how many notifications a program can put on the desktop over
+/// time, however it splits them across reads of the pty.
+#[derive(Debug)]
+pub struct RateLimit {
+    allowance: f64,
+    updated: Instant,
+}
+
+impl RateLimit {
+    pub fn new(now: Instant) -> Self {
+        RateLimit {
+            allowance: NOTIFICATION_BURST,
+            updated: now,
+        }
+    }
+
+    /// Whether one more notification may be shown at `now`.
+    pub fn allow(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
+        self.allowance =
+            (self.allowance + elapsed * NOTIFICATIONS_PER_SECOND).min(NOTIFICATION_BURST);
+        self.updated = now;
+        if self.allowance < 1.0 {
+            return false;
+        }
+        self.allowance -= 1.0;
+        true
+    }
+}
+
 pub struct Bus {
     stream: UnixStream,
     serial: u32,
     received: Vec<u8>,
+    /// Messages the socket couldn't take yet.
+    outgoing: VecDeque<u8>,
     /// Serials of `Notify` calls whose reply (the notification's id) is due.
     pending: VecDeque<u32>,
     shown: VecDeque<Shown>,
@@ -66,6 +109,7 @@ impl Bus {
             stream,
             serial: 0,
             received: Vec::new(),
+            outgoing: VecDeque::new(),
             pending: VecDeque::new(),
             shown: VecDeque::new(),
         };
@@ -84,7 +128,32 @@ impl Bus {
             &body.buf,
             NO_REPLY_EXPECTED,
         )?;
+        // Everything is written: the timeouts above let these block.
+        bus.stream.set_nonblocking(true)?;
         Ok(bus)
+    }
+
+    /// Writes queued messages, as far as the socket takes them. An error
+    /// means the connection is gone.
+    pub fn flush(&mut self) -> io::Result<()> {
+        while !self.outgoing.is_empty() {
+            let (chunk, _) = self.outgoing.as_slices();
+            match self.stream.write(chunk) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    self.outgoing.drain(..n);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether messages wait for the socket to take them.
+    pub fn has_outgoing(&self) -> bool {
+        !self.outgoing.is_empty()
     }
 
     /// The socket, for the event loop to watch.
@@ -92,8 +161,13 @@ impl Bus {
         self.stream.try_clone()
     }
 
-    /// Shows a notification that focuses the window when clicked.
+    /// Shows a notification that focuses the window when clicked. It is
+    /// dropped when the bus isn't keeping up.
     pub fn notify(&mut self, app_id: &str, summary: &str, body: &str) -> io::Result<()> {
+        if self.outgoing.len() >= MAX_OUTGOING {
+            log::warn!("the session bus isn't reading; dropping a notification");
+            return Ok(());
+        }
         let message = notify_body(app_id, summary, &escape_markup(body));
         let serial = self.call(
             NOTIFICATIONS,
@@ -223,7 +297,8 @@ impl Bus {
             signature,
             body,
         );
-        self.stream.write_all(&message)?;
+        self.outgoing.extend(message);
+        self.flush()?;
         Ok(self.serial)
     }
 }
@@ -236,12 +311,15 @@ enum Address {
 }
 
 fn connect_session() -> io::Result<UnixStream> {
-    let addresses = match std::env::var("DBUS_SESSION_BUS_ADDRESS") {
-        Ok(value) => parse_addresses(&value),
-        Err(_) => std::env::var_os("XDG_RUNTIME_DIR")
-            .map(|dir| vec![Address::Path(PathBuf::from(dir).join("bus"))])
-            .unwrap_or_default(),
-    };
+    let mut addresses = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .map(|value| parse_addresses(&value))
+        .unwrap_or_default();
+    // Also when the variable only names transports jotty can't use.
+    if addresses.is_empty()
+        && let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+    {
+        addresses.push(Address::Path(PathBuf::from(dir).join("bus")));
+    }
     let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no session bus address");
     for address in addresses {
         let connected = match &address {
@@ -284,6 +362,10 @@ fn unescape(value: &str) -> Option<Vec<u8>> {
     while let Some(b) = bytes.next() {
         if b == b'%' {
             let hex = [bytes.next()?, bytes.next()?];
+            // from_str_radix alone would accept a sign.
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
             out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
         } else {
             out.push(b);
@@ -649,6 +731,7 @@ mod tests {
             stream: a,
             serial: 0,
             received: Vec::new(),
+            outgoing: VecDeque::new(),
             pending: std::mem::take(&mut state.0),
             shown: std::mem::take(&mut state.1),
         };
@@ -659,6 +742,46 @@ mod tests {
         }
         *state = (bus.pending, bus.shown);
         events
+    }
+
+    #[test]
+    fn a_bus_that_doesnt_read_neither_blocks_nor_grows_the_queue() {
+        let (a, _peer) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let mut bus = Bus {
+            stream: a,
+            serial: 0,
+            received: Vec::new(),
+            outgoing: VecDeque::new(),
+            pending: VecDeque::new(),
+            shown: VecDeque::new(),
+        };
+        let body = "x".repeat(1024);
+        for _ in 0..2000 {
+            bus.notify("jotty", "title", &body).unwrap();
+        }
+        assert!(bus.has_outgoing());
+        assert!(bus.outgoing.len() < MAX_OUTGOING + 2048);
+    }
+
+    #[test]
+    fn the_rate_limit_holds_across_time() {
+        let start = Instant::now();
+        let mut limit = RateLimit::new(start);
+        let allowed = (0..100).filter(|_| limit.allow(start)).count();
+        assert_eq!(allowed, NOTIFICATION_BURST as usize);
+        assert!(!limit.allow(start + Duration::from_millis(100)));
+        assert!(limit.allow(start + Duration::from_secs(3)));
+        // Idle time doesn't save up more than a burst.
+        let later = start + Duration::from_secs(3600);
+        let allowed = (0..100).filter(|_| limit.allow(later)).count();
+        assert_eq!(allowed, NOTIFICATION_BURST as usize);
+    }
+
+    #[test]
+    fn address_escapes_must_be_hexadecimal() {
+        assert_eq!(unescape("a%2fb"), Some(b"a/b".to_vec()));
+        assert_eq!(unescape("%+f"), None);
     }
 
     #[test]

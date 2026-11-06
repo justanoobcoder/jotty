@@ -38,6 +38,7 @@ use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_vie
 use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1;
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::channel;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
@@ -78,7 +79,7 @@ use crate::ime::{ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
-use crate::notify::{self, Bus};
+use crate::notify::{self, Bus, RateLimit};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
@@ -133,6 +134,37 @@ fn paste_mime(offered: &[String]) -> Option<String> {
         .map(|m| m.to_string())
 }
 
+/// How long to wait after failing to reach the session bus before trying
+/// again, as connecting takes a thread and may take seconds.
+const BUS_RETRY: Duration = Duration::from_secs(30);
+/// Notifications kept while the session bus connects.
+const MAX_QUEUED_NOTIFICATIONS: usize = 4;
+
+/// Getting notifications to the session bus, around the bus itself.
+struct Notifier {
+    limit: RateLimit,
+    /// A thread is connecting to the session bus.
+    connecting: bool,
+    /// No connecting before this, after a failure.
+    retry_at: Option<Instant>,
+    /// Title and body of notifications waiting for the connection.
+    queued: Vec<(String, String)>,
+    /// A loop source is waiting for the bus to take queued messages.
+    write_queued: bool,
+}
+
+impl Notifier {
+    fn new() -> Self {
+        Notifier {
+            limit: RateLimit::new(Instant::now()),
+            connecting: false,
+            retry_at: None,
+            queued: Vec::new(),
+            write_queued: false,
+        }
+    }
+}
+
 pub struct App {
     qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,
@@ -148,6 +180,7 @@ pub struct App {
     /// The session bus, for desktop notifications; connected on the first
     /// one, with the loop source that reads it.
     bus: Option<(Bus, RegistrationToken)>,
+    notifier: Notifier,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
     /// Present once the compositor agreed to blur behind the window.
@@ -420,6 +453,7 @@ pub fn run(
         primary_selection_manager,
         activation,
         bus: None,
+        notifier: Notifier::new(),
         text_input_manager,
         background_effect,
         blur: None,
@@ -1681,51 +1715,139 @@ impl App {
         }
     }
 
-    /// Shows a desktop notification, if the window isn't focused. Clicking
-    /// it focuses the window.
+    /// Shows a desktop notification, if the window isn't focused and the
+    /// program isn't sending too many. Clicking it focuses the window.
     fn show_notification(&mut self, notification: Notification) {
         if self.focused || !self.config.window.notifications {
             return;
         }
-        if self.bus.is_none() {
-            self.connect_bus();
-        }
-        let Some((bus, _)) = &mut self.bus else {
+        if !self.notifier.limit.allow(Instant::now()) {
+            log::debug!("too many notifications; dropping one");
             return;
-        };
+        }
         let title = notification
             .title
             .as_deref()
             .or(self.term.screen().title())
-            .unwrap_or(&self.config.window.title);
-        if let Err(e) = bus.notify(&self.config.window.app_id, title, &notification.body) {
-            log::warn!("cannot show a notification: {e}");
-            self.disconnect_bus();
+            .unwrap_or(&self.config.window.title)
+            .to_string();
+        if self.bus.is_some() {
+            self.send_notification(&title, &notification.body);
+            return;
+        }
+        if self.connect_bus() && self.notifier.queued.len() < MAX_QUEUED_NOTIFICATIONS {
+            self.notifier.queued.push((title, notification.body));
         }
     }
 
-    fn connect_bus(&mut self) {
-        let bus = match Bus::connect() {
-            Ok(bus) => bus,
+    fn send_notification(&mut self, title: &str, body: &str) {
+        let Some((bus, _)) = &mut self.bus else {
+            return;
+        };
+        if let Err(e) = bus.notify(&self.config.window.app_id, title, body) {
+            log::warn!("cannot show a notification: {e}");
+            self.disconnect_bus();
+            return;
+        }
+        self.watch_bus_writes();
+    }
+
+    /// Makes sure messages the bus couldn't take yet get written when it can.
+    fn watch_bus_writes(&mut self) {
+        let Some((bus, _)) = &self.bus else {
+            return;
+        };
+        if !bus.has_outgoing() || self.notifier.write_queued {
+            return;
+        }
+        let Ok(socket) = bus.socket() else {
+            return;
+        };
+        let source = Generic::new(socket, Interest::WRITE, Mode::Level);
+        let inserted = self.loop_handle.insert_source(source, |_, _, app| {
+            let Some((bus, _)) = &mut app.bus else {
+                app.notifier.write_queued = false;
+                return Ok(PostAction::Remove);
+            };
+            if let Err(e) = bus.flush() {
+                log::info!("lost the session bus: {e}");
+                app.disconnect_bus();
+                app.notifier.write_queued = false;
+                return Ok(PostAction::Remove);
+            }
+            if bus.has_outgoing() {
+                return Ok(PostAction::Continue);
+            }
+            app.notifier.write_queued = false;
+            Ok(PostAction::Remove)
+        });
+        self.notifier.write_queued = inserted.is_ok();
+    }
+
+    /// Starts connecting to the session bus on another thread, as it may
+    /// take seconds. Returns whether a connection is on its way.
+    fn connect_bus(&mut self) -> bool {
+        if self.notifier.connecting {
+            return true;
+        }
+        if self.notifier.retry_at.is_some_and(|at| Instant::now() < at) {
+            return false;
+        }
+        let (sender, receiver) = channel::channel();
+        // The source goes away by itself once the thread drops the sender.
+        let inserted = self.loop_handle.insert_source(receiver, |event, _, app| {
+            if let channel::Event::Msg(result) = event {
+                app.bus_connected(result);
+            }
+        });
+        if let Err(e) = inserted {
+            log::warn!("cannot watch the session bus connection: {e}");
+            return false;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("session-bus".into())
+            .spawn(move || {
+                // The window may be gone by now, and that's fine.
+                let _ = sender.send(Bus::connect());
+            });
+        if let Err(e) = spawned {
+            log::warn!("cannot connect to the session bus: {e}");
+            self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
+            return false;
+        }
+        self.notifier.connecting = true;
+        true
+    }
+
+    /// The thread from `connect_bus` is done.
+    fn bus_connected(&mut self, result: io::Result<Bus>) {
+        self.notifier.connecting = false;
+        let queued = std::mem::take(&mut self.notifier.queued);
+        let registered = result.and_then(|bus| {
+            let socket = bus.socket()?;
+            let source = Generic::new(socket, Interest::READ, Mode::Level);
+            let token = self
+                .loop_handle
+                .insert_source(source, |_, _, app| {
+                    app.read_bus();
+                    Ok(PostAction::Continue)
+                })
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            Ok((bus, token))
+        });
+        match registered {
+            Ok(bus) => {
+                self.notifier.retry_at = None;
+                self.bus = Some(bus);
+                self.watch_bus_writes();
+                for (title, body) in queued {
+                    self.send_notification(&title, &body);
+                }
+            }
             Err(e) => {
                 log::warn!("cannot connect to the session bus for notifications: {e}");
-                return;
+                self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
             }
-        };
-        let socket = match bus.socket() {
-            Ok(socket) => socket,
-            Err(e) => {
-                log::warn!("cannot watch the session bus: {e}");
-                return;
-            }
-        };
-        let source = Generic::new(socket, Interest::READ, Mode::Level);
-        match self.loop_handle.insert_source(source, |_, _, app| {
-            app.read_bus();
-            Ok(PostAction::Continue)
-        }) {
-            Ok(token) => self.bus = Some((bus, token)),
-            Err(e) => log::warn!("cannot watch the session bus: {e}"),
         }
     }
 
