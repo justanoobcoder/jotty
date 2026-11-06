@@ -47,7 +47,9 @@ impl EmojiFont {
             RasterImageFormat::PNG => decode_png(image.data)?,
             RasterImageFormat::BitmapPremulBgra32 => {
                 let (w, h) = (u32::from(image.width), u32::from(image.height));
-                let mut rgba = image.data.get(..(w * h * 4) as usize)?.to_vec();
+                // Not in u32: the sides come from the font file, up to 65535.
+                let size = w as usize * h as usize * 4;
+                let mut rgba = image.data.get(..size)?.to_vec();
                 for px in rgba.as_chunks_mut::<4>().0 {
                     px.swap(0, 2);
                 }

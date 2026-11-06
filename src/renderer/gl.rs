@@ -1,6 +1,6 @@
 //! OpenGL ES 3 rendering on a Wayland EGL surface.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 
 use glow::HasContext;
@@ -91,6 +91,27 @@ impl Egl {
         .map_err(|e| format!("eglGetPlatformDisplay: {e}"))?;
         api.initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
+        // SAFETY: the same promises this function requires of its caller.
+        let egl = unsafe { Self::on_display(api, display, surface, width, height) };
+        if egl.is_err() {
+            // Also destroys the context and surface made so far, as the CPU
+            // renderer takes over for the rest of the process.
+            if let Err(e) = api.terminate(display) {
+                log::debug!("eglTerminate: {e}");
+            }
+        }
+        egl
+    }
+
+    /// # Safety
+    /// As for `new`; `display` is initialized.
+    unsafe fn on_display(
+        api: &'static egl::Instance<egl::Static>,
+        display: egl::Display,
+        surface: ObjectId,
+        width: i32,
+        height: i32,
+    ) -> Result<Egl, String> {
         api.bind_api(egl::OPENGL_ES_API)
             .map_err(|e| format!("eglBindAPI: {e}"))?;
 
@@ -165,6 +186,8 @@ pub struct Renderer {
     /// Textures of the images drawn so far, by uid.
     images: HashMap<u64, glow::Texture>,
     max_texture_size: u32,
+    /// Images too big for a texture, already reported.
+    oversized_images: HashSet<u64>,
     atlas: Atlas,
     egl: Egl,
     pub fonts: Fonts,
@@ -329,6 +352,7 @@ impl Renderer {
                 color_texture,
                 images: HashMap::new(),
                 max_texture_size,
+                oversized_images: HashSet::new(),
                 atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
                 egl,
                 fonts,
@@ -414,6 +438,10 @@ impl Renderer {
                 continue;
             };
             if image.width.max(image.height) > self.max_texture_size {
+                // Drawn every frame; once is enough to say so.
+                if !self.oversized_images.insert(uid) {
+                    continue;
+                }
                 log::warn!(
                     "image of {}x{} exceeds the texture size limit",
                     image.width,

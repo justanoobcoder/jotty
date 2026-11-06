@@ -409,6 +409,10 @@ fn placeholder_quad(
         ),
     };
     let [sx, sy, sw, sh] = source.map(|v| v as f32);
+    // Nothing to show, and the scale below would be NaN.
+    if sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
     let (bw, bh) = (cols as f32 * cw, rows as f32 * ch);
     let scale = (bw / sw).min(bh / sh);
     let (w, h) = (sw * scale, sh * scale);
@@ -477,6 +481,8 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         placement_quads(frame, m, &mut images);
     }
 
+    // Reused: this runs for every clustered cell of every frame.
+    let mut cluster_text = String::new();
     for y in 0..screen.rows() {
         let row = screen.visible_row(y);
         let line = y as isize - offset;
@@ -534,15 +540,15 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             {
                 None
             } else if cell.cluster != 0 {
-                let mut text = String::new();
-                screen.cell_text(&cell, &mut text);
+                cluster_text.clear();
+                screen.cell_text(&cell, &mut cluster_text);
                 // Emoji sequences span several cells; draw them two wide.
                 let wide = span > 1.0
                     || row
                         .cells
                         .get(x + 1)
                         .is_some_and(|c| c.flags.contains(Flags::CONTINUATION));
-                glyphs.cluster(&text, style_of(&cell), wide)
+                glyphs.cluster(&cluster_text, style_of(&cell), wide)
             } else if cell.c != ' ' {
                 // A Nerd Font icon followed by a space gets both cells, as in
                 // kitty and Ghostty; otherwise it is shrunk to fit its own.
@@ -657,8 +663,11 @@ fn draw_label(
     let mut col = start + 1;
     for c in text.chars() {
         let w = c.width().unwrap_or(0);
-        if w == 0 || col + w > cols {
+        if w == 0 {
             continue;
+        }
+        if col + w > cols {
+            break;
         }
         if let Some(glyph) = glyphs.glyph(c, Style::Bold, w == 2) {
             batch.glyph(x(col), py, &glyph, theme.background);

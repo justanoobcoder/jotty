@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use unicode_normalization::UnicodeNormalization;
 use unicode_width::UnicodeWidthChar;
@@ -145,10 +147,13 @@ impl Fontconfig {
             fc::FcPatternAddInteger(pattern, FC_WEIGHT.as_ptr(), weight);
             fc::FcPatternAddInteger(pattern, FC_SLANT.as_ptr(), slant);
             if let Some(c) = c {
+                // Null only when out of memory; then any font has to do.
                 let charset = fc::FcCharSetCreate();
-                fc::FcCharSetAddChar(charset, c as u32);
-                fc::FcPatternAddCharSet(pattern, FC_CHARSET.as_ptr(), charset);
-                fc::FcCharSetDestroy(charset);
+                if !charset.is_null() {
+                    fc::FcCharSetAddChar(charset, c as u32);
+                    fc::FcPatternAddCharSet(pattern, FC_CHARSET.as_ptr(), charset);
+                    fc::FcCharSetDestroy(charset);
+                }
                 // Color (bitmap) fonts cannot be rendered by ab_glyph.
                 fc::FcPatternAddBool(pattern, FC_COLOR.as_ptr(), 0);
             }
@@ -251,7 +256,7 @@ pub struct Fonts {
     /// a monospace font), then any font.
     fallback_families: Vec<String>,
     /// Face covering a character none of the primary faces have.
-    fallback: HashMap<char, Option<usize>>,
+    fallback: HashMap<(char, Style), Option<usize>>,
     /// The color emoji font, loaded on first use (`None` inside: there is
     /// none).
     emoji: Option<Option<EmojiFont>>,
@@ -366,7 +371,7 @@ impl Fonts {
         if has_glyph(&self.faces[regular], c) {
             return Some(regular);
         }
-        if let Some(&face) = self.fallback.get(&c) {
+        if let Some(&face) = self.fallback.get(&(c, style)) {
             return face;
         }
         let families: Vec<String> = self
@@ -376,13 +381,13 @@ impl Fonts {
             .chain([String::new()])
             .collect();
         let face = families.iter().find_map(|family| {
-            let face = self.find_and_load(family, Style::Regular, Some(c)).ok()?;
+            let face = self.find_and_load(family, style, Some(c)).ok()?;
             has_glyph(&self.faces[face], c).then_some(face)
         });
         if face.is_none() {
             log::debug!("no font covers {c:?} (U+{:04X})", c as u32);
         }
-        self.fallback.insert(c, face);
+        self.fallback.insert((c, style), face);
         face
     }
 
@@ -659,7 +664,7 @@ pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<G
             let per_cell = (cw / (2 * dot)).max(1);
             for cell in 0..cells {
                 for i in 0..per_cell {
-                    let x = cell * cw + (2 * i + 1) * cw / (2 * per_cell) - dot / 2;
+                    let x = (cell * cw + (2 * i + 1) * cw / (2 * per_cell)).saturating_sub(dot / 2);
                     fill(x, x + dot, 0, t);
                 }
             }
@@ -880,7 +885,8 @@ fn draw_dashes(canvas: &mut Canvas, thickness: u32, count: u32, vertical: bool) 
     for i in 0..count {
         let (from, to) = (i * length / count, (i + 1) * length / count);
         let gap = ((to - from) / 3).max(1);
-        let (from, to) = (from + gap / 2, to - (gap - gap / 2));
+        // Saturating: the cell can be narrower than the dashes and gaps.
+        let (from, to) = (from + gap / 2, to.saturating_sub(gap - gap / 2));
         if vertical {
             canvas.fill(a, from, a + thickness, to, 255);
         } else {
@@ -1037,8 +1043,6 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                 draw_polyline(&mut canvas, s, points, shift);
                 draw_polyline(&mut canvas, s, points, (-shift.0, -shift.1));
             }
-            // Black triangles filling half the cell, so they join the
-            // wedges and diagonals around them: ◢ ◣ ◤ ◥.
             // A circle over a 4×4 block of cells, with another a block of
             // 2×2 cells across inside it, in pieces numbered across then
             // down: the outer cells hold twelfths of the large one, the
@@ -1456,11 +1460,28 @@ pub fn is_icon(c: char) -> bool {
 /// Maps a font file into memory for the rest of the process. Unlike
 /// reading it, only the parts in use take memory, and the kernel can share
 /// and reclaim them; that matters for fallback fonts such as Noto CJK,
-/// which are tens of megabytes. Faces are never unloaded, so neither are
-/// the mappings.
+/// which are tens of megabytes. Mappings are never unmapped, as faces keep
+/// them, so a file gets one mapping however often the config is reloaded.
 fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
+    // By device and inode.
+    type Mappings = HashMap<(u64, u64), &'static [u8]>;
+    static MAPPINGS: Mutex<Option<Mappings>> = Mutex::new(None);
     let file = std::fs::File::open(path)?;
-    let len = usize::try_from(file.metadata()?.len()).map_err(std::io::Error::other)?;
+    let metadata = file.metadata()?;
+    // By file, not by name: an update replaces the file under the same name.
+    let key = (metadata.dev(), metadata.ino());
+    let mut mappings = MAPPINGS.lock().unwrap_or_else(|e| e.into_inner());
+    let mappings = mappings.get_or_insert_default();
+    if let Some(&data) = mappings.get(&key) {
+        return Ok(data);
+    }
+    let data = map_new_file(&file, metadata.len())?;
+    mappings.insert(key, data);
+    Ok(data)
+}
+
+fn map_new_file(file: &std::fs::File, len: u64) -> std::io::Result<&'static [u8]> {
+    let len = usize::try_from(len).map_err(std::io::Error::other)?;
     if len == 0 {
         return Err(std::io::Error::other("empty file"));
     }
@@ -1474,7 +1495,7 @@ fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
             len,
             libc::PROT_READ,
             libc::MAP_PRIVATE,
-            std::os::fd::AsRawFd::as_raw_fd(&file),
+            std::os::fd::AsRawFd::as_raw_fd(file),
             0,
         )
     };
