@@ -135,7 +135,7 @@ impl Renderer {
         let (w, h) = (self.size.0.max(1), self.size.1.max(1));
         let background = premultiply(theme.background.to_f32(), theme.opacity);
         let bands = bands(frame.origin.1, metrics.height, frame.screen.rows(), h);
-        let fingerprints = fingerprint(&batch, &bands, background);
+        let fingerprints = fingerprint(&batch, &bands, background, self.atlas.generation());
         let damage = changed(&bands, &fingerprints, &self.presented);
         if damage.is_empty() {
             // Nothing changed; commit anyway so the frame callback fires.
@@ -213,12 +213,15 @@ fn bands(top: u32, cell_height: u32, rows: usize, height: u32) -> Vec<(u32, u32)
 }
 
 /// A fingerprint per band of everything drawn in it.
-fn fingerprint(batch: &Batch, bands: &[(u32, u32)], clear: [u8; 4]) -> Vec<u64> {
+fn fingerprint(batch: &Batch, bands: &[(u32, u32)], clear: [u8; 4], atlas: u64) -> Vec<u64> {
     let mut hashers: Vec<DefaultHasher> = bands
         .iter()
         .map(|_| {
             let mut hasher = DefaultHasher::new();
             clear.hash(&mut hasher);
+            // Quads only say where in the atlas their glyph is; after the
+            // atlas is cleared, another glyph may be there.
+            atlas.hash(&mut hasher);
             hasher
         })
         .collect();
@@ -237,13 +240,17 @@ fn fingerprint(batch: &Batch, bands: &[(u32, u32)], clear: [u8; 4]) -> Vec<u64> 
         let last = &quad[4 * VERTEX_FLOATS..4 * VERTEX_FLOATS + 4];
         let image = images.next_if(|(v, _)| *v == i * 6).map(|&(_, uid)| uid);
         let (y0, y1) = (first[1].round() as i64, last[1].round() as i64);
-        for (band, hasher) in bands.iter().zip(&mut hashers) {
-            if y0 < i64::from(band.1) && y1 > i64::from(band.0) {
-                for v in first.iter().chain(last) {
-                    v.to_bits().hash(hasher);
-                }
-                image.hash(hasher);
+        // The bands go down the window, so the first one this quad can touch
+        // is found directly; there are thousands of quads per frame.
+        let start = bands.partition_point(|band| i64::from(band.1) <= y0);
+        for (band, hasher) in bands.iter().zip(&mut hashers).skip(start) {
+            if i64::from(band.0) >= y1 {
+                break;
             }
+            for v in first.iter().chain(last) {
+                v.to_bits().hash(hasher);
+            }
+            image.hash(hasher);
         }
     }
     hashers.iter().map(Hasher::finish).collect()
@@ -548,17 +555,20 @@ mod tests {
         let bands = bands(0, 10, 3, 30);
         let mut batch = Batch::default();
         batch.rect(0.0, 10.0, 5.0, 10.0, Rgb(1, 2, 3));
-        let before = fingerprint(&batch, &bands, CLEAR);
+        let before = fingerprint(&batch, &bands, CLEAR, 0);
         // Unknown contents: everything.
         assert_eq!(changed(&bands, &before, &[]), [(0, 30)]);
         assert!(changed(&bands, &before, &before).is_empty());
         // A glyph overhanging from the second row into the third.
         batch.rect(0.0, 18.0, 1.0, 4.0, Rgb(9, 9, 9));
-        let after = fingerprint(&batch, &bands, CLEAR);
+        let after = fingerprint(&batch, &bands, CLEAR, 0);
         assert_eq!(changed(&bands, &after, &before), [(10, 30)]);
         // A new background color changes every band.
-        let other = fingerprint(&batch, &bands, [0; 4]);
+        let other = fingerprint(&batch, &bands, [0; 4], 0);
         assert_eq!(changed(&bands, &other, &after), [(0, 30)]);
+        // So does clearing the atlas: another glyph may be at the same place.
+        let cleared = fingerprint(&batch, &bands, CLEAR, 1);
+        assert_eq!(changed(&bands, &cleared, &after), [(0, 30)]);
     }
 
     #[test]

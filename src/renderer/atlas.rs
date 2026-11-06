@@ -82,6 +82,12 @@ pub struct Atlas {
     glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
     /// The atlas filled up and was cleared since the last `take_overflowed`.
     overflowed: bool,
+    /// This frame is the redraw after an overflow. If it fills the atlas too,
+    /// the screen needs more than it holds, and clearing again would only
+    /// repeat forever: the glyphs that don't fit go undrawn instead.
+    retrying: bool,
+    /// Changes whenever bitmaps at known positions may have changed.
+    generation: u64,
 }
 
 impl Atlas {
@@ -93,6 +99,8 @@ impl Atlas {
             color_packer: Packer::new(color_size, color_size),
             glyphs: HashMap::new(),
             overflowed: false,
+            retrying: false,
+            generation: 0,
         }
     }
 
@@ -109,12 +117,37 @@ impl Atlas {
         self.packer.clear();
         self.color_packer.clear();
         self.glyphs.clear();
+        self.generation += 1;
+    }
+
+    /// Changes when the atlas is cleared, so that drawings that look the
+    /// same by glyph position can be told apart.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Whether the atlas overflowed since the last call. Glyphs placed
-    /// before that are stale, so the frame must be drawn again.
+    /// before that are stale, so the frame must be drawn again, once.
     pub fn take_overflowed(&mut self) -> bool {
-        std::mem::take(&mut self.overflowed)
+        self.retrying = std::mem::take(&mut self.overflowed);
+        self.retrying
+    }
+
+    /// Finds room for a glyph, clearing the atlas if it is full, unless that
+    /// just happened.
+    fn allocate(&mut self, w: u32, h: u32, color: bool) -> Option<(u32, u32)> {
+        if let Some(pos) = self.packer(color).alloc(w, h) {
+            return Some(pos);
+        }
+        if self.retrying {
+            log::debug!("the glyph atlas can't hold this screen; dropping a glyph");
+            return None;
+        }
+        // Start over; glyphs placed earlier this frame are stale, so the
+        // caller redraws once more.
+        self.clear();
+        self.overflowed = true;
+        self.packer(color).alloc(w, h)
     }
 
     /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
@@ -150,22 +183,16 @@ impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
             return *info;
         }
         let info = make(self.fonts).and_then(|glyph| self.place(&glyph));
-        self.atlas.glyphs.insert(key, info);
+        // A glyph that only lacks room now may fit in a later frame.
+        if info.is_some() || !self.atlas.retrying {
+            self.atlas.glyphs.insert(key, info);
+        }
         info
     }
 
     fn place(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
         let atlas = &mut *self.atlas;
-        let (x, y) = match atlas.packer(glyph.color).alloc(glyph.width, glyph.height) {
-            Some(pos) => pos,
-            None => {
-                // Start over; glyphs placed earlier this frame are stale,
-                // so the caller redraws once more.
-                atlas.clear();
-                atlas.overflowed = true;
-                atlas.packer(glyph.color).alloc(glyph.width, glyph.height)?
-            }
-        };
+        let (x, y) = atlas.allocate(glyph.width, glyph.height, glyph.color)?;
         (self.store)(x, y, glyph);
         let size = atlas.packer(glyph.color).size().0 as f32;
         Some(GlyphInfo {
@@ -212,6 +239,23 @@ mod tests {
 
     fn overlaps(a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)) -> bool {
         a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+    }
+
+    #[test]
+    fn a_screen_too_big_for_the_atlas_redraws_only_once() {
+        let mut atlas = Atlas::new(10, 10);
+        assert!(atlas.allocate(10, 10, false).is_some());
+        let generation = atlas.generation();
+        // The first frame overflows and asks for one more.
+        assert!(atlas.allocate(10, 10, false).is_some());
+        assert_ne!(atlas.generation(), generation);
+        assert!(atlas.take_overflowed());
+        // That one doesn't fit either: it drops the glyph and is the last.
+        assert_eq!(atlas.allocate(10, 10, false), None);
+        assert!(!atlas.take_overflowed());
+        // The next frame can start over.
+        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.take_overflowed());
     }
 
     #[test]

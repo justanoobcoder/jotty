@@ -124,6 +124,10 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const READ_BUDGET: usize = 1 << 20;
 /// The most clipboard data pasted; a client that keeps sending gets dropped.
 const MAX_PASTE: usize = 64 << 20;
+/// How long to wait after a frame failed to draw, and how many failures in a
+/// row close the window.
+const DRAW_RETRY: Duration = Duration::from_millis(200);
+const MAX_DRAW_FAILURES: u32 = 50;
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
 /// The preferred text type among those a paste offer has.
@@ -181,6 +185,8 @@ pub struct App {
     /// one, with the loop source that reads it.
     bus: Option<(Bus, RegistrationToken)>,
     notifier: Notifier,
+    /// Frames in a row that failed to draw.
+    draw_failures: u32,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
     /// Present once the compositor agreed to blur behind the window.
@@ -454,6 +460,7 @@ pub fn run(
         activation,
         bus: None,
         notifier: Notifier::new(),
+        draw_failures: 0,
         text_input_manager,
         background_effect,
         blur: None,
@@ -570,6 +577,7 @@ impl App {
         let (cols, rows) = self.grid_size();
         let cell = self.renderer.cell();
         let screen = self.term.screen_mut();
+        let same_grid = (screen.cols(), screen.rows()) == (cols, rows);
         screen.set_cell_size(cell.width, cell.height);
         screen.resize(cols, rows);
         // The pixel size of the grid, from which programs work out the
@@ -584,8 +592,12 @@ impl App {
         if let Err(e) = self.pty.resize(size) {
             log::warn!("cannot resize pty: {e}");
         }
-        self.selection = None;
-        self.shift_mark = None;
+        // Compositors also configure on focus and state changes; the text
+        // only moves if the grid changes.
+        if !same_grid {
+            self.selection = None;
+            self.shift_mark = None;
+        }
         self.vi_refresh();
         self.request_redraw();
     }
@@ -776,13 +788,37 @@ impl App {
             search: search_bar.as_deref(),
         };
         match self.renderer.draw(&frame) {
-            Ok(again) => self.dirty |= again,
-            Err(e) => {
-                log::error!("{e}");
-                self.exit = true;
+            Ok(again) => {
+                self.dirty |= again;
+                self.draw_failures = 0;
             }
+            Err(e) => self.draw_failed(&e),
         }
         self.update_text_input(false);
+    }
+
+    /// A frame couldn't be drawn. That may pass (a failed allocation under
+    /// memory pressure), and closing the window kills whatever runs in it,
+    /// so it takes many failures in a row to give up.
+    fn draw_failed(&mut self, error: &str) {
+        log::error!("{error}");
+        // Nothing was committed, so no frame callback will come.
+        self.frame_pending = false;
+        self.draw_failures += 1;
+        if self.draw_failures >= MAX_DRAW_FAILURES {
+            log::error!("giving up after {MAX_DRAW_FAILURES} failed frames");
+            self.exit = true;
+            return;
+        }
+        let timer = Timer::from_duration(DRAW_RETRY);
+        let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
+            app.request_redraw();
+            TimeoutAction::Drop
+        });
+        if let Err(e) = inserted {
+            log::error!("cannot schedule a redraw: {e}");
+            self.exit = true;
+        }
     }
 
     /// The symbol `raw_code` produces without modifiers, in the active layout.
@@ -2046,14 +2082,21 @@ impl WindowHandler for App {
         configure: WindowConfigure,
         _: u32,
     ) {
+        let size_before = self.size;
         if let Some(w) = configure.new_size.0 {
             self.size.0 = w.get();
         }
         if let Some(h) = configure.new_size.1 {
             self.size.1 = h.get();
         }
+        let unchanged = self.configured && self.size == size_before;
         self.configured = true;
-        self.apply_size();
+        // Focus and state changes are configures too, with the same size.
+        if unchanged {
+            self.request_redraw();
+        } else {
+            self.apply_size();
+        }
     }
 }
 
