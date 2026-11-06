@@ -152,6 +152,9 @@ pub struct WindowConfig {
     /// Mark the window urgent (xdg-activation) when the bell rings while
     /// it isn't focused.
     pub bell_urgent: bool,
+    /// Show the desktop notifications programs ask for (OSC 9, OSC 777)
+    /// while the window isn't focused.
+    pub notifications: bool,
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
@@ -168,6 +171,7 @@ impl Default for WindowConfig {
             blur: false,
             renderer: RendererKind::Cpu,
             bell_urgent: true,
+            notifications: true,
             columns: 80,
             lines: 24,
         }

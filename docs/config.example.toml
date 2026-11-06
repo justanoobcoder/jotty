@@ -40,6 +40,9 @@ renderer = "cpu"
 # When the bell rings (BEL) while the window isn't focused, ask the
 # compositor to mark it urgent.
 bell_urgent = true
+# Show the desktop notifications programs ask for (OSC 9, OSC 777) while
+# the window isn't focused. Clicking one focuses the window.
+notifications = true
 # Initial size in cells (the compositor may override it).
 columns = 80
 lines = 24

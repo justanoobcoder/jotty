@@ -74,6 +74,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `blur` | bool | `false` | Blur what is behind the window, if the compositor supports `ext-background-effect-v1`. |
 | `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
 | `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
+| `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
 
@@ -100,6 +101,33 @@ text readable over busy wallpapers. It needs the `ext-background-effect-v1`
 protocol; without it, jotty logs a warning and stays unblurred. When
 `opacity` is 1.0, jotty marks the window opaque so the compositor can skip
 drawing what is behind it.
+
+### Notifications
+
+Programs can ask for a desktop notification with either of these escape
+sequences:
+
+| Sequence | Origin | Notification |
+| --- | --- | --- |
+| `OSC 9 ; message ST` | iTerm2 | the window title as the summary, the message as the body |
+| `OSC 777 ; notify ; title ; body ST` | rxvt-unicode | the title and the body |
+
+jotty shows them only while its window isn't focused, through the
+notification daemon (`org.freedesktop.Notifications` on the session bus).
+Clicking a notification focuses the window again, when the daemon sends an
+activation token with the click (version 1.2 of the notification
+specification); otherwise the window is only marked urgent. `OSC 9`
+followed by a number (`OSC 9 ; 4 ; …`, ConEmu's progress bar and similar)
+is not a notification and is ignored.
+
+For example, to be told when a long command finishes:
+
+```sh
+make; printf '\e]777;notify;make;finished with status %d\a' $?
+```
+
+In Claude Code, choose the `ghostty` notification channel (`/config`, then
+*Notifications*), which sends `OSC 777`; `iterm2` sends `OSC 9`.
 
 ### Renderer
 

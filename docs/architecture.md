@@ -39,6 +39,7 @@ on the CPU.
 | `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
+| `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications` | no |
 | `watch.rs` | Reload triggers: inotify on the config's directory, a SIGUSR1 self-pipe | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
@@ -69,7 +70,7 @@ stream into printable characters and control functions, and calls the
 - outputs for the application to collect: `take_responses()` (replies to
   status queries: DSR, DA, DECRQM, OSC 4/10/11/12 color queries, and
   DECRQSS for SGR, the scroll region and the cursor style), `take_title()`,
-  `take_bell()` and `take_dirty()`.
+  `take_bell()`, `take_notifications()` and `take_dirty()`.
 - colors the program changed (OSC 4/10/11/12), which the renderer applies
   over the theme, and the configured defaults that queries report.
 - tables of hyperlink targets (OSC 8) and grapheme cluster tails, which
@@ -312,6 +313,18 @@ When the bell rings while the window is unfocused, jotty requests an
 `xdg-activation` token without an input serial and activates its own
 surface with it; compositors show such a request as urgency rather than
 moving focus.
+
+Notifications (OSC 9, OSC 777) go to the notification daemon through
+`notify.rs`, a small D-Bus client: on the first notification it connects
+to the session bus (SASL `EXTERNAL`), says `Hello`, subscribes to the
+daemon's signals with `AddMatch`, and adds the socket to the event loop. It
+then sends `Notify` with a `default` action and remembers the id the reply
+carries. When that notification is clicked, the daemon sends
+`ActivationToken` and `ActionInvoked`, and jotty activates its surface with
+the token, which moves focus because the token came from the click. A
+daemon without activation tokens gets the urgency request instead. Signals
+are accepted only from the bus name that answered the `Notify` call. If the
+bus goes away, jotty connects again on the next notification.
 
 For transparency, `app.rs` also sets a whole-surface opaque region when the
 opacity is 1.0. When `window.blur` is set, it asks

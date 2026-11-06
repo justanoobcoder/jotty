@@ -26,6 +26,9 @@ An opinionated terminal emulator for Wayland, written in Rust.
 - **Every key distinct.** The kitty keyboard protocol, so programs that
   ask for it (Claude Code, Neovim, Helix, fish, yazi) can tell Shift+Enter,
   Ctrl+I and Escape apart from Enter, Tab and Alt sequences.
+- **Notifications.** Programs can raise a desktop notification with
+  `OSC 9` or `OSC 777` (Claude Code can, when a task needs you); clicking
+  it brings the window back.
 - **Vi mode.** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
 

@@ -9,6 +9,7 @@ mod ime;
 mod input;
 mod keybinds;
 mod links;
+mod notify;
 mod pty;
 mod renderer;
 mod search;

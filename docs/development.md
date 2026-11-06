@@ -101,7 +101,7 @@ The tests don't need a compositor, GPU or display:
 
 | Area | What is tested |
 | --- | --- |
-| `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, grapheme clusters, charsets, reports (DECRQM, color queries), hyperlinks, resize and reflow, scrollback view, OSC 133, and a garbage-input fuzz test |
+| `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, grapheme clusters, charsets, reports (DECRQM, color queries), hyperlinks, resize and reflow, scrollback view, OSC 133, notifications (OSC 9, OSC 777), and a garbage-input fuzz test |
 | `terminal/grid.rs` | Scrolling, history bounds, resize |
 | `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, controlling terminal, exit status |
 | `input.rs` | Key encoding in all modes, shortcuts, paste encoding |
@@ -111,6 +111,7 @@ The tests don't need a compositor, GPU or display:
 | `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, color glyphs, clipping, partial repaints and damage bands |
 | `font.rs` | Cell metrics, box drawing, mark overlays, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
 | `emoji.rs` | Which text is drawn in color, scaling, and flag ligatures in the system emoji font (skipped without one) |
+| `notify.rs` | D-Bus marshalling of `Notify`, parsing replies and signals in both byte orders, which clicks focus the window, bus addresses |
 | `watch.rs` | Noticing a config file replaced by rename, ignoring other files, parsing inotify events |
 | `links.rs`, `search.rs` | URL and hyperlink detection, trimming, wrapped lines, configured patterns; finding matches in both directions |
 | `config.rs`, `cli.rs`, `selection.rs` | Parsing, validation, selection text, words, lines, following output |

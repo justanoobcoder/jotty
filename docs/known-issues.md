@@ -70,6 +70,9 @@ nothing surprises you.
   the cursor's line when a width change reflows the text.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
+- **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and
+  `OSC 777`. Clicking a notification focuses the window only with a
+  notification daemon that sends activation tokens.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
   entries per terminal; beyond that, new ones are dropped (the text stays).
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the

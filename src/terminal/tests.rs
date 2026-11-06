@@ -1018,3 +1018,60 @@ fn screens_have_their_own_keyboard_flags() {
     t.feed(b"\x1b[>15u\x1b[?1049l");
     assert_eq!(t.screen().keyboard_flags(), 1);
 }
+
+#[test]
+fn osc_9_notification() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]9;Build done; 3 warnings\x07");
+    assert_eq!(
+        t.screen_mut().take_notifications(),
+        [Notification {
+            title: None,
+            body: "Build done; 3 warnings".into()
+        }]
+    );
+    assert!(t.screen_mut().take_notifications().is_empty());
+}
+
+#[test]
+fn osc_9_conemu_subcommands_are_not_notifications() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]9;4;1;50\x07\x1b]9;1;100\x1b\\\x1b]9;\x07");
+    assert!(t.screen_mut().take_notifications().is_empty());
+}
+
+#[test]
+fn osc_777_notification() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]777;notify;Claude Code;Done; all tests pass\x1b\\");
+    t.feed(b"\x1b]777;notify;;No title\x07\x1b]777;notify;Only title\x07");
+    assert_eq!(
+        t.screen_mut().take_notifications(),
+        [
+            Notification {
+                title: Some("Claude Code".into()),
+                body: "Done; all tests pass".into()
+            },
+            Notification {
+                title: None,
+                body: "No title".into()
+            },
+            Notification {
+                title: Some("Only title".into()),
+                body: String::new()
+            },
+        ]
+    );
+}
+
+#[test]
+fn notifications_are_bounded() {
+    let mut t = term(10, 1);
+    let long = "é".repeat(5000);
+    for _ in 0..10 {
+        t.feed(format!("\x1b]9;{long}\x07").as_bytes());
+    }
+    let n = t.screen_mut().take_notifications();
+    assert_eq!(n.len(), 4);
+    assert_eq!(n[0].body.chars().count(), 1024);
+}

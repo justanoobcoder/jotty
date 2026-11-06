@@ -288,6 +288,9 @@ pub struct Screen {
     /// Data of a DECRQSS request (`DCS $ q … ST`) being received.
     decrqss: Option<Vec<u8>>,
     bell: bool,
+    /// Desktop notifications programs asked for (OSC 9, OSC 777), oldest
+    /// first.
+    notifications: Vec<Notification>,
     dirty: bool,
     /// How many history rows the view is scrolled back.
     display_offset: usize,
@@ -361,6 +364,27 @@ impl Default for DefaultColors {
     }
 }
 
+/// A desktop notification a program asked for (OSC 9 or OSC 777).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notification {
+    /// OSC 9 has none; the window title stands in for it.
+    pub title: Option<String>,
+    pub body: String,
+}
+
+/// Notifications kept between two reads of the pty, so a flood of them
+/// can't fill the desktop.
+const MAX_PENDING_NOTIFICATIONS: usize = 4;
+/// Characters kept of a notification's title and body.
+const MAX_NOTIFICATION_TEXT: usize = 1024;
+
+fn truncate(mut s: String, max_chars: usize) -> String {
+    if let Some((i, _)) = s.char_indices().nth(max_chars) {
+        s.truncate(i);
+    }
+    s
+}
+
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
 
@@ -400,6 +424,7 @@ impl Screen {
             responses: Vec::new(),
             decrqss: None,
             bell: false,
+            notifications: Vec::new(),
             dirty: true,
             display_offset: 0,
             prompt_end: None,
@@ -559,8 +584,36 @@ impl Screen {
         }
     }
 
+    /// The title a program set (OSC 0/2), if any.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)
+    }
+
+    /// Desktop notifications asked for since the last call.
+    pub fn take_notifications(&mut self) -> Vec<Notification> {
+        std::mem::take(&mut self.notifications)
+    }
+
+    fn notify(&mut self, title: Option<&[u8]>, body: &[&[u8]]) {
+        if self.notifications.len() >= MAX_PENDING_NOTIFICATIONS {
+            return;
+        }
+        let text = |s: &[u8]| {
+            truncate(
+                String::from_utf8_lossy(s).into_owned(),
+                MAX_NOTIFICATION_TEXT,
+            )
+        };
+        let body = text(&body.join(&b';'));
+        let title = title.map(text).filter(|t| !t.is_empty());
+        if body.is_empty() && title.is_none() {
+            return;
+        }
+        self.notifications.push(Notification { title, body });
     }
 
     /// Whether anything visible changed since the last call.
@@ -1929,6 +1982,13 @@ impl Perform for Screen {
                 self.title = Some(title);
                 self.title_changed = true;
             }
+            // ConEmu uses OSC 9 ; <number> ; … for other things (9;4 is a
+            // progress bar), so a numeric first field is not a message.
+            [b"9", first, ..] if !first.is_empty() && first.iter().all(u8::is_ascii_digit) => {}
+            // iTerm2: OSC 9 ; message. The message may contain ';'.
+            [b"9", body @ ..] => self.notify(None, body),
+            // rxvt-unicode: OSC 777 ; notify ; title ; body.
+            [b"777", b"notify", title, body @ ..] => self.notify(Some(title), body),
             [b"133", kind, ..] => {
                 let (row, col) = self.cursor();
                 let mark = match kind.first() {

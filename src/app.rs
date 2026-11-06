@@ -41,7 +41,7 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
-    EventLoop, Interest, LoopHandle, Mode, PostAction,
+    EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
 };
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -78,11 +78,12 @@ use crate::ime::{ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
+use crate::notify::{self, Bus};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{MouseMode, Terminal};
+use crate::terminal::{MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
 
@@ -142,6 +143,9 @@ pub struct App {
     primary_selection_manager: Option<PrimarySelectionManagerState>,
     /// xdg-activation, to mark the window urgent when the bell rings.
     activation: Option<ActivationState>,
+    /// The session bus, for desktop notifications; connected on the first
+    /// one, with the loop source that reads it.
+    bus: Option<(Bus, RegistrationToken)>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
     /// Present once the compositor agreed to blur behind the window.
@@ -413,6 +417,7 @@ pub fn run(
         data_device_manager,
         primary_selection_manager,
         activation,
+        bus: None,
         text_input_manager,
         background_effect,
         blur: None,
@@ -593,6 +598,7 @@ impl App {
         let responses = screen.take_responses();
         let title = screen.take_title();
         let bell = screen.take_bell();
+        let notifications = screen.take_notifications();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {
             self.send(&responses);
@@ -602,6 +608,9 @@ impl App {
         }
         if bell {
             self.ring_bell();
+        }
+        for notification in notifications {
+            self.show_notification(notification);
         }
         if dirty {
             if self.hovered_link.is_some() {
@@ -1636,6 +1645,10 @@ impl App {
         if self.focused || !self.config.window.bell_urgent {
             return;
         }
+        self.request_attention();
+    }
+
+    fn request_attention(&mut self) {
         if let Some(activation) = &self.activation {
             activation.request_token(
                 &self.qh,
@@ -1646,6 +1659,87 @@ impl App {
                     udata: (),
                 },
             );
+        }
+    }
+
+    /// Shows a desktop notification, if the window isn't focused. Clicking
+    /// it focuses the window.
+    fn show_notification(&mut self, notification: Notification) {
+        if self.focused || !self.config.window.notifications {
+            return;
+        }
+        if self.bus.is_none() {
+            self.connect_bus();
+        }
+        let Some((bus, _)) = &mut self.bus else {
+            return;
+        };
+        let title = notification
+            .title
+            .as_deref()
+            .or(self.term.screen().title())
+            .unwrap_or(&self.config.window.title);
+        if let Err(e) = bus.notify(&self.config.window.app_id, title, &notification.body) {
+            log::warn!("cannot show a notification: {e}");
+            self.disconnect_bus();
+        }
+    }
+
+    fn connect_bus(&mut self) {
+        let bus = match Bus::connect() {
+            Ok(bus) => bus,
+            Err(e) => {
+                log::warn!("cannot connect to the session bus for notifications: {e}");
+                return;
+            }
+        };
+        let socket = match bus.socket() {
+            Ok(socket) => socket,
+            Err(e) => {
+                log::warn!("cannot watch the session bus: {e}");
+                return;
+            }
+        };
+        let source = Generic::new(socket, Interest::READ, Mode::Level);
+        match self.loop_handle.insert_source(source, |_, _, app| {
+            app.read_bus();
+            Ok(PostAction::Continue)
+        }) {
+            Ok(token) => self.bus = Some((bus, token)),
+            Err(e) => log::warn!("cannot watch the session bus: {e}"),
+        }
+    }
+
+    fn disconnect_bus(&mut self) {
+        if let Some((_, token)) = self.bus.take() {
+            self.loop_handle.remove(token);
+        }
+    }
+
+    fn read_bus(&mut self) {
+        let Some((bus, _)) = &mut self.bus else {
+            return;
+        };
+        let events = match bus.read() {
+            Ok(events) => events,
+            Err(e) => {
+                // Connected again on the next notification.
+                log::info!("lost the session bus: {e}");
+                self.disconnect_bus();
+                return;
+            }
+        };
+        for event in events {
+            match event {
+                notify::Event::Activate(Some(token)) => {
+                    if let Some(activation) = &self.activation {
+                        activation.activate::<App>(self.window.wl_surface(), token);
+                    }
+                }
+                // A daemon without activation tokens: only urgency is
+                // possible.
+                notify::Event::Activate(None) => self.request_attention(),
+            }
         }
     }
 
