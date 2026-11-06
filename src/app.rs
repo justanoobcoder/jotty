@@ -6,7 +6,10 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
@@ -123,8 +126,12 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
+/// How long the child gets to exit after hanging up, for its exit status.
+const CHILD_EXIT_WAIT: Duration = Duration::from_millis(100);
 /// The most clipboard data pasted; a client that keeps sending gets dropped.
 const MAX_PASTE: usize = 64 << 20;
+/// How long a client asking for the selection may take nothing.
+const SELECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait after a frame failed to draw, and how many failures in a
 /// row close the window.
 const DRAW_RETRY: Duration = Duration::from_millis(200);
@@ -137,6 +144,20 @@ fn paste_mime(offered: &[String]) -> Option<String> {
         .iter()
         .find(|m| offered.iter().any(|o| o == *m))
         .map(|m| m.to_string())
+}
+
+/// Parts of a scroll step not used yet, per direction: a touchpad's diagonal
+/// movement must not add up to a step in either.
+#[derive(Default)]
+struct Accumulated {
+    vertical: f64,
+    horizontal: f64,
+}
+
+#[derive(Clone, Copy)]
+enum Axis {
+    Vertical,
+    Horizontal,
 }
 
 /// How long to wait after failing to reach the session bus before trying
@@ -217,8 +238,11 @@ pub struct App {
     /// A frame callback is outstanding; drawing waits for it.
     frame_pending: bool,
     /// When the program started a synchronized update that is still open.
-    sync_since: Option<Instant>,
+    /// Which one, by its number, and whether it has taken too long.
+    sync_hold: Option<(u64, bool)>,
     exit: bool,
+    /// The child's side of the pty is gone.
+    pty_closed: bool,
 
     keyboard: Option<wl_keyboard::WlKeyboard>,
     modifiers: Modifiers,
@@ -231,9 +255,9 @@ pub struct App {
     last_serial: u32,
     pointer: Option<ThemedPointer>,
     pointer_pos: (f64, f64),
-    scroll_accum: f64,
+    scroll_accum: Accumulated,
     /// Button held down while reporting to the program, if any.
-    mouse_button: Option<MouseButton>,
+    held_buttons: Vec<MouseButton>,
     /// Cell of the last reported pointer event, to report motion once per cell.
     mouse_cell: Option<(usize, usize)>,
     selection: Option<Selection>,
@@ -251,6 +275,8 @@ pub struct App {
     links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
+    /// When a link was last clicked.
+    last_link_click: Option<u32>,
     pointer_inside: bool,
     conn: Connection,
     /// A cell marked by Shift+click; the next Shift+click selects from it.
@@ -282,7 +308,7 @@ pub fn run(
     config: Config,
     config_path: Option<PathBuf>,
     command: Option<Vec<OsString>>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<u8, Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
     let (globals, event_queue) = registry_queue_init::<App>(&conn)?;
@@ -480,8 +506,9 @@ pub fn run(
         configured: false,
         dirty: true,
         frame_pending: false,
-        sync_since: None,
+        sync_hold: None,
         exit: false,
+        pty_closed: false,
         keyboard: None,
         modifiers: Modifiers::default(),
         keymap: None,
@@ -490,8 +517,8 @@ pub fn run(
         last_serial: 0,
         pointer: None,
         pointer_pos: (0.0, 0.0),
-        scroll_accum: 0.0,
-        mouse_button: None,
+        scroll_accum: Accumulated::default(),
+        held_buttons: Vec::new(),
         mouse_cell: None,
         selection: None,
         selecting: false,
@@ -502,6 +529,7 @@ pub fn run(
         reload_pending: false,
         links,
         hovered_link: None,
+        last_link_click: None,
         pointer_inside: false,
         conn: conn.clone(),
         last_click: None,
@@ -528,13 +556,42 @@ pub fn run(
     while !app.exit {
         event_loop.dispatch(None, &mut app)?;
     }
-    if let Ok(Some(status)) = app.pty.try_wait() {
+    let status = app.child_status();
+    if let Some(status) = status {
         log::info!("child exited: {status}");
     }
-    Ok(())
+    Ok(status.map_or(0, exit_code))
+}
+
+/// The exit code that reports how the child ended, as a shell would.
+fn exit_code(status: ExitStatus) -> u8 {
+    match (status.code(), status.signal()) {
+        (Some(code), _) => code as u8,
+        (None, Some(signal)) => 128u8.wrapping_add(signal as u8),
+        (None, None) => 1,
+    }
 }
 
 impl App {
+    /// How the child ended, if it did. When it hung up the pty it is about
+    /// to exit, so that gets a moment.
+    fn child_status(&mut self) -> Option<ExitStatus> {
+        let deadline = Instant::now() + CHILD_EXIT_WAIT;
+        loop {
+            match self.pty.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) if self.pty_closed && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(None) => return None,
+                Err(e) => {
+                    log::debug!("cannot get the child's exit status: {e}");
+                    return None;
+                }
+            }
+        }
+    }
+
     fn physical_size(&self) -> (u32, u32) {
         let scaled = |v: u32| (f64::from(v) * self.scale).round() as u32;
         (scaled(self.size.0), scaled(self.size.1))
@@ -624,6 +681,7 @@ impl App {
             match self.pty.read(&mut buf) {
                 Ok(0) => {
                     self.exit = true;
+                    self.pty_closed = true;
                     break;
                 }
                 Ok(n) => {
@@ -636,6 +694,7 @@ impl App {
                     // EIO: every process holding the pty has exited.
                     log::debug!("pty closed: {e}");
                     self.exit = true;
+                    self.pty_closed = true;
                     break;
                 }
             }
@@ -684,6 +743,13 @@ impl App {
                     vi.scroll(delta, screen);
                 } else {
                     vi.move_to(vi.cursor, screen);
+                }
+            }
+            if let Some(search) = &mut self.search {
+                search.origin.line -= delta;
+                if let Some((start, end)) = &mut search.found {
+                    start.line -= delta;
+                    end.line -= delta;
                 }
             }
             if let Some(mark) = &mut self.shift_mark {
@@ -744,24 +810,35 @@ impl App {
     /// Whether drawing waits for the program to finish a synchronized
     /// update. A timer redraws anyway after `SYNC_TIMEOUT`.
     fn holding_for_sync(&mut self) -> bool {
-        if !self.term.screen().modes.synchronized {
-            self.sync_since = None;
+        let screen = self.term.screen();
+        if !screen.modes.synchronized {
+            self.sync_hold = None;
             return false;
         }
-        let since = *self.sync_since.get_or_insert_with(|| {
-            let timer = Timer::from_duration(SYNC_TIMEOUT);
-            let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
+        // By number: an update can end and another begin within one read.
+        let update = screen.synchronized_updates();
+        match self.sync_hold {
+            Some((held, expired)) if held == update => return !expired,
+            _ => self.sync_hold = Some((update, false)),
+        }
+        let timer = Timer::from_duration(SYNC_TIMEOUT);
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, app| {
+            if let Some((held, expired)) = &mut app.sync_hold
+                && *held == update
+            {
+                *expired = true;
                 if app.dirty {
                     app.request_redraw();
                 }
-                TimeoutAction::Drop
-            });
-            if let Err(e) = inserted {
-                log::warn!("cannot start the synchronized-output timer: {e}");
             }
-            Instant::now()
+            TimeoutAction::Drop
         });
-        since.elapsed() < SYNC_TIMEOUT
+        if let Err(e) = inserted {
+            // Without a timer, nothing would ever end the hold.
+            log::warn!("cannot start the synchronized-output timer: {e}");
+            return false;
+        }
+        true
     }
 
     fn draw(&mut self) {
@@ -1164,7 +1241,11 @@ impl App {
             .and_then(|r| r.cells.get(p.col))
             .is_some_and(|c| c.flags.contains(crate::terminal::Flags::WIDE_SPACER));
         Point {
-            col: if spacer { p.col - 1 } else { p.col },
+            col: if spacer {
+                p.col.saturating_sub(1)
+            } else {
+                p.col
+            },
             ..p
         }
     }
@@ -1343,7 +1424,12 @@ impl App {
                     self.renderer.set_fonts(fonts);
                     relayout = true;
                 }
-                Err(e) => log::error!("{e}; keeping the current font"),
+                Err(e) => {
+                    log::error!("{e}; keeping the current font");
+                    // So that saving the file again tries again.
+                    self.config.font.family = old.font.family.clone();
+                    self.config.font.fallback = old.font.fallback.clone();
+                }
             }
         }
         if old.font.size != new.font.size {
@@ -1490,18 +1576,27 @@ impl App {
     fn scroll_steps(
         &mut self,
         axis: &smithay_client_toolkit::seat::pointer::AxisScroll,
+        direction: Axis,
         per_notch: f64,
     ) -> isize {
         let cell_height = f64::from(self.renderer.cell().height) / self.scale;
-        self.scroll_accum += if axis.value120 != 0 {
+        let accum = match direction {
+            Axis::Vertical => &mut self.scroll_accum.vertical,
+            Axis::Horizontal => &mut self.scroll_accum.horizontal,
+        };
+        // The finger left the touchpad; a part of a step doesn't carry over.
+        if axis.stop {
+            *accum = 0.0;
+        }
+        *accum += if axis.value120 != 0 {
             f64::from(axis.value120) / 120.0 * per_notch
         } else if axis.discrete != 0 {
             f64::from(axis.discrete) * per_notch
         } else {
             axis.absolute / cell_height
         };
-        let steps = self.scroll_accum.trunc();
-        self.scroll_accum -= steps;
+        let steps = accum.trunc();
+        *accum -= steps;
         steps as isize
     }
 
@@ -1531,9 +1626,9 @@ impl App {
         horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
     ) -> bool {
         let mut bound = false;
-        for (axis, back, forward) in [
-            (vertical, Wheel::Up, Wheel::Down),
-            (horizontal, Wheel::Left, Wheel::Right),
+        for (axis, direction_of_axis, back, forward) in [
+            (vertical, Axis::Vertical, Wheel::Up, Wheel::Down),
+            (horizontal, Axis::Horizontal, Wheel::Left, Wheel::Right),
         ] {
             let direction = axis.value120.signum() + axis.discrete.signum();
             let wheel = match (direction, axis.absolute) {
@@ -1547,7 +1642,10 @@ impl App {
                 continue;
             };
             bound = true;
-            for _ in 0..self.scroll_steps(axis, 1.0).unsigned_abs() {
+            for _ in 0..self
+                .scroll_steps(axis, direction_of_axis, 1.0)
+                .unsigned_abs()
+            {
                 self.run_action(action);
             }
         }
@@ -1561,14 +1659,24 @@ impl App {
         horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
         pos: (f64, f64),
     ) {
-        for (axis, back, forward) in [
-            (vertical, MouseButton::WheelUp, MouseButton::WheelDown),
-            (horizontal, MouseButton::WheelLeft, MouseButton::WheelRight),
+        for (axis, direction, back, forward) in [
+            (
+                vertical,
+                Axis::Vertical,
+                MouseButton::WheelUp,
+                MouseButton::WheelDown,
+            ),
+            (
+                horizontal,
+                Axis::Horizontal,
+                MouseButton::WheelLeft,
+                MouseButton::WheelRight,
+            ),
         ] {
             if axis.is_none() {
                 continue;
             }
-            let steps = self.scroll_steps(axis, 1.0);
+            let steps = self.scroll_steps(axis, direction, 1.0);
             let button = if steps < 0 { back } else { forward };
             for _ in 0..steps.unsigned_abs() {
                 self.mouse_cell = None;
@@ -1578,7 +1686,7 @@ impl App {
     }
 
     fn scroll(&mut self, axis: &smithay_client_toolkit::seat::pointer::AxisScroll) {
-        let lines = self.scroll_steps(axis, 3.0);
+        let lines = self.scroll_steps(axis, Axis::Vertical, 3.0);
         if lines == 0 {
             return;
         }
@@ -1958,6 +2066,9 @@ impl App {
                 let bytes = self.ime.done();
                 if self.search.is_some() {
                     self.search_type(&String::from_utf8_lossy(&bytes));
+                } else if self.vi.is_some() {
+                    // Vi mode takes keys, not text, and the program isn't
+                    // the one being typed to.
                 } else if !bytes.is_empty() {
                     self.ime_caused_change = true;
                     self.scroll_to_bottom();
@@ -2174,6 +2285,10 @@ impl SeatHandler for App {
                 if let Some(keyboard) = self.keyboard.take() {
                     keyboard.release();
                 }
+                // No leave event comes for a keyboard that went away.
+                self.focused = false;
+                self.modifiers = Modifiers::default();
+                self.sent_keys.clear();
             }
             Capability::Pointer => {
                 if let Some(pointer) = self.pointer.take() {
@@ -2326,9 +2441,8 @@ impl PointerHandler for App {
                     self.pointer_inside = false;
                     self.update_hovered_link();
                 }
-                PointerEventKind::Motion { .. } if self.reporting_mouse() => {
-                    self.report_mouse(MouseAction::Motion(self.mouse_button), event.position);
-                }
+                // A drag that started as a selection stays one, even if
+                // Shift goes up on the way.
                 PointerEventKind::Motion { .. } if self.selecting => {
                     let point = self.point_at(event.position);
                     if let Some(selection) = &mut self.selection {
@@ -2336,22 +2450,27 @@ impl PointerHandler for App {
                         self.request_redraw();
                     }
                 }
+                PointerEventKind::Motion { .. } if self.reporting_mouse() => {
+                    let held = self.held_buttons.last().copied();
+                    self.report_mouse(MouseAction::Motion(held), event.position);
+                }
                 PointerEventKind::Press { button, serial, .. }
                     if self.reporting_mouse() && mouse_button(*button).is_some() =>
                 {
                     self.last_serial = *serial;
                     let button = mouse_button(*button).unwrap();
-                    self.mouse_button = Some(button);
+                    self.held_buttons.retain(|&held| held != button);
+                    self.held_buttons.push(button);
                     self.mouse_cell = None;
                     self.report_mouse(MouseAction::Press(button), event.position);
                 }
                 // A release always follows a reported press, even if Shift
                 // went down in between.
                 PointerEventKind::Release { button, .. }
-                    if self.mouse_button.is_some()
-                        && self.mouse_button == mouse_button(*button) =>
+                    if mouse_button(*button).is_some_and(|b| self.held_buttons.contains(&b)) =>
                 {
-                    self.mouse_button = None;
+                    self.held_buttons
+                        .retain(|&held| Some(held) != mouse_button(*button));
                     self.mouse_cell = None;
                     self.report_mouse(
                         MouseAction::Release(mouse_button(*button).unwrap()),
@@ -2366,10 +2485,15 @@ impl PointerHandler for App {
                 PointerEventKind::Press {
                     button: BTN_LEFT,
                     serial,
-                    ..
+                    time,
                 } if self.hovered_link.is_some() => {
                     self.last_serial = *serial;
-                    if let Some(link) = &self.hovered_link {
+                    // A double click opens it once.
+                    let again = self
+                        .last_link_click
+                        .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
+                    self.last_link_click = Some(*time);
+                    if !again && let Some(link) = &self.hovered_link {
                         self.open_link(link);
                     }
                 }
@@ -2617,10 +2741,57 @@ impl PrimarySelectionSourceHandler for App {
 /// blocking the event loop.
 fn write_in_background(mut pipe: WritePipe, text: String) {
     std::thread::spawn(move || {
-        if let Err(e) = pipe.write_all(text.as_bytes()) {
+        if let Err(e) = write_with_timeout(&mut pipe, text.as_bytes(), SELECTION_WRITE_TIMEOUT) {
             log::debug!("selection write: {e}");
         }
     });
+}
+
+/// Writes all of `data`, giving up once the reader has taken nothing for
+/// `timeout`: a client that asks for the selection and never reads must not
+/// keep a thread forever.
+fn write_with_timeout<W: Write + AsRawFd>(
+    pipe: &mut W,
+    mut data: &[u8],
+    timeout: Duration,
+) -> io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: `fd` is open for as long as `pipe` is borrowed; these calls
+    // read and set its status flags, and poll reads the one pollfd.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    while !data.is_empty() {
+        match pipe.write(data) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => data = &data[n..],
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+                // SAFETY: as above.
+                match unsafe { libc::poll(&mut poll, 1, millis) } {
+                    0 => return Err(io::ErrorKind::TimedOut.into()),
+                    n if n < 0 => {
+                        let e = io::Error::last_os_error();
+                        if e.kind() != io::ErrorKind::Interrupted {
+                            return Err(e);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 impl DataSourceHandler for App {
@@ -2764,3 +2935,37 @@ impl ProvidesRegistryState for App {
 
 delegate_registry!(App);
 delegate_dispatch2!(App);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reader_that_never_reads_times_the_write_out() {
+        let (_reader, mut writer) = io::pipe().unwrap();
+        let data = vec![0; 1 << 20];
+        let result = write_with_timeout(&mut writer, &data, Duration::from_millis(50));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn a_reader_that_keeps_reading_gets_everything() {
+        let (mut reader, mut writer) = io::pipe().unwrap();
+        let data = vec![7; 1 << 20];
+        let thread = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).unwrap();
+            out
+        });
+        write_with_timeout(&mut writer, &data, Duration::from_secs(10)).unwrap();
+        drop(writer);
+        assert_eq!(thread.join().unwrap(), data);
+    }
+
+    #[test]
+    fn exit_codes_follow_the_shell() {
+        assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
+        // Killed by SIGTERM.
+        assert_eq!(exit_code(ExitStatus::from_raw(15)), 143);
+    }
+}

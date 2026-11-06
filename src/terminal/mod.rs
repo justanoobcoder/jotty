@@ -301,6 +301,8 @@ pub struct Screen {
     last_printed: Option<(usize, usize)>,
     title: Option<String>,
     title_changed: bool,
+    /// How many synchronized updates (mode 2026) have begun.
+    synchronized_updates: u64,
     responses: Vec<u8>,
     /// Data of a DECRQSS request (`DCS $ q … ST`) being received.
     decrqss: Option<Vec<u8>>,
@@ -444,6 +446,7 @@ impl Screen {
             last_printed: None,
             title: None,
             title_changed: false,
+            synchronized_updates: 0,
             responses: Vec::new(),
             decrqss: None,
             bell: false,
@@ -605,6 +608,11 @@ impl Screen {
         } else {
             None
         }
+    }
+
+    /// How many synchronized updates have begun, to tell them apart.
+    pub fn synchronized_updates(&self) -> u64 {
+        self.synchronized_updates
     }
 
     /// The title a program set (OSC 0/2), if any.
@@ -1464,7 +1472,12 @@ impl Screen {
             1006 => self.modes.mouse_sgr = on,
             1004 => self.modes.focus_events = on,
             2004 => self.modes.bracketed_paste = on,
-            2026 => self.modes.synchronized = on,
+            2026 => {
+                if on && !self.modes.synchronized {
+                    self.synchronized_updates += 1;
+                }
+                self.modes.synchronized = on;
+            }
             _ => log::debug!("unhandled private mode {mode} = {on}"),
         }
         self.dirty = true;
