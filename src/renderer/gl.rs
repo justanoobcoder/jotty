@@ -85,6 +85,7 @@ impl Egl {
         height: i32,
     ) -> Result<Egl, String> {
         let api = &egl::API;
+        // SAFETY: `display_ptr` is a live `wl_display`, as this function requires.
         let display = unsafe {
             api.get_platform_display(PLATFORM_WAYLAND_KHR, display_ptr, &[egl::ATTRIB_NONE])
         }
@@ -145,6 +146,7 @@ impl Egl {
 
         let window = WlEglSurface::new(surface, width.max(1), height.max(1))
             .map_err(|e| format!("wl_egl_window: {e}"))?;
+        // SAFETY: `window` is a live `wl_egl_window` that `Egl` keeps until the surface is gone.
         let surface = unsafe {
             api.create_window_surface(display, config, window.ptr() as egl::NativeWindowType, None)
         }
@@ -196,6 +198,7 @@ pub struct Renderer {
 }
 
 unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader, String> {
+    // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
         let shader = gl.create_shader(kind)?;
         gl.shader_source(shader, source);
@@ -217,6 +220,7 @@ unsafe fn create_texture(
     format: u32,
     size: u32,
 ) -> Result<glow::Texture, String> {
+    // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
         let texture = gl.create_texture()?;
         gl.active_texture(unit);
@@ -250,6 +254,8 @@ unsafe fn upload_image(
     gl: &glow::Context,
     image: &crate::terminal::graphics::Image,
 ) -> Result<glow::Texture, String> {
+    // SAFETY: the caller's GL context is current; `image.pixels` holds width × height RGBA
+    // pixels, which `decode` checked.
     unsafe {
         let texture = gl.create_texture()?;
         gl.active_texture(glow::TEXTURE2);
@@ -288,7 +294,9 @@ impl Renderer {
         fonts: Fonts,
         theme: Theme,
     ) -> Result<Renderer, String> {
+        // SAFETY: this function's caller promises what `Egl::new` requires.
         let egl = unsafe { Egl::new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
+        // SAFETY: the context `egl` made is current, so its loader returns its functions.
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
                 egl.api
@@ -296,10 +304,12 @@ impl Renderer {
                     .map_or(std::ptr::null(), |f| f as *const c_void)
             })
         };
+        // SAFETY: the context is current, and GL_VERSION is always a valid query.
         log::info!("OpenGL: {}", unsafe {
             gl.get_parameter_string(glow::VERSION)
         });
 
+        // SAFETY: the context is current; everything used is created in this block.
         unsafe {
             let program = gl.create_program()?;
             let vs = compile(&gl, glow::VERTEX_SHADER, VERTEX_SHADER)?;
@@ -394,6 +404,7 @@ impl Renderer {
         let theme = self.theme.effective(frame.screen);
         let gl = &self.gl;
         let (texture, color_texture) = (self.texture, self.color_texture);
+        // SAFETY: the context is current; `store` gets positions inside the atlas textures.
         let upload = |x: u32, y: u32, glyph: &Glyph| unsafe {
             let (unit, texture, format) = if glyph.color {
                 (glow::TEXTURE1, color_texture, glow::RGBA)
@@ -426,6 +437,7 @@ impl Renderer {
         self.images.retain(|uid, texture| {
             let live = screen.image(*uid).is_some();
             if !live {
+                // SAFETY: the context is current, and this texture isn't used after this.
                 unsafe { gl.delete_texture(*texture) };
             }
             live
@@ -449,6 +461,7 @@ impl Renderer {
                 );
                 continue;
             }
+            // SAFETY: the context is current, and `image` is checked against the size limit.
             match unsafe { upload_image(gl, image) } {
                 Ok(texture) => {
                     self.images.insert(uid, texture);
@@ -460,6 +473,8 @@ impl Renderer {
         let (w, h) = self.size;
         let [r, g, b] = theme.background.to_f32();
         let a = theme.opacity;
+        // SAFETY: the context is current; every object used was made by `new` and lives as long as
+        // the renderer, and the vertex slice outlives the upload.
         unsafe {
             gl.viewport(0, 0, w as i32, h as i32);
             gl.clear_color(r * a, g * a, b * a, a);
@@ -506,6 +521,7 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        // SAFETY: the context is current, and the quads drawn were uploaded above.
         unsafe {
             self.gl.delete_texture(self.texture);
             self.gl.delete_texture(self.color_texture);

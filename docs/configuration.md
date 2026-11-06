@@ -120,6 +120,9 @@ specification); otherwise the window is only marked urgent. `OSC 9`
 followed by a number (`OSC 9 ; 4 ; …`, ConEmu's progress bar and similar)
 is not a notification and is ignored.
 
+A program can show 4 notifications at once, then one every 2 seconds; more are
+dropped.
+
 For example, to be told when a long command finishes:
 
 ```sh

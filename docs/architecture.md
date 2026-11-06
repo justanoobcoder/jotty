@@ -39,7 +39,7 @@ on the CPU.
 | `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
-| `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications` | no |
+| `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications`. It connects on a thread of its own; once connected it is non-blocking, with a bounded write queue | no |
 | `watch.rs` | Reload triggers: inotify on the config's directory, a SIGUSR1 self-pipe | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
