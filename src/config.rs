@@ -160,6 +160,13 @@ pub struct WindowConfig {
     pub lines: u16,
 }
 
+/// The most columns and lines a window asks for, the padding around them,
+/// and the longest history: past these, the sizes that follow from them
+/// overflow or take more memory than any machine has.
+const MAX_GRID: u16 = 2000;
+const MAX_PADDING: u32 = 1000;
+const MAX_SCROLLBACK: usize = 10_000_000;
+
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
@@ -362,11 +369,16 @@ impl Config {
 
     /// Clamps values that would otherwise break rendering.
     fn sanitize(&mut self) {
-        self.font.size = self.font.size.clamp(4.0, 200.0);
-        self.font.size_step = self.font.size_step.clamp(0.1, 10.0);
-        self.window.opacity = self.window.opacity.clamp(0.0, 1.0);
-        self.window.columns = self.window.columns.max(2);
-        self.window.lines = self.window.lines.max(1);
+        // `clamp` keeps NaN, which TOML can spell.
+        let finite = |value: f32, default: f32| if value.is_finite() { value } else { default };
+        let (font, window) = (FontConfig::default(), WindowConfig::default());
+        self.font.size = finite(self.font.size, font.size).clamp(4.0, 200.0);
+        self.font.size_step = finite(self.font.size_step, font.size_step).clamp(0.1, 10.0);
+        self.window.opacity = finite(self.window.opacity, window.opacity).clamp(0.0, 1.0);
+        self.window.columns = self.window.columns.clamp(2, MAX_GRID);
+        self.window.lines = self.window.lines.clamp(1, MAX_GRID);
+        self.window.padding = self.window.padding.min(MAX_PADDING);
+        self.terminal.scrollback = self.terminal.scrollback.min(MAX_SCROLLBACK);
     }
 }
 
@@ -385,6 +397,40 @@ mod tests {
     #[test]
     fn empty_file_is_default() {
         assert_eq!(Config::parse("").unwrap(), Config::default());
+    }
+
+    #[test]
+    fn nonsense_numbers_are_replaced_or_limited() {
+        let config = Config::parse(
+            r#"
+            [font]
+            size = nan
+            size_step = inf
+            [window]
+            opacity = nan
+            columns = 65535
+            lines = 65535
+            padding = 4294967295
+            [terminal]
+            scrollback = 9007199254740993
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.font.size, FontConfig::default().size);
+        assert_eq!(config.font.size_step, FontConfig::default().size_step);
+        assert_eq!(config.window.opacity, 1.0);
+        assert_eq!(config.window.columns, MAX_GRID);
+        assert_eq!(config.window.lines, MAX_GRID);
+        assert_eq!(config.window.padding, MAX_PADDING);
+        assert_eq!(config.terminal.scrollback, MAX_SCROLLBACK);
+        // The largest window these allow fits the arithmetic that sizes it.
+        let cell = 200u32 * 2;
+        assert!(
+            u32::from(MAX_GRID)
+                .checked_mul(cell)
+                .and_then(|size| size.checked_add(2 * MAX_PADDING))
+                .is_some()
+        );
     }
 
     #[test]
