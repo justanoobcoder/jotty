@@ -1143,3 +1143,92 @@ fn erased_rows_are_not_joined_by_reflow() {
     t.screen_mut().resize(20, 4);
     assert_eq!(lines(&t)[..2], ["x".to_string(), "BBBB".to_string()]);
 }
+
+#[test]
+fn cursor_report_stays_sane_when_restored_above_the_region() {
+    let mut t = term(10, 10);
+    // Saved in origin mode, then the region moves below the saved row.
+    t.feed(b"\x1b[?6h\x1b7\x1b[?6l\x1b[5;10r\x1b8\x1b[6n");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b[1;1R");
+    assert_eq!(t.screen().cursor().0, 4);
+}
+
+#[test]
+fn inserting_at_a_wide_character_moves_it_whole() {
+    let mut t = term(10, 1);
+    t.feed("a中b\x1b[1;2H\x1b[2@".as_bytes());
+    assert_eq!(cell(&t, 0, 3).c, '中');
+    assert!(cell(&t, 0, 3).flags.contains(Flags::WIDE));
+    assert!(cell(&t, 0, 4).flags.contains(Flags::WIDE_SPACER));
+    assert_eq!(cell(&t, 0, 5).c, 'b');
+}
+
+#[test]
+fn inserting_clears_a_pending_wrap() {
+    let mut t = term(3, 2);
+    t.feed(b"abc\x1b[@d");
+    assert_eq!(lines(&t), ["abd", ""]);
+    assert_eq!(t.screen().cursor().0, 0);
+}
+
+#[test]
+fn a_saved_pending_wrap_does_not_survive_a_resize() {
+    let mut t = term(3, 2);
+    t.feed(b"abc\x1b7");
+    t.screen_mut().resize(6, 2);
+    t.feed(b"\x1b8x");
+    assert_eq!(t.screen().cursor().0, 0);
+}
+
+#[test]
+fn decaln_homes_the_cursor_and_resets_the_margins() {
+    let mut t = term(4, 4);
+    t.feed(b"\x1b[2;3r\x1b[3;3H\x1b#8");
+    assert_eq!(t.screen().cursor(), (0, 0));
+    assert_eq!(lines(&t)[3], "EEEE");
+    t.feed(b"\x1b[4;1H\n");
+    assert_eq!(t.screen().cursor(), (3, 0));
+    assert_eq!(lines(&t)[0], "EEEE");
+}
+
+#[test]
+fn reset_keeps_replies_that_are_due() {
+    let mut t = term(4, 2);
+    t.feed(b"\x1b[5n\x1bc");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b[0n");
+}
+
+#[test]
+fn sequences_with_too_many_parameters_are_ignored() {
+    let mut t = term(10, 1);
+    let many = "0;".repeat(40);
+    t.feed(format!("\x1b[1m\x1b[{many}1;31mx").as_bytes());
+    assert!(cell(&t, 0, 0).flags.contains(Flags::BOLD));
+    assert_eq!(cell(&t, 0, 0).fg, Color::Default);
+}
+
+#[test]
+fn can_and_sub_cancel_an_apc_string() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b_Gjunk\x18ok");
+    assert_eq!(lines(&t), ["ok"]);
+    let mut t = term(10, 1);
+    t.feed(b"\x1b_Gjunk\x1aok");
+    assert_eq!(lines(&t), ["ok"]);
+}
+
+#[test]
+fn an_apc_string_ends_the_sequence_it_interrupts() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b[1\x1b_Gx\x1b\\mA");
+    assert_eq!(lines(&t), ["mA"]);
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::BOLD));
+}
+
+#[test]
+fn a_second_apc_string_cuts_the_first_short() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b_Gfirst\x1b_Gi=7,a=q,s=1,v=1,f=24;AAAA\x1b\\ok");
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
+}

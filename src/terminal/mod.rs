@@ -70,16 +70,16 @@ impl Terminal {
                         self.apc = Apc::Escape;
                         return;
                     }
-                    self.apc = Apc::Body(Some(Vec::new()));
+                    self.begin_apc();
                     bytes = &bytes[i + 2..];
                 }
                 Apc::Escape if first == b'_' => {
-                    self.apc = Apc::Body(Some(Vec::new()));
+                    self.begin_apc();
                     bytes = &bytes[1..];
                 }
                 Apc::Escape => self.parser.advance(&mut self.screen, b"\x1b"),
                 Apc::Body(mut body) => {
-                    let end = bytes.iter().position(|&b| b == 0x1b);
+                    let end = bytes.iter().position(|&b| matches!(b, 0x1b | 0x18 | 0x1a));
                     let part = &bytes[..end.unwrap_or(bytes.len())];
                     if body
                         .as_ref()
@@ -92,6 +92,8 @@ impl Terminal {
                         body.extend_from_slice(part);
                     }
                     match end {
+                        // CAN and SUB cancel the string.
+                        Some(i) if bytes[i] != 0x1b => bytes = &bytes[i + 1..],
                         Some(i) => {
                             self.apc = Apc::BodyEscape(body);
                             bytes = &bytes[i + 1..];
@@ -108,10 +110,22 @@ impl Terminal {
                     }
                     bytes = &bytes[1..];
                 }
+                // Another string starts, cutting this one short.
+                Apc::BodyEscape(_) if first == b'_' => {
+                    self.begin_apc();
+                    bytes = &bytes[1..];
+                }
                 // Another escape sequence cuts the string short.
                 Apc::BodyEscape(_) => self.parser.advance(&mut self.screen, b"\x1b"),
             }
         }
+    }
+
+    /// Enters an APC string. Its `ESC` also ends whatever sequence the
+    /// parser was in, which never gets to see it otherwise.
+    fn begin_apc(&mut self) {
+        self.parser.advance(&mut self.screen, b"\x1b\x18");
+        self.apc = Apc::Body(Some(Vec::new()));
     }
 
     pub fn screen(&self) -> &Screen {
@@ -949,6 +963,7 @@ impl Screen {
         for saved in self.saved.iter_mut().flatten() {
             saved.cursor.row = saved.cursor.row.min(rows - 1);
             saved.cursor.col = saved.cursor.col.min(cols - 1);
+            saved.cursor.pending_wrap = false;
         }
         self.scroll_top = 0;
         self.scroll_bottom = rows - 1;
@@ -1169,7 +1184,14 @@ impl Screen {
     fn insert_blanks(&mut self, n: usize) {
         let (row, col) = (self.cursor.row, self.cursor.col.min(self.cols - 1));
         let n = n.min(self.cols - col);
-        self.split_wide(row, col);
+        // A wide character at `col` moves whole; one the insertion lands in
+        // the middle of can't.
+        if self.grid().rows[row].cells[col]
+            .flags
+            .contains(Flags::WIDE_SPACER)
+        {
+            self.split_wide(row, col);
+        }
         let blank = Cell::blank(&self.cursor.template);
         let cols = self.cols;
         let cells = &mut self.grid_mut().rows[row].cells;
@@ -1178,6 +1200,7 @@ impl Screen {
         if cells[cols - 1].flags.contains(Flags::WIDE) {
             cells[cols - 1] = blank;
         }
+        self.cursor.pending_wrap = false;
         self.dirty = true;
     }
 
@@ -1339,7 +1362,12 @@ impl Screen {
             Some(saved) => {
                 self.cursor = saved.cursor;
                 self.modes.origin = saved.origin;
-                self.cursor.row = self.cursor.row.min(self.rows - 1);
+                self.cursor.row = if saved.origin {
+                    // The region may have changed since the cursor was saved.
+                    self.cursor.row.clamp(self.scroll_top, self.scroll_bottom)
+                } else {
+                    self.cursor.row.min(self.rows - 1)
+                };
                 self.cursor.col = self.cursor.col.min(self.cols - 1);
             }
             None => {
@@ -1509,9 +1537,20 @@ impl Screen {
         let scrollback = self.primary.max_history;
         let default_colors = self.default_colors.clone();
         let (width, height) = self.cell_size;
+        // Replies and notifications from before the reset are still due,
+        // and the window keeps its title.
+        let responses = std::mem::take(&mut self.responses);
+        let notifications = std::mem::take(&mut self.notifications);
+        let (title, title_changed) = (self.title.take(), self.title_changed);
+        let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);
         self.set_default_colors(default_colors);
         self.set_cell_size(width, height);
+        self.responses = responses;
+        self.notifications = notifications;
+        self.title = title;
+        self.title_changed = title_changed;
+        self.bell = bell;
     }
 
     /// The current attributes as SGR parameters, for DECRQSS replies.
@@ -1735,7 +1774,12 @@ impl Perform for Screen {
         self.dirty = true;
     }
 
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        // Too many parameters or intermediates: acting on what's left would
+        // do something the program didn't ask for.
+        if ignore {
+            return;
+        }
         self.last_printed = None;
         self.cluster_start = None;
         let args: Vec<u16> = params.iter().map(|p| p[0]).collect();
@@ -1837,7 +1881,7 @@ impl Perform for Screen {
                         0
                     };
                     let (row, col) = self.cursor();
-                    let report = format!("\x1b[{};{}R", row - top + 1, col + 1);
+                    let report = format!("\x1b[{};{}R", row.saturating_sub(top) + 1, col + 1);
                     self.responses.extend_from_slice(report.as_bytes());
                 }
                 _ => {}
@@ -1898,7 +1942,10 @@ impl Perform for Screen {
         self.dirty = true;
     }
 
-    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        if ignore {
+            return;
+        }
         self.last_printed = None;
         self.cluster_start = None;
         match (intermediates, byte) {
@@ -1919,6 +1966,7 @@ impl Perform for Screen {
             ([], b'>') => self.modes.app_keypad = false,
             ([b'#'], b'8') => {
                 for row in &mut self.grid_mut().rows {
+                    row.wrapped = false;
                     for cell in &mut row.cells {
                         *cell = Cell {
                             c: 'E',
@@ -1926,6 +1974,13 @@ impl Perform for Screen {
                         };
                     }
                 }
+                // DECALN also resets the margins and homes the cursor.
+                self.scroll_top = 0;
+                self.scroll_bottom = self.rows - 1;
+                self.modes.origin = false;
+                self.cursor.row = 0;
+                self.cursor.col = 0;
+                self.cursor.pending_wrap = false;
             }
             ([slot @ (b'(' | b')')], set) => {
                 let charset = match set {
@@ -1943,7 +1998,10 @@ impl Perform for Screen {
         self.dirty = true;
     }
 
-    fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+    fn hook(&mut self, _params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        if ignore {
+            return;
+        }
         self.last_printed = None;
         self.cluster_start = None;
         if intermediates == b"$" && action == 'q' {
