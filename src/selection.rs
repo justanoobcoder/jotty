@@ -99,7 +99,9 @@ pub fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
         first -= 1;
     }
     let mut last = at.line;
-    while screen.row_at(last).is_some_and(|r| r.wrapped) {
+    // The last row can be marked as wrapped: what it wraps into isn't there
+    // yet.
+    while screen.row_at(last).is_some_and(|r| r.wrapped) && screen.row_at(last + 1).is_some() {
         last += 1;
     }
     let end = screen
@@ -500,6 +502,16 @@ mod tests {
         let before = s.live_rows(t.screen());
         t.feed(b"a\r\nb\r\nc\r\n");
         assert!(!s.follow_output(t.screen(), &before, 3));
+    }
+
+    #[test]
+    fn a_line_never_extends_past_the_screen() {
+        let mut t = Terminal::new(3, 2, 0);
+        t.feed(b"abcdef");
+        // The bottom row is full and marked as wrapped by the next print.
+        t.feed(b"g");
+        let (_, end) = line_bounds(t.screen(), p(0, 0));
+        assert!(t.screen().row_at(end.line).is_some());
     }
 
     #[test]

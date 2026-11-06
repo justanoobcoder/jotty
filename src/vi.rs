@@ -93,6 +93,8 @@ impl ViMode {
         if let Some((_, anchor)) = &mut self.visual {
             anchor.line = (anchor.line - lines).max(top);
         }
+        // The line it is on now may be shorter.
+        self.clamp(screen);
     }
 
     /// Moves the cursor to `p` (a search match), within bounds.
@@ -190,9 +192,11 @@ impl ViMode {
 
     fn second_key(&mut self, screen: &Screen, first: char, key: Key, count: usize) -> Outcome {
         match (first, key) {
+            // `gg` goes to the first line, `5gg` to the fifth.
             ('g', Key::Char('g')) => {
+                let line = top(screen).saturating_add_unsigned(count - 1);
                 self.cursor = Point {
-                    line: top(screen),
+                    line: line.min(screen.rows() as isize - 1),
                     col: 0,
                 };
                 Outcome::Done
@@ -324,6 +328,13 @@ fn prev(screen: &Screen, p: Point) -> Option<(Point, bool)> {
     }
 }
 
+/// Whether `p` is on a line with nothing on it.
+fn is_empty_line(screen: &Screen, p: Point) -> bool {
+    screen
+        .row_at(p.line)
+        .is_some_and(|row| !row.wrapped && row.cells.iter().all(|c| c.c == ' '))
+}
+
 /// Where `w`, `b`, `e` (or `W`, `B`, `E`) move from `p`. The end of a line
 /// separates words like a blank.
 fn word_motion(screen: &Screen, p: Point, motion: char) -> Point {
@@ -340,6 +351,10 @@ fn word_motion(screen: &Screen, p: Point, motion: char) -> Point {
                     return q;
                 };
                 q = n;
+                // An empty line counts as a word, as in vim.
+                if broke && is_empty_line(screen, q) {
+                    return q;
+                }
                 if in_word && (broke || class_at(q) != start) {
                     in_word = false;
                 }
@@ -374,6 +389,9 @@ fn word_motion(screen: &Screen, p: Point, motion: char) -> Point {
                 return p;
             };
             while class_at(q) == 0 {
+                if is_empty_line(screen, q) {
+                    return Point { col: 0, ..q };
+                }
                 let Some((n, _)) = prev(screen, q) else {
                     return q;
                 };
@@ -444,6 +462,35 @@ mod tests {
         assert_eq!(vi.cursor, p(-1, 13));
         press(&mut vi, &t, "0");
         assert_eq!(vi.cursor, p(-1, 0));
+    }
+
+    #[test]
+    fn gg_takes_a_count() {
+        let mut t = Terminal::new(10, 5, 0);
+        t.feed(b"a\r\nb\r\nc");
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "3gg");
+        assert_eq!(vi.cursor, p(2, 0));
+        press(&mut vi, &t, "gg");
+        assert_eq!(vi.cursor, p(0, 0));
+        press(&mut vi, &t, "99gg");
+        assert_eq!(vi.cursor, p(4, 0));
+    }
+
+    #[test]
+    fn word_motions_stop_on_empty_lines() {
+        let mut t = Terminal::new(10, 5, 0);
+        t.feed(b"one\r\n\r\ntwo");
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "gg");
+        press(&mut vi, &t, "w");
+        assert_eq!(vi.cursor, p(1, 0));
+        press(&mut vi, &t, "w");
+        assert_eq!(vi.cursor, p(2, 0));
+        press(&mut vi, &t, "b");
+        assert_eq!(vi.cursor, p(1, 0));
+        press(&mut vi, &t, "b");
+        assert_eq!(vi.cursor, p(0, 0));
     }
 
     #[test]

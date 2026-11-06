@@ -180,9 +180,23 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
     })
 }
 
+/// Whether a target can be given to a launcher as its argument. Programs can
+/// set a hyperlink's target to anything, and an option isn't a place to open.
+pub fn is_openable(target: &str) -> bool {
+    !target.is_empty() && !target.starts_with('-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn targets_that_look_like_options_are_not_opened() {
+        assert!(is_openable("https://example.com"));
+        assert!(is_openable("/tmp/-file"));
+        assert!(!is_openable("--config=/tmp/evil"));
+        assert!(!is_openable(""));
+    }
     use crate::terminal::Terminal;
 
     fn p(line: isize, col: usize) -> Point {

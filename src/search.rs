@@ -1,5 +1,8 @@
 //! Searching the scrollback and the screen.
 
+use unicode_normalization::UnicodeNormalization;
+use unicode_width::UnicodeWidthChar;
+
 use crate::selection::Point;
 use crate::terminal::Screen;
 use crate::text::LineText;
@@ -69,7 +72,16 @@ pub fn find(
             c.to_lowercase().next().unwrap_or(c)
         }
     };
-    let needle: Vec<char> = query.chars().map(fold).collect();
+    // Composed, so that both forms of a letter with a mark match; marks that
+    // don't compose are ignored, as they are on screen.
+    let needle: Vec<char> = query
+        .nfc()
+        .filter(|c| c.width() != Some(0))
+        .map(fold)
+        .collect();
+    if needle.is_empty() {
+        return None;
+    }
     let before = |p: Point| p < from || (inclusive && p == from);
     let after = |p: Point| p > from || (inclusive && p == from);
 
@@ -79,7 +91,9 @@ pub fn find(
     loop {
         let text = LineText::new(screen, Point { line, col: 0 })?;
         // One character per cell: the cluster's first one.
-        let hay: Vec<char> = text.cells.iter().map(|c| fold(c.c)).collect();
+        let hay: Vec<char> = (0..text.cells.len())
+            .map(|i| fold(cell_char(&text, i)))
+            .collect();
         let mut matches = (0..=hay.len().saturating_sub(needle.len()))
             .filter(|&i| hay[i..].starts_with(&needle))
             .map(|i| (text.cells[i].point, text.cells[i + needle.len() - 1].point));
@@ -98,9 +112,43 @@ pub fn find(
     }
 }
 
+/// The character cell `i` stands for in a search: the one its cluster
+/// composes into, or else its first.
+fn cell_char(text: &LineText, i: usize) -> char {
+    let cell = &text.cells[i];
+    let end = text.cells.get(i + 1).map_or(text.text.len(), |c| c.offset);
+    let cluster = &text.text[cell.offset..end];
+    if cluster.len() == cell.c.len_utf8() {
+        return cell.c;
+    }
+    let mut composed = cluster.nfc();
+    match (composed.next(), composed.next()) {
+        (Some(c), None) => c,
+        _ => cell.c,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_forms_of_a_marked_letter_match() {
+        let mut t = crate::terminal::Terminal::new(20, 1, 0);
+        t.feed("cafe\u{301} ha\u{300} ha".as_bytes());
+        let from = Point { line: 0, col: 19 };
+        for query in ["caf\u{e9}", "cafe\u{301}", "h\u{e0}"] {
+            assert!(
+                find(t.screen(), query, from, Direction::Older, true).is_some(),
+                "{query}"
+            );
+        }
+        // The plain letter is another one.
+        let found = find(t.screen(), "ha", from, Direction::Older, true).unwrap();
+        assert_eq!(found.0.col, 8);
+        let first = Point { line: 0, col: 7 };
+        assert_eq!(find(t.screen(), "ha", first, Direction::Older, true), None);
+    }
     use crate::terminal::Terminal;
 
     fn p(line: isize, col: usize) -> Point {
