@@ -160,6 +160,8 @@ impl FromStr for KeyCombo {
         let (mod_names, key) = match s.rsplit_once('+') {
             // "ctrl++" binds the plus key.
             Some((rest, "")) if rest.ends_with('+') => (&rest[..rest.len() - 1], "+"),
+            // "+" alone too.
+            Some(("", "")) => ("", "+"),
             Some((mods, key)) => (mods, key),
             None => ("", s),
         };
@@ -262,7 +264,11 @@ impl Keybinds {
                 None => action.defaults().to_vec(),
             };
             for combo in combos {
-                bindings.push((combo.parse()?, action));
+                let parsed: KeyCombo = combo.parse()?;
+                if bindings.iter().any(|(bound, _)| *bound == parsed) {
+                    log::warn!("{combo:?} is bound twice; {name} won't get it");
+                }
+                bindings.push((parsed, action));
             }
         }
         Ok(Keybinds { bindings })
@@ -317,6 +323,21 @@ impl Keybinds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plus_alone_is_a_key() {
+        let plus: KeyCombo = "+".parse().unwrap();
+        assert_eq!(
+            plus,
+            "ctrl++"
+                .parse::<KeyCombo>()
+                .map(|c| KeyCombo {
+                    mods: Mods::default(),
+                    ..c
+                })
+                .unwrap()
+        );
+    }
 
     const NONE: Modifiers = Modifiers {
         ctrl: false,

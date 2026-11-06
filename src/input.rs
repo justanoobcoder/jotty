@@ -59,9 +59,9 @@ pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
     encode_key(key.keysym, key.text, mods, modes)
 }
 
-/// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl.
+/// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl + 8·super.
 fn modifier_param(mods: Modifiers) -> u8 {
-    1 + mods.shift as u8 + 2 * mods.alt as u8 + 4 * mods.ctrl as u8
+    1 + mods.shift as u8 + 2 * mods.alt as u8 + 4 * mods.ctrl as u8 + 8 * mods.logo as u8
 }
 
 /// `CSI 1 ; m <final>` with modifiers, otherwise `CSI <final>` or, in
@@ -127,19 +127,47 @@ pub fn encode_key(
         Keysym::F10 => tilde_key(21, mods),
         Keysym::F11 => tilde_key(23, mods),
         Keysym::F12 => tilde_key(24, mods),
+        // xterm's F13-F24 are Shift+F1-F12.
+        _ if (Keysym::F13.raw()..=Keysym::F24.raw()).contains(&keysym.raw()) => {
+            let base = Keysym::new(keysym.raw() - Keysym::F13.raw() + Keysym::F1.raw());
+            let shifted = Modifiers {
+                shift: true,
+                ..mods
+            };
+            return encode_key(base, None, shifted, modes);
+        }
+        Keysym::KP_Begin => cursor_key('E', mods, modes.app_cursor),
         Keysym::BackSpace => {
             let byte = if mods.ctrl { 0x08 } else { 0x7f };
             with_alt(mods, &[byte])
         }
-        Keysym::Tab | Keysym::ISO_Left_Tab if mods.shift => b"\x1b[Z".to_vec(),
+        Keysym::Tab | Keysym::ISO_Left_Tab if mods.shift => with_alt(mods, b"\x1b[Z"),
         Keysym::Tab | Keysym::ISO_Left_Tab => with_alt(mods, b"\t"),
         Keysym::Return => with_alt(mods, b"\r"),
         Keysym::KP_Enter if modes.app_keypad => b"\x1bOM".to_vec(),
         Keysym::KP_Enter => with_alt(mods, b"\r"),
+        // With Num Lock on, the keypad types, as in xterm.
+        _ if modes.app_keypad && !mods.num_lock && keypad_final(keysym).is_some() => {
+            let final_byte = keypad_final(keysym)?;
+            format!("\x1bO{final_byte}").into_bytes()
+        }
         Keysym::Escape => with_alt(mods, b"\x1b"),
         _ => return encode_text(keysym, text?, mods),
     };
     Some(bytes)
+}
+
+/// The final byte of a keypad operator key in application keypad mode.
+fn keypad_final(keysym: Keysym) -> Option<char> {
+    Some(match keysym {
+        Keysym::KP_Multiply => 'j',
+        Keysym::KP_Add => 'k',
+        Keysym::KP_Separator => 'l',
+        Keysym::KP_Subtract => 'm',
+        Keysym::KP_Divide => 'o',
+        Keysym::KP_Equal => 'X',
+        _ => return None,
+    })
 }
 
 fn encode_text(keysym: Keysym, text: &str, mods: Modifiers) -> Option<Vec<u8>> {
@@ -540,6 +568,45 @@ pub fn encode_mouse(event: MouseEvent, mode: MouseMode, sgr: bool) -> Option<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_keys_xterm_also_sends() {
+        let none = Modifiers::default();
+        let modes = KeyModes::default();
+        let key = |k, m| encode_key(k, None, m, modes);
+        assert_eq!(key(Keysym::F13, none).unwrap(), b"\x1b[1;2P");
+        assert_eq!(key(Keysym::F24, none).unwrap(), b"\x1b[24;2~");
+        assert_eq!(key(Keysym::KP_Begin, none).unwrap(), b"\x1b[E");
+        let logo = Modifiers { logo: true, ..none };
+        assert_eq!(key(Keysym::Up, logo).unwrap(), b"\x1b[1;9A");
+        let shift_alt = Modifiers {
+            shift: true,
+            alt: true,
+            ..none
+        };
+        assert_eq!(key(Keysym::ISO_Left_Tab, shift_alt).unwrap(), b"\x1b\x1b[Z");
+    }
+
+    #[test]
+    fn application_keypad_operators_use_ss3_without_num_lock() {
+        let modes = KeyModes {
+            app_keypad: true,
+            ..KeyModes::default()
+        };
+        let none = Modifiers::default();
+        assert_eq!(
+            encode_key(Keysym::KP_Add, Some("+"), none, modes).unwrap(),
+            b"\x1bOk"
+        );
+        let num_lock = Modifiers {
+            num_lock: true,
+            ..none
+        };
+        assert_eq!(
+            encode_key(Keysym::KP_Add, Some("+"), num_lock, modes).unwrap(),
+            b"+"
+        );
+    }
 
     const NONE: Modifiers = Modifiers {
         ctrl: false,
