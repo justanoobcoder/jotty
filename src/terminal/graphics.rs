@@ -8,6 +8,7 @@
 //! Virtual placements (`U=1`) are not drawn at a position; cells holding
 //! [`PLACEHOLDER`] show parts of them instead.
 
+use std::collections::HashSet;
 use std::ffi::{CString, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -73,6 +74,10 @@ const MAX_SIDE: u32 = 10_000;
 const MAX_DATA: usize = 400 << 20;
 /// How much image data a screen keeps before evicting the oldest images.
 const QUOTA: usize = 320 << 20;
+/// How many images and placements a screen keeps; past that the oldest
+/// go, so that floods of tiny ones can't slow every frame and scroll.
+const MAX_IMAGES: usize = 1024;
+const MAX_PLACEMENTS: usize = 4096;
 
 /// Identifies an image across both screens and its retransmissions, so the
 /// renderer can cache it.
@@ -282,7 +287,7 @@ struct Loading {
 
 /// The images and placements of one screen buffer.
 pub struct Graphics {
-    /// Oldest first.
+    /// Oldest first, which is also by increasing uid.
     images: Vec<Image>,
     /// In the order they were placed, which is the drawing order within a
     /// z-index.
@@ -312,7 +317,13 @@ impl Graphics {
     }
 
     pub fn image(&self, uid: u64) -> Option<&Image> {
-        self.images.iter().find(|i| i.uid == uid)
+        let i = self.images.binary_search_by_key(&uid, |i| i.uid).ok()?;
+        Some(&self.images[i])
+    }
+
+    /// The uids of the images that have a placement.
+    fn placed(&self) -> HashSet<u64> {
+        self.placements.iter().map(|p| p.image).collect()
     }
 
     pub fn image_by_id(&self, id: u32) -> Option<&Image> {
@@ -359,7 +370,12 @@ impl Graphics {
                 self.loading = Some(loading);
                 return Outcome::default();
             }
-            return self.transmit(loading.command, &loading.payload, ctx);
+            // Free the base64 text before the later stages make more
+            // copies of the image.
+            let Loading { command, payload } = loading;
+            let data = base64(&payload);
+            drop(payload);
+            return self.finish(command, data, ctx);
         }
         match cmd.action {
             b't' | b'T' | b'q' if cmd.more => {
@@ -369,7 +385,7 @@ impl Graphics {
                 });
                 Outcome::default()
             }
-            b't' | b'T' | b'q' => self.transmit(cmd, payload, ctx),
+            b't' | b'T' | b'q' => self.finish(cmd, base64(payload), ctx),
             b'p' => {
                 let image = if cmd.id != 0 {
                     self.image_by_id(cmd.id)
@@ -406,9 +422,10 @@ impl Graphics {
         }
     }
 
-    /// Finishes a transmission (`a=t`, `T` or `q`) with its whole payload.
-    fn transmit(&mut self, mut cmd: Command, payload: &[u8], ctx: &Context) -> Outcome {
-        let image = base64(payload)
+    /// Finishes a transmission (`a=t`, `T` or `q`) with its whole payload,
+    /// decoded from base64.
+    fn finish(&mut self, mut cmd: Command, data: Option<Vec<u8>>, ctx: &Context) -> Outcome {
+        let image = data
             .ok_or_else(|| "EINVAL: bad base64 payload".to_string())
             .and_then(|data| read_medium(&cmd, data))
             .and_then(|data| decompress(&cmd, data))
@@ -484,18 +501,29 @@ impl Graphics {
     /// the quota. The newest image is always kept.
     fn enforce_quota(&mut self) {
         let mut total: usize = self.images.iter().map(|i| i.pixels.len()).sum();
-        for placed in [false, true] {
-            let mut i = 0;
-            while total > QUOTA && i + 1 < self.images.len() {
-                let uid = self.images[i].uid;
-                if placed || !self.placements.iter().any(|p| p.image == uid) {
-                    total -= self.images[i].pixels.len();
-                    self.remove_image(uid);
-                } else {
-                    i += 1;
+        let over = |total: usize, count: usize| total > QUOTA || count > MAX_IMAGES;
+        if !over(total, self.images.len()) {
+            return;
+        }
+        let placed = self.placed();
+        let mut evicted = HashSet::new();
+        let mut count = self.images.len();
+        for include_placed in [false, true] {
+            for image in &self.images[..self.images.len() - 1] {
+                if !over(total, count) {
+                    break;
                 }
+                if evicted.contains(&image.uid) || (!include_placed && placed.contains(&image.uid))
+                {
+                    continue;
+                }
+                evicted.insert(image.uid);
+                total -= image.pixels.len();
+                count -= 1;
             }
         }
+        self.images.retain(|i| !evicted.contains(&i.uid));
+        self.placements.retain(|p| !evicted.contains(&p.image));
     }
 
     fn remove_image(&mut self, uid: u64) {
@@ -532,6 +560,10 @@ impl Graphics {
                 .retain(|p| !(p.image == uid && p.id == cmd.placement));
         }
         self.placements.push(placement);
+        if self.placements.len() > MAX_PLACEMENTS {
+            self.placements.remove(0);
+            self.drop_unreachable();
+        }
         let moved = (!cmd.is_virtual && !cmd.no_move).then(|| placement.size_in_cells(self.cell));
         Outcome {
             response: reply(cmd, Ok(())),
@@ -559,21 +591,29 @@ impl Graphics {
         let named: Vec<u64> = images
             .iter()
             .filter(|i| match which {
-                b'i' => i.id == cmd.id && cmd.placement == 0,
+                b'i' => i.id == cmd.id && cmd.id != 0 && cmd.placement == 0,
                 b'n' => Some(i.uid) == newest(cmd.number) && cmd.placement == 0,
                 b'r' => (cmd.source[0]..=cmd.source[1]).contains(&i.id) && i.id != 0,
                 _ => false,
             })
             .map(|i| i.uid)
             .collect();
-        let id_of = |uid: u64| images.iter().find(|i| i.uid == uid).map_or(0, |i| i.id);
+        let id_of = |uid: u64| {
+            images
+                .binary_search_by_key(&uid, |i| i.uid)
+                .map_or(0, |i| images[i].id)
+        };
         let hit = |p: &Placement| match which {
             b'a' => {
                 !p.is_virtual
                     && p.lines(cell).start < screen.end
                     && p.lines(cell).end > screen.start
             }
-            b'i' => id_of(p.image) == cmd.id && (cmd.placement == 0 || p.id == cmd.placement),
+            b'i' => {
+                cmd.id != 0
+                    && id_of(p.image) == cmd.id
+                    && (cmd.placement == 0 || p.id == cmd.placement)
+            }
             b'n' => {
                 Some(p.image) == newest(cmd.number) && (cmd.placement == 0 || p.id == cmd.placement)
             }
@@ -582,7 +622,10 @@ impl Graphics {
             b'q' => {
                 !p.is_virtual && p.z == cmd.z && p.covers(at(cmd.source[0], cmd.source[1]), cell)
             }
-            b'r' => (cmd.source[0]..=cmd.source[1]).contains(&id_of(p.image)),
+            b'r' => {
+                let id = id_of(p.image);
+                id != 0 && (cmd.source[0]..=cmd.source[1]).contains(&id)
+            }
             b'x' => {
                 let (cols, _) = p.size_in_cells(cell);
                 let col = (cmd.source[0] as usize).saturating_sub(1);
@@ -603,11 +646,12 @@ impl Graphics {
         }
         self.placements = kept;
         if cmd.delete.is_ascii_uppercase() {
-            for uid in touched {
-                if !self.placements.iter().any(|p| p.image == uid) {
-                    self.remove_image(uid);
-                }
-            }
+            let placed = self.placed();
+            let unplaced: HashSet<u64> = touched
+                .into_iter()
+                .filter(|u| !placed.contains(u))
+                .collect();
+            self.images.retain(|i| !unplaced.contains(&i.uid));
         }
         self.drop_unreachable();
     }
@@ -615,9 +659,11 @@ impl Graphics {
     /// Removes anonymous images without placements: nothing can show them
     /// again.
     fn drop_unreachable(&mut self) {
-        let placements = &self.placements;
-        self.images
-            .retain(|i| i.id != 0 || placements.iter().any(|p| p.image == i.uid));
+        if self.images.iter().all(|i| i.id != 0) {
+            return;
+        }
+        let placed = self.placed();
+        self.images.retain(|i| i.id != 0 || placed.contains(&i.uid));
     }
 
     /// Moves the placements whose top row is in `top..=bottom` up by `n`
@@ -947,6 +993,27 @@ mod tests {
         let result = wait.recv_timeout(std::time::Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(result.expect("read_file blocked on a FIFO").is_err());
+    }
+
+    #[test]
+    fn image_and_placement_counts_are_bounded() {
+        let mut g = Graphics::default();
+        for i in 1..=MAX_IMAGES as u32 + 10 {
+            run(&mut g, &format!("a=t,i={i},f=24,s=1,v=1;AAAA"));
+        }
+        assert_eq!(g.images.len(), MAX_IMAGES);
+        for _ in 0..MAX_PLACEMENTS + 10 {
+            run(&mut g, &format!("a=p,i={}", MAX_IMAGES + 10));
+        }
+        assert_eq!(g.placements.len(), MAX_PLACEMENTS);
+    }
+
+    #[test]
+    fn deleting_by_id_zero_keeps_anonymous_images() {
+        let mut g = Graphics::default();
+        run(&mut g, "a=T,f=24,s=1,v=1;AAAA");
+        run(&mut g, "a=d,d=i");
+        assert_eq!(g.placements.len(), 1);
     }
 
     #[test]
