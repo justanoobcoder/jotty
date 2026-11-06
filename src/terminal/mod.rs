@@ -1150,6 +1150,13 @@ impl Screen {
         self.dirty = true;
     }
 
+    /// Blanks `row` from column `start` on. The row no longer flows into the
+    /// next one, so a later reflow must not join them.
+    fn erase_to_end_of_row(&mut self, row: usize, start: usize) {
+        self.erase_cells(row, start, self.cols);
+        self.grid_mut().rows[row].wrapped = false;
+    }
+
     fn erase_rows(&mut self, start: usize, end: usize) {
         for row in start..end {
             self.erase_cells(row, 0, self.cols);
@@ -1768,7 +1775,7 @@ impl Perform for Screen {
                 let (row, col) = (self.cursor.row, self.cursor.col);
                 match raw(0) {
                     0 => {
-                        self.erase_cells(row, col, self.cols);
+                        self.erase_to_end_of_row(row, col);
                         self.erase_rows(row + 1, self.rows);
                     }
                     1 => {
@@ -1793,9 +1800,9 @@ impl Perform for Screen {
             ([] | [b'?'], 'K') => {
                 let (row, col) = (self.cursor.row, self.cursor.col);
                 match raw(0) {
-                    0 => self.erase_cells(row, col, self.cols),
+                    0 => self.erase_to_end_of_row(row, col),
                     1 => self.erase_cells(row, 0, col + 1),
-                    2 => self.erase_cells(row, 0, self.cols),
+                    2 => self.erase_to_end_of_row(row, 0),
                     _ => {}
                 }
             }
