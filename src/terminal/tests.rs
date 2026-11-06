@@ -1282,3 +1282,113 @@ fn the_prompt_end_follows_rows_moved_by_line_edits() {
     t.feed(b"\x1b[5T");
     assert_eq!(t.screen().prompt_end, None);
 }
+
+/// A small deterministic generator, so that a failure can be repeated.
+struct Random(u64);
+
+impl Random {
+    fn next(&mut self) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 as usize
+    }
+}
+
+fn assert_grid_shape(t: &Terminal, seed: u64) {
+    let screen = t.screen();
+    let (cols, rows) = (screen.cols(), screen.rows());
+    let grid = screen.grid();
+    assert_eq!(grid.rows.len(), rows, "seed {seed}");
+    for row in grid.rows.iter().chain(&grid.history) {
+        assert_eq!(row.cells.len(), cols, "seed {seed}");
+    }
+    let (row, col) = screen.cursor();
+    assert!(row < rows && col < cols, "seed {seed}");
+}
+
+#[test]
+fn random_sequences_keep_the_grid_consistent() {
+    const FRAGMENTS: &[&str] = &[
+        "a",
+        "中",
+        "e\u{301}",
+        "👍🏽",
+        "\u{200d}",
+        "\u{fe0f}",
+        "\r\n",
+        "\n",
+        "\t",
+        "\x08",
+        "\x18",
+        "\x1b",
+        "\x1b[",
+        "\x1b]",
+        "\x1bP",
+        "\x1b_G",
+        "\x1b\\",
+        "\x07",
+        ";",
+        "?",
+        "1",
+        "0",
+        "65535",
+        "\x1b[5;20r",
+        "\x1b[r",
+        "\x1b[?6h",
+        "\x1b[?6l",
+        "\x1b7",
+        "\x1b8",
+        "\x1b[3;3H",
+        "\x1b[2J",
+        "\x1b[K",
+        "\x1b[2@",
+        "\x1b[3P",
+        "\x1b[2L",
+        "\x1b[2M",
+        "\x1b[2S",
+        "\x1b[2T",
+        "\x1b[9b",
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1bc",
+        "\x1b#8",
+        "\x1b[6n",
+        "\x1b[c",
+        "\x1b]0;title\x07",
+        "\x1b]8;;http://x\x1b\\",
+        "\x1b]133;A\x07",
+        "\x1b]133;B\x07",
+        "\x1b]4;1;?\x07",
+        "\x1b]9;hi\x07",
+        "\x1bP$qm\x1b\\",
+        "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\",
+        "\x1b_Ga=p,i=1\x1b\\",
+        "\x1b_Ga=d\x1b\\",
+        "\x1b(0",
+        "\x1b(B",
+        "q",
+        "\x1b[38:5:1m",
+        "\x1b[0m",
+        "\x1b[4:3m",
+        "\x1b[>1u",
+        "\x1b[<u",
+    ];
+    for seed in 1..=60u64 {
+        let mut random = Random(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let mut t = Terminal::new(1 + random.next() % 30, 1 + random.next() % 12, 20);
+        for step in 0..1500 {
+            let fragment = FRAGMENTS[random.next() % FRAGMENTS.len()];
+            t.feed(fragment.as_bytes());
+            if step % 100 == 0 {
+                let (cols, rows) = (1 + random.next() % 30, 1 + random.next() % 12);
+                t.screen_mut().resize(cols, rows);
+            }
+            assert_grid_shape(&t, seed);
+        }
+    }
+}

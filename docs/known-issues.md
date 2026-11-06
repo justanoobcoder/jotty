@@ -22,8 +22,9 @@ nothing surprises you.
   Emoji). Vector color fonts (COLR, SVG) aren't supported; with only those
   installed, emoji are monochrome. Which characters are emoji by default is
   approximated (wide characters in the emoji and symbol blocks).
-- Search compares the first character of each cell, so combining marks are
-  ignored when searching.
+- Search compares one character per cell: the one a cell's cluster composes
+  into, so `é` matches however it was written, or else the cluster's first.
+  Marks that don't compose are ignored.
 - **Variable fonts** only get their `wght` axis set (400, or 700 for bold).
   Other axes keep their defaults, and italic is not synthesized.
 - **No synthetic bold or italic.** If the family has no bold or italic face,
@@ -127,7 +128,17 @@ nothing surprises you.
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
 - No `idle-inhibit`. Drag-and-drop is not accepted.
-- Saving the config reloads it by watching the file's directory. When the
+- The kitty graphics medium `t=s` removes the shared memory object it is
+  given, whichever it is, as kitty does; `t=f` reads any regular file the
+  user can read, and shows it as an image at most.
+- OSC 8 hyperlinks open with any URI scheme on Ctrl+click, and the target
+  isn't shown first. Only one that starts with `-`, which the launcher would
+  take for an option, is refused.
+- Ctrl with a letter of a non-Latin layout sends the letter, as in xterm,
+  unless the program turns on the kitty keyboard protocol.
+- Saving the config reloads it by watching the file's directory. A directory
+  that doesn't exist at startup, or is removed later, isn't watched; send
+  `SIGUSR1` or restart then. When the
   config is a symlink, editing the file it points to in another directory
   isn't noticed (replacing the symlink, as home-manager does, is); press
   Ctrl+Shift+R or send `SIGUSR1` then.

@@ -1521,6 +1521,10 @@ impl App {
         let Some((program, args)) = launcher.split_first() else {
             return;
         };
+        if !crate::links::is_openable(target) {
+            log::warn!("not opening {target:?}: the launcher would take it for an option");
+            return;
+        }
         log::info!("opening {target}");
         // Browsers print noise on startup (Chromium's "zygote" errors when
         // an instance is already running); only the exit status matters.
