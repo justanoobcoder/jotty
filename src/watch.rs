@@ -22,7 +22,12 @@ fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
 /// descriptor is non-blocking and becomes readable on any change there;
 /// [`changed`] tells whether it was about the file.
 pub fn watch_file(path: &Path) -> io::Result<File> {
-    let dir = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    // A bare file name has an empty parent, which inotify refuses.
+    let dir = match path.parent() {
+        Some(dir) if dir.as_os_str().is_empty() => Path::new("."),
+        Some(dir) => dir,
+        None => return Err(io::ErrorKind::InvalidInput.into()),
+    };
     let dir = CString::new(dir.as_os_str().as_bytes())?;
     // SAFETY: inotify_init1 returns a new descriptor (or -1), which the
     // File then owns; inotify_add_watch reads a NUL-terminated path.
@@ -48,9 +53,28 @@ pub fn changed(file: &mut File, name: &OsStr) -> bool {
         if n == 0 {
             break;
         }
-        found |= event_names(&buf[..n]).any(|event| event == name.as_bytes());
+        // After an overflow, any file may have changed.
+        found |=
+            overflowed(&buf[..n]) || event_names(&buf[..n]).any(|event| event == name.as_bytes());
     }
     found
+}
+
+/// Whether a buffer of `struct inotify_event`s has the event that says some
+/// were lost.
+fn overflowed(mut buf: &[u8]) -> bool {
+    while let Some(header) = buf.get(..16) {
+        let mask = u32::from_ne_bytes(header[4..8].try_into().unwrap());
+        if mask & libc::IN_Q_OVERFLOW != 0 {
+            return true;
+        }
+        let len = u32::from_ne_bytes(header[12..16].try_into().unwrap()) as usize;
+        let Some(rest) = buf.get(16 + len..) else {
+            return false;
+        };
+        buf = rest;
+    }
+    false
 }
 
 /// The file names in a buffer of `struct inotify_event`s: a 16-byte header
@@ -73,8 +97,13 @@ extern "C" fn on_signal(_: libc::c_int) {
     let fd = SIGNAL_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
         // SAFETY: write(2) is async-signal-safe; a full pipe just drops the
-        // byte, and one pending byte is enough.
-        unsafe { libc::write(fd, [1u8].as_ptr().cast(), 1) };
+        // byte, and one pending byte is enough. errno belongs to whatever
+        // the signal interrupted, so it is put back.
+        unsafe {
+            let errno = *libc::__errno_location();
+            libc::write(fd, [1u8].as_ptr().cast(), 1);
+            *libc::__errno_location() = errno;
+        }
     }
 }
 
@@ -127,6 +156,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    #[test]
+    fn a_lost_event_counts_as_a_change() {
+        let event = |mask: u32, name: &[u8]| {
+            let mut e = vec![0; 16];
+            e[4..8].copy_from_slice(&mask.to_ne_bytes());
+            e[12..16].copy_from_slice(&(name.len() as u32).to_ne_bytes());
+            e.extend_from_slice(name);
+            e
+        };
+        let mut buf = event(libc::IN_CREATE, b"other\0\0\0");
+        assert!(!overflowed(&buf));
+        buf.extend(event(libc::IN_Q_OVERFLOW, b""));
+        assert!(overflowed(&buf));
+    }
+
+    #[test]
+    fn a_bare_file_name_watches_the_current_directory() {
+        assert!(watch_file(Path::new("config.toml")).is_ok());
     }
 
     #[test]
