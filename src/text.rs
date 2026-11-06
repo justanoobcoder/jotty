@@ -37,7 +37,7 @@ impl LineText {
         let mut line = first;
         while let Some(row) = screen.row_at(line) {
             for (col, cell) in row.cells.iter().enumerate() {
-                if cell.flags.contains(Flags::WIDE_SPACER) {
+                if cell.flags.intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP) {
                     continue;
                 }
                 cells.push(TextCell {

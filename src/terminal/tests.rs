@@ -1232,3 +1232,53 @@ fn a_second_apc_string_cuts_the_first_short() {
     assert_eq!(lines(&t), ["ok"]);
     assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
 }
+
+#[test]
+fn a_wide_character_at_a_wrap_leaves_no_text_behind() {
+    let mut t = term(5, 2);
+    t.feed("abcd中e".as_bytes());
+    assert!(cell(&t, 0, 4).flags.contains(Flags::WRAP_GAP));
+    assert_eq!(lines(&t), ["abcd", "中e"]);
+    // Reflow keeps treating it as a gap, in both directions.
+    t.screen_mut().resize(10, 2);
+    assert_eq!(lines(&t)[0], "abcd中e");
+    t.screen_mut().resize(5, 2);
+    assert!(cell(&t, 0, 4).flags.contains(Flags::WRAP_GAP));
+    // A real space before the wide character is text, and stays.
+    let mut t = term(5, 2);
+    t.feed("abc 中".as_bytes());
+    t.screen_mut().resize(10, 2);
+    assert_eq!(lines(&t)[0], "abc 中");
+}
+
+#[test]
+fn growing_brings_rows_back_from_the_history() {
+    let mut t = term(4, 4);
+    t.feed(b"1\r\n2\r\n3\r\n4");
+    t.screen_mut().resize(4, 2);
+    assert_eq!(lines(&t), ["3", "4"]);
+    assert_eq!(t.screen().cursor().0, 1);
+    t.screen_mut().resize(4, 4);
+    assert_eq!(lines(&t), ["1", "2", "3", "4"]);
+    assert_eq!(t.screen().cursor().0, 3);
+    assert!(t.screen().grid().history.is_empty());
+    assert_eq!(t.screen().grid().scrolled, 0);
+    // Without history, blank rows go below.
+    t.screen_mut().resize(4, 5);
+    assert_eq!(lines(&t), ["1", "2", "3", "4", ""]);
+}
+
+#[test]
+fn the_prompt_end_follows_rows_moved_by_line_edits() {
+    let mut t = term(10, 4);
+    t.feed(b"\x1b[2;1H$ \x1b]133;B\x07");
+    assert_eq!(t.screen().prompt_end, Some((1, 2)));
+    t.feed(b"\x1b[1;1H\x1b[L");
+    assert_eq!(t.screen().prompt_end, Some((2, 2)));
+    t.feed(b"\x1b[1;1H\x1b[M");
+    assert_eq!(t.screen().prompt_end, Some((1, 2)));
+    t.feed(b"\x1b[T");
+    assert_eq!(t.screen().prompt_end, Some((2, 2)));
+    t.feed(b"\x1b[5T");
+    assert_eq!(t.screen().prompt_end, None);
+}

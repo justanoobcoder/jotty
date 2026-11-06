@@ -939,13 +939,16 @@ impl Screen {
             } else {
                 self.cursor.row
             };
-            let pushed = self.primary.resize(cols, rows, primary_row);
+            let moved = self.primary.resize(cols, rows, primary_row);
             if !self.alt_active {
-                self.cursor.row = self.cursor.row.saturating_sub(pushed);
+                self.cursor.row = self.cursor.row.saturating_add_signed(moved);
+            }
+            if let Some(saved) = &mut self.saved[0] {
+                saved.cursor.row = saved.cursor.row.saturating_add_signed(moved);
             }
             self.prompt_end = self
                 .prompt_end
-                .and_then(|(r, c)| Some((r.checked_sub(pushed)?, c)));
+                .and_then(|(r, c)| Some((r.checked_add_signed(moved)?, c)));
         }
         // Full-screen programs redraw on resize; their screen is cut off
         // or padded, not reflowed.
@@ -1121,7 +1124,20 @@ impl Screen {
         let template = self.cursor.template;
         self.grid_mut().scroll_down(top, bottom, n, &template);
         self.scroll_graphics(top, bottom, -(n as i64));
+        self.move_prompt_end(top, bottom, n as isize);
         self.dirty = true;
+    }
+
+    /// The text in rows `top..=bottom` moved down by `n` rows (up when
+    /// negative): the prompt's end moves along, or is gone if it left them.
+    fn move_prompt_end(&mut self, top: usize, bottom: usize, n: isize) {
+        self.prompt_end = self.prompt_end.and_then(|(row, col)| {
+            if !(top..=bottom).contains(&row) {
+                return Some((row, col));
+            }
+            let row = row.checked_add_signed(n)?;
+            (top..=bottom).contains(&row).then_some((row, col))
+        });
     }
 
     /// Moves the images in rows `top..=bottom` up by `n` rows (down when
@@ -1227,6 +1243,7 @@ impl Screen {
         let bottom = self.scroll_bottom;
         self.grid_mut().scroll_down(row, bottom, n, &template);
         self.scroll_graphics(row, bottom, -(n as i64));
+        self.move_prompt_end(row, bottom, n as isize);
         self.carriage_return();
         self.dirty = true;
     }
@@ -1240,6 +1257,7 @@ impl Screen {
         let bottom = self.scroll_bottom;
         self.grid_mut().scroll_up(row, bottom, n, &template, false);
         self.scroll_graphics(row, bottom, n as i64);
+        self.move_prompt_end(row, bottom, -(n as isize));
         self.carriage_return();
         self.dirty = true;
     }
@@ -1262,7 +1280,11 @@ impl Screen {
         }
         if width == 2 && self.cursor.col + 1 >= self.cols {
             if self.modes.autowrap && self.cols >= 2 {
-                self.erase_cells(self.cursor.row, self.cursor.col, self.cols);
+                let (row, col) = (self.cursor.row, self.cursor.col);
+                self.erase_cells(row, col, self.cols);
+                self.grid_mut().rows[row].cells[col]
+                    .flags
+                    .insert(Flags::WRAP_GAP);
                 self.wrap_line();
             } else if self.cols >= 2 {
                 self.cursor.col = self.cols - 2;

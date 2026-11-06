@@ -30,6 +30,9 @@ impl Flags {
     /// ZWJ, a skin tone, the second letter of a flag). That cell holds the
     /// whole cluster and draws it; this one only takes up room.
     pub const CONTINUATION: Flags = Flags(1 << 10);
+    /// The blank left at the end of a row by a wide character that didn't
+    /// fit there. It isn't text: the line goes on at the next row.
+    pub const WRAP_GAP: Flags = Flags(1 << 11);
 
     pub const fn empty() -> Self {
         Flags(0)
@@ -160,7 +163,7 @@ impl Row {
         let mut s: String = self
             .cells
             .iter()
-            .filter(|c| !c.flags.contains(Flags::WIDE_SPACER))
+            .filter(|c| !c.flags.intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP))
             .map(|c| c.c)
             .collect();
         s.truncate(s.trim_end_matches(' ').len());
@@ -241,26 +244,35 @@ impl Grid {
     }
 
     /// Resizes without reflowing. When shrinking vertically, `keep_row` (the
-    /// cursor row) stays on screen by moving rows above it into history.
-    /// Returns how many rows were moved into history.
-    pub fn resize(&mut self, cols: usize, rows: usize, keep_row: usize) -> usize {
+    /// cursor row) stays on screen by moving rows above it into history;
+    /// when growing, rows come back from the history.
+    /// Returns how many rows the old screen moved down (up when negative).
+    pub fn resize(&mut self, cols: usize, rows: usize, keep_row: usize) -> isize {
         self.cols = cols;
         for row in &mut self.rows {
             row.resize(cols);
         }
-        let mut pushed = 0;
+        let mut moved = 0;
         if rows < self.rows.len() {
             let excess = (keep_row + 1).saturating_sub(rows);
             for row in self.rows.drain(..excess).collect::<Vec<_>>() {
                 self.push_history(row);
-                pushed += 1;
+                moved -= 1;
             }
             self.rows.truncate(rows);
         }
         while self.rows.len() < rows {
-            self.rows.push(Row::new(cols, &Cell::default()));
+            match self.history.pop_back() {
+                Some(mut row) => {
+                    row.resize(cols);
+                    self.rows.insert(0, row);
+                    self.scrolled = self.scrolled.saturating_sub(1);
+                    moved += 1;
+                }
+                None => self.rows.push(Row::new(cols, &Cell::default())),
+            }
         }
-        pushed
+        moved
     }
 
     pub fn clear_history(&mut self) {
@@ -306,11 +318,10 @@ impl Grid {
             // A wide character that didn't fit at the end of the previous
             // row left its last column blank.
             if open
-                && row
+                && line
                     .cells
-                    .first()
-                    .is_some_and(|c| c.flags.contains(Flags::WIDE))
-                && line.cells.last() == Some(&Cell::default())
+                    .last()
+                    .is_some_and(|c| c.flags.contains(Flags::WRAP_GAP))
             {
                 line.cells.pop();
             }
@@ -361,8 +372,16 @@ impl Grid {
                 row.wrapped = i + 1 < count;
                 out.push(row);
             }
+            let mut next = 0;
             for (cell, &pos) in line.cells.iter().zip(&layout.positions) {
+                if pos > next {
+                    let gap = pos - 1;
+                    out[first + gap / cols].cells[gap % cols]
+                        .flags
+                        .insert(Flags::WRAP_GAP);
+                }
                 out[first + pos / cols].cells[pos % cols] = *cell;
+                next = pos + 1;
             }
             for &(offset, mark) in &line.marks {
                 let pos = layout.position(offset);
@@ -502,7 +521,7 @@ mod tests {
     fn resize_keeps_cursor_row() {
         let mut grid = grid_with_lines(&["a", "b", "c", "d"], 4);
         let pushed = grid.resize(4, 2, 3);
-        assert_eq!(pushed, 2);
+        assert_eq!(pushed, -2);
         assert_eq!(texts(&grid), ["c", "d"]);
         assert_eq!(grid.history.len(), 2);
 

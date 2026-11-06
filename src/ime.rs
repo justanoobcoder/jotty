@@ -29,7 +29,12 @@ impl Surrounding {
             if col == cursor_col {
                 cursor = text.len();
             }
-            if !cell.flags.contains(Flags::WIDE_SPACER) {
+            // One character per cluster: Backspace deletes a cluster at a
+            // time, so `delete_keys` must count them, not their parts.
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP | Flags::CONTINUATION)
+            {
                 text.push(cell.c);
             }
         }

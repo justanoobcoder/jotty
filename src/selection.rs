@@ -309,7 +309,7 @@ impl Selection {
             };
             let mut text = String::new();
             for cell in row.cells.iter().take(last).skip(first) {
-                if !cell.flags.contains(Flags::WIDE_SPACER) {
+                if !cell.flags.intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP) {
                     screen.cell_text(cell, &mut text);
                 }
             }
@@ -500,6 +500,14 @@ mod tests {
         let before = s.live_rows(t.screen());
         t.feed(b"a\r\nb\r\nc\r\n");
         assert!(!s.follow_output(t.screen(), &before, 3));
+    }
+
+    #[test]
+    fn wide_characters_at_a_wrap_are_copied_without_a_gap() {
+        let mut t = Terminal::new(5, 2, 0);
+        t.feed("abcd中e".as_bytes());
+        let selection = Selection::line(t.screen(), Point { line: 0, col: 0 });
+        assert_eq!(selection.text(t.screen()), "abcd中e");
     }
 
     #[test]
