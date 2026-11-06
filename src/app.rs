@@ -121,6 +121,8 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
+/// The most clipboard data pasted; a client that keeps sending gets dropped.
+const MAX_PASTE: usize = 64 << 20;
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
 /// The preferred text type among those a paste offer has.
@@ -601,7 +603,8 @@ impl App {
         let notifications = screen.take_notifications();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {
-            self.send(&responses);
+            let written = self.pty.write_response(&responses);
+            self.finish_send(written);
         }
         if let Some(title) = title {
             self.window.set_title(title);
@@ -647,8 +650,16 @@ impl App {
 
     /// Sends input to the child, queueing what the pty cannot take yet.
     fn send(&mut self, bytes: &[u8]) {
-        if let Err(e) = self.pty.write(bytes) {
+        let written = self.pty.write(bytes);
+        self.finish_send(written);
+    }
+
+    /// After queueing input: makes sure what the pty couldn't take yet gets
+    /// written when it can.
+    fn finish_send(&mut self, written: io::Result<()>) {
+        if let Err(e) = written {
             log::warn!("cannot write to pty: {e}");
+            self.pty.discard_pending();
             return;
         }
         if !self.pty.has_pending() || self.pty_write_queued {
@@ -660,7 +671,10 @@ impl App {
         let source = Generic::new(File::from(fd), Interest::WRITE, Mode::Level);
         let inserted = self.loop_handle.insert_source(source, |_, _, app| {
             if let Err(e) = app.pty.flush() {
+                // It won't get better, and a level-triggered source would
+                // call back at once, forever.
                 log::warn!("cannot write to pty: {e}");
+                app.pty.discard_pending();
             }
             if app.pty.has_pending() {
                 Ok(PostAction::Continue)
@@ -1613,6 +1627,11 @@ impl App {
             match file.read(&mut buf) {
                 Ok(0) => {
                     app.paste_text(&String::from_utf8_lossy(&data));
+                    PostAction::Remove
+                }
+                Ok(n) if data.len() + n > MAX_PASTE => {
+                    log::warn!("clipboard data over {MAX_PASTE} bytes; not pasting it");
+                    data = Vec::new();
                     PostAction::Remove
                 }
                 Ok(n) => {

@@ -59,6 +59,9 @@ fn set_flag(
     Ok(())
 }
 
+/// How much queued input leaves no room for more terminal replies.
+const MAX_QUEUED_RESPONSES: usize = 1 << 20;
+
 impl Pty {
     /// Spawns `program` with `args` on a new pseudo-terminal.
     pub fn spawn(program: &str, args: &[String], term: &Term, size: WindowSize) -> io::Result<Pty> {
@@ -125,14 +128,14 @@ impl Pty {
         if let Some(dir) = &term.terminfo {
             command.env("TERMINFO", dir);
         }
-        let child = command.spawn()?;
-
+        // Before spawning: failing after it would leave the child behind.
         set_flag(
             master.as_fd(),
             libc::F_GETFL,
             libc::F_SETFL,
             libc::O_NONBLOCK,
         )?;
+        let child = command.spawn()?;
         Ok(Pty {
             master: File::from(master),
             child,
@@ -154,6 +157,23 @@ impl Pty {
     pub fn write(&mut self, data: &[u8]) -> io::Result<()> {
         self.pending.extend(data);
         self.flush()
+    }
+
+    /// Queues a reply to a query in the program's output, unless too much
+    /// is waiting already: a program that floods queries without reading
+    /// its input would otherwise grow the queue forever. What the user
+    /// types and pastes goes through [`Pty::write`] and is never dropped.
+    pub fn write_response(&mut self, data: &[u8]) -> io::Result<()> {
+        if self.pending.len() + data.len() > MAX_QUEUED_RESPONSES {
+            log::debug!("the program isn't reading; dropping a terminal reply");
+            return Ok(());
+        }
+        self.write(data)
+    }
+
+    /// Forgets queued input, when the pty can't take it any more.
+    pub fn discard_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// Writes queued input. Leaves the rest queued if the pty is full.
@@ -188,12 +208,12 @@ impl Pty {
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         // SAFETY: tcgetpgrp only reads the terminal's foreground group.
         let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
-        let pid = if group > 0 {
-            group as u32
-        } else {
-            self.child.id()
-        };
-        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+        // The group's leader may be gone while the group lives on.
+        let cwd = |pid: u32| std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+        (group > 0)
+            .then(|| cwd(group as u32))
+            .flatten()
+            .or_else(|| cwd(self.child.id()))
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -203,12 +223,21 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
+        // A child already reaped has no pid of its own any more: it may
+        // belong to another process by now.
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return;
+        }
         // Closing the master sends SIGHUP to the session; make sure it goes away.
-        // SAFETY: plain kill(2) on our own child's pid.
+        // SAFETY: plain kill(2) on our own child, which hasn't been reaped.
         unsafe {
             libc::kill(self.child.id() as libc::pid_t, libc::SIGHUP);
         }
-        let _ = self.child.try_wait();
+        // Not waiting for it: the window must close at once. jotty exits
+        // right after this, and init reaps whatever is left.
+        if let Err(e) = self.child.try_wait() {
+            log::debug!("cannot reap the child: {e}");
+        }
     }
 }
 
@@ -263,6 +292,20 @@ mod tests {
 
     fn sh_with(script: &str, term: &Term) -> Pty {
         Pty::spawn("/bin/sh", &["-c".into(), script.into()], term, SIZE).unwrap()
+    }
+
+    #[test]
+    fn replies_are_dropped_when_the_program_doesnt_read() {
+        let mut pty = sh("sleep 5");
+        let reply = [b'x'; 4096];
+        for _ in 0..1000 {
+            pty.write_response(&reply).unwrap();
+        }
+        assert!(pty.pending.len() <= MAX_QUEUED_RESPONSES);
+        // What the user types still queues up, past the limit. It is more
+        // than the kernel's buffer can take, however much of that is free.
+        pty.write(&vec![b'x'; 2 * MAX_QUEUED_RESPONSES]).unwrap();
+        assert!(pty.pending.len() > MAX_QUEUED_RESPONSES);
     }
 
     #[test]
