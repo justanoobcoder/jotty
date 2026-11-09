@@ -12,6 +12,10 @@ fn cell(t: &Terminal, row: usize, col: usize) -> Cell {
     t.screen().grid().rows[row].cells[col]
 }
 
+fn extra(t: &Terminal, row: usize, col: usize) -> Extra {
+    t.screen().extra(&cell(t, row, col))
+}
+
 #[test]
 fn prints_text_and_moves_cursor() {
     let mut t = term(10, 3);
@@ -732,20 +736,20 @@ fn hyperlinks_mark_cells() {
     let mut t = term(20, 1);
     t.feed(b"a\x1b]8;;https://x.org/a;b\x1b\\link\x1b[0m!\x1b]8;;\x1b\\b");
     let s = t.screen();
-    let id = cell(&t, 0, 1).link;
+    let id = extra(&t, 0, 1).link;
     assert_ne!(id, 0);
     assert_eq!(s.link(id), Some("https://x.org/a;b"));
     // SGR reset keeps the link; OSC 8 with an empty URI ends it.
-    assert_eq!(cell(&t, 0, 5).link, id);
-    assert_eq!(cell(&t, 0, 0).link, 0);
-    assert_eq!(cell(&t, 0, 6).link, 0);
+    assert_eq!(extra(&t, 0, 5).link, id);
+    assert_eq!(extra(&t, 0, 0).link, 0);
+    assert_eq!(extra(&t, 0, 6).link, 0);
 }
 
 #[test]
 fn identical_hyperlinks_share_an_id() {
     let mut t = term(20, 1);
     t.feed(b"\x1b]8;id=1;file:///a\x07x\x1b]8;;\x07 \x1b]8;;file:///a\x07y");
-    assert_eq!(cell(&t, 0, 0).link, cell(&t, 0, 2).link);
+    assert_eq!(extra(&t, 0, 0).link, extra(&t, 0, 2).link);
 }
 
 fn text_at(t: &Terminal, row: usize, col: usize) -> String {
@@ -1018,7 +1022,7 @@ fn color_specifications() {
 fn underline_styles() {
     let mut t = term(10, 1);
     t.feed(b"\x1b[4ma\x1b[4:3mb\x1b[4:2mc\x1b[21md\x1b[4:4me\x1b[4:5mf\x1b[4:0mg\x1b[4m\x1b[24mh");
-    let styles: Vec<_> = (0..8).map(|c| cell(&t, 0, c).underline).collect();
+    let styles: Vec<_> = (0..8).map(|c| cell(&t, 0, c).flags.underline()).collect();
     use Underline::*;
     assert_eq!(
         styles,
@@ -1031,10 +1035,10 @@ fn underline_color() {
     let mut t = term(10, 1);
     // Neovim's colon form, the semicolon form, then reset.
     t.feed(b"\x1b[4:3;58:2::255:0:0ma\x1b[58;5;4mb\x1b[59mc\x1b[0md");
-    assert_eq!(cell(&t, 0, 0).underline_color, Color::Rgb(255, 0, 0));
-    assert_eq!(cell(&t, 0, 1).underline_color, Color::Indexed(4));
-    assert_eq!(cell(&t, 0, 2).underline_color, Color::Default);
-    assert_eq!(cell(&t, 0, 3).underline, Underline::None);
+    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(255, 0, 0));
+    assert_eq!(extra(&t, 0, 1).underline_color, Color::Indexed(4));
+    assert_eq!(extra(&t, 0, 2).underline_color, Color::Default);
+    assert_eq!(cell(&t, 0, 3).flags.underline(), Underline::None);
     // The color doesn't leak into the text color.
     assert_eq!(cell(&t, 0, 0).fg, Color::Default);
 }
@@ -1281,7 +1285,7 @@ fn long_titles_and_osc_strings_are_cut() {
     let title = t.screen_mut().take_title().unwrap();
     assert_eq!(title.len(), MAX_TITLE_CHARS);
     t.feed(format!("\x1b]8;;{long}\x1b\\a").as_bytes());
-    let link = t.screen().link(cell(&t, 0, 0).link).unwrap();
+    let link = t.screen().link(extra(&t, 0, 0).link).unwrap();
     assert!(link.len() < MAX_OSC_BYTES);
 }
 
@@ -1295,7 +1299,7 @@ fn combining_mark_floods_take_linear_time() {
     let start = std::time::Instant::now();
     t.feed(&input);
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
-    let tail = t.screen().cluster(cell(&t, 0, 0).cluster);
+    let tail = t.screen().cluster(&cell(&t, 0, 0));
     assert_eq!(tail.chars().count(), MAX_CLUSTER_CHARS);
     assert_eq!(t.screen().cursor(), (0, 1));
 }
@@ -1311,7 +1315,7 @@ fn unused_clusters_are_dropped_when_the_table_fills() {
     }
     t.feed("e\u{323}\u{302}".as_bytes());
     let c = cell(&t, 1, 0);
-    assert_eq!(t.screen().cluster(c.cluster), "\u{323}\u{302}");
+    assert_eq!(t.screen().cluster(&c), "\u{323}\u{302}");
 }
 
 #[test]
@@ -1322,7 +1326,52 @@ fn unused_hyperlinks_are_dropped_when_the_table_fills() {
     }
     t.feed(b"\x1b]8;;https://last\x1b\\b");
     let c = cell(&t, 1, 0);
-    assert_eq!(t.screen().link(c.link), Some("https://last"));
+    assert_eq!(
+        t.screen().link(t.screen().extra(&c).link),
+        Some("https://last")
+    );
+}
+
+#[test]
+fn a_cell_keeps_its_link_cluster_and_underline_color_together() {
+    let mut t = term(10, 1);
+    t.feed("\x1b]8;;https://x\x1b\\\x1b[4;58;5;1me\u{301}x".as_bytes());
+    let e = extra(&t, 0, 0);
+    assert_eq!(t.screen().link(e.link), Some("https://x"));
+    assert_eq!(text_at(&t, 0, 0), "e\u{301}");
+    assert_eq!(e.underline_color, Color::Indexed(1));
+    // The next cell shares the link and color, but not the cluster.
+    let next = extra(&t, 0, 1);
+    assert_eq!(
+        (next.link, next.underline_color),
+        (e.link, e.underline_color)
+    );
+    assert_eq!(next.cluster, 0);
+    // Ending the link keeps the underline color, and SGR 0 drops it.
+    t.feed(b"\x1b]8;;\x1b\\y\x1b[0mz");
+    assert_eq!(extra(&t, 0, 2).link, 0);
+    assert_eq!(extra(&t, 0, 2).underline_color, Color::Indexed(1));
+    assert_eq!(extra(&t, 0, 3), Extra::default());
+    assert_eq!(cell(&t, 0, 3).extra, 0);
+}
+
+#[test]
+fn unused_extras_are_dropped_when_the_table_fills() {
+    // Every line gets an underline color of its own, so each takes an
+    // extra; without history they scroll away and their ids are freed.
+    let mut t = Terminal::new(10, 2, 0);
+    t.feed("\x1b]8;;https://kept\x1b\\".as_bytes());
+    for i in 0..70_000u32 {
+        let (r, g, b) = (i >> 16, (i >> 8) & 0xff, i & 0xff);
+        t.feed(format!("\x1b[58:2::{r}:{g}:{b}me\u{301}\r\n").as_bytes());
+    }
+    // The cursor's link and color survive being renumbered.
+    t.feed("a".as_bytes());
+    let e = extra(&t, 1, 0);
+    assert_eq!(t.screen().link(e.link), Some("https://kept"));
+    assert_eq!(e.underline_color, Color::Rgb(1, 17, 111));
+    assert_eq!(text_at(&t, 0, 0), "e\u{301}");
+    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(1, 17, 111));
 }
 
 #[test]

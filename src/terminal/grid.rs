@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
     /// The configured default foreground or background.
     #[default]
@@ -54,6 +54,26 @@ impl Flags {
     pub fn remove(&mut self, other: Flags) {
         self.0 &= !other.0;
     }
+
+    /// The underline style, kept in bits 12–14 so that `Cell` stays small.
+    pub const fn underline(self) -> Underline {
+        match (self.0 & Self::UNDERLINE_MASK) >> Self::UNDERLINE_SHIFT {
+            0 => Underline::None,
+            1 => Underline::Single,
+            2 => Underline::Double,
+            3 => Underline::Curly,
+            4 => Underline::Dotted,
+            _ => Underline::Dashed,
+        }
+    }
+
+    pub fn set_underline(&mut self, underline: Underline) {
+        let bits = (underline as u16) << Self::UNDERLINE_SHIFT;
+        self.0 = (self.0 & !Self::UNDERLINE_MASK) | bits;
+    }
+
+    const UNDERLINE_SHIFT: u16 = 12;
+    const UNDERLINE_MASK: u16 = 0b111 << Self::UNDERLINE_SHIFT;
 }
 
 impl std::ops::BitOr for Flags {
@@ -66,6 +86,7 @@ impl std::ops::BitOr for Flags {
 
 /// Underline style, as set by SGR 4 and its `4:n` sub-parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u16)]
 pub enum Underline {
     #[default]
     None,
@@ -76,21 +97,21 @@ pub enum Underline {
     Dashed,
 }
 
+/// One cell of the grid. It is 16 bytes: the grid and its history hold
+/// millions, and printing and scrolling are bound by writing them. What
+/// few cells carry beyond colors and flags is in `Extra`, by id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub c: char,
     pub fg: Color,
     pub bg: Color,
+    /// Attributes, including the underline style (`Flags::underline`).
     pub flags: Flags,
-    pub underline: Underline,
-    /// Underline color (SGR 58); `Default` means the text color.
-    pub underline_color: Color,
-    /// Hyperlink (OSC 8) id, see `Screen::link`; 0 for none.
-    pub link: u16,
-    /// Characters after `c` in its grapheme cluster (combining marks,
-    /// emoji sequences), see `Screen::cluster`; 0 for none.
-    pub cluster: u16,
+    /// The cell's `Extra`, see `Screen::extra`; 0 for none.
+    pub extra: u16,
 }
+
+const _: () = assert!(std::mem::size_of::<Cell>() == 16);
 
 impl Default for Cell {
     fn default() -> Self {
@@ -99,12 +120,23 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             flags: Flags::empty(),
-            underline: Underline::None,
-            underline_color: Color::Default,
-            link: 0,
-            cluster: 0,
+            extra: 0,
         }
     }
+}
+
+/// What a cell carries besides its character, colors and flags. Few cells
+/// have any of it, so cells refer to it by id (`Cell::extra`), and cells
+/// with the same share one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Extra {
+    /// Hyperlink (OSC 8) id, see `Screen::link`; 0 for none.
+    pub link: u16,
+    /// Characters after `c` in its grapheme cluster (combining marks,
+    /// emoji sequences), by id; 0 for none. See `Screen::cluster`.
+    pub cluster: u16,
+    /// Underline color (SGR 58); `Default` means the text color.
+    pub underline_color: Color,
 }
 
 impl Cell {
@@ -565,7 +597,7 @@ mod tests {
             for c in ['a', 'b', 'c'] {
                 let row = &mut grid.rows[0];
                 row.cells[0].c = c;
-                row.cells[1].link = 1;
+                row.cells[1].extra = 1;
                 row.wrapped = true;
                 row.mark = Some(Mark::Prompt);
                 grid.scroll_up(0, 0, 1, &template, true);
@@ -607,22 +639,40 @@ mod tests {
 
     #[test]
     fn blank_keeps_background_only() {
+        let mut flags = Flags::BOLD;
+        flags.set_underline(Underline::Curly);
         let template = Cell {
             c: 'x',
             fg: Color::Indexed(1),
             bg: Color::Indexed(2),
-            flags: Flags::BOLD,
-            underline: Underline::Curly,
-            underline_color: Color::Indexed(3),
-            link: 1,
-            cluster: 1,
+            flags,
+            extra: 1,
         };
         let blank = Cell::blank(&template);
-        assert_eq!(blank.link, 0);
+        assert_eq!(blank.extra, 0);
         assert_eq!(blank.c, ' ');
         assert_eq!(blank.fg, Color::Default);
         assert_eq!(blank.bg, Color::Indexed(2));
         assert_eq!(blank.flags, Flags::empty());
-        assert_eq!(blank.underline, Underline::None);
+        assert_eq!(blank.flags.underline(), Underline::None);
+    }
+
+    #[test]
+    fn underline_style_shares_flags_without_touching_them() {
+        let mut flags = Flags::BOLD | Flags::WRAP_GAP;
+        for style in [
+            Underline::Single,
+            Underline::Double,
+            Underline::Curly,
+            Underline::Dotted,
+            Underline::Dashed,
+            Underline::None,
+        ] {
+            flags.set_underline(style);
+            assert_eq!(flags.underline(), style);
+            assert!(flags.contains(Flags::BOLD | Flags::WRAP_GAP));
+            assert!(!flags.intersects(Flags::WIDE | Flags::CONTINUATION));
+        }
+        assert_eq!(flags, Flags::BOLD | Flags::WRAP_GAP);
     }
 }

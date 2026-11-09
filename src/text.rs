@@ -51,7 +51,7 @@ impl LineText {
                     point: Point { line, col },
                     c: cell.c,
                     offset: text.len(),
-                    link: cell.link,
+                    link: screen.extra(cell).link,
                 });
                 screen.cell_text(cell, &mut text);
             }

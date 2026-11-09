@@ -13,8 +13,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
 use graphics::Graphics;
-pub use grid::{Cell, Color, Flags, Grid, Mark, Row, Underline};
-use strings::StringTable;
+pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
+use strings::{StringTable, Table};
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
@@ -298,10 +298,12 @@ pub struct Screen {
     default_cursor_color: (u8, u8, u8),
     /// Colors set by the program with OSC 4, 10 and 11.
     colors: ColorOverrides,
-    /// Hyperlink targets (OSC 8); a cell's `link` is an index + 1.
+    /// Hyperlink targets (OSC 8), by `Extra::link`.
     links: StringTable,
-    /// Grapheme cluster tails; a cell's `cluster` is an index + 1.
+    /// Grapheme cluster tails, by `Extra::cluster`.
     clusters: StringTable,
+    /// What cells carry besides colors and flags, by `Cell::extra`.
+    extras: Table<Extra>,
     /// The first cell of the grapheme cluster being printed, which later
     /// characters of the cluster join.
     cluster_start: Option<(usize, usize)>,
@@ -453,6 +455,7 @@ impl Screen {
             colors: ColorOverrides::default(),
             links: StringTable::default(),
             clusters: StringTable::default(),
+            extras: Table::default(),
             cluster_start: None,
             default_colors: DefaultColors::default(),
             last_printed: None,
@@ -669,9 +672,19 @@ impl Screen {
         self.cursor_color
     }
 
+    /// What `cell` carries besides its character, colors and flags.
+    pub fn extra(&self, cell: &Cell) -> Extra {
+        self.extras.get(cell.extra).copied().unwrap_or_default()
+    }
+
     /// The characters after a cell's `c` in its grapheme cluster.
-    pub fn cluster(&self, id: u16) -> &str {
-        self.clusters.get(id).unwrap_or("")
+    pub fn cluster(&self, cell: &Cell) -> &str {
+        if cell.extra == 0 {
+            return "";
+        }
+        self.clusters
+            .get(self.extra(cell).cluster)
+            .map_or("", String::as_str)
     }
 
     /// A cell's whole text: its character and the rest of its cluster.
@@ -679,32 +692,57 @@ impl Screen {
     pub fn cell_text(&self, cell: &Cell, out: &mut String) {
         if !cell.flags.contains(Flags::CONTINUATION) {
             out.push(cell.c);
-            out.push_str(self.cluster(cell.cluster));
+            out.push_str(self.cluster(cell));
         }
     }
 
-    /// The id of a cluster tail, adding it if new; `None` when all ids are
-    /// in use even after dropping unused ones.
-    fn intern_cluster(&mut self, tail: &str) -> Option<u16> {
-        if let Some(id) = self.clusters.find(tail) {
-            return Some(id);
+    /// Whether `cell` is an ASCII character with nothing joined to it, which
+    /// no ASCII character after it can join either (see `join_cluster`).
+    fn is_lone_ascii(&self, cell: &Cell) -> bool {
+        cell.c.is_ascii() && (cell.extra == 0 || self.extra(cell).cluster == 0)
+    }
+
+    /// The id of `extra`, adding it if new. Doesn't make room: `None` when
+    /// the table is full; callers make room first (`make_room`), since that
+    /// renumbers ids.
+    fn intern_extra(&mut self, extra: &Extra) -> Option<u16> {
+        if *extra == Extra::default() {
+            return Some(0);
         }
-        if self.clusters.is_full() {
+        self.extras.insert(extra)
+    }
+
+    /// Drops unused strings and extras when adding `link` or `cluster`, or
+    /// a new extra, might not fit otherwise. This renumbers ids, so ids are
+    /// read only after it, and what gets added is added after it too: it
+    /// would drop a new string that no cell refers to yet.
+    fn make_room(&mut self, link: Option<&str>, cluster: Option<&str>) {
+        let full = |table: &StringTable, s: Option<&str>| {
+            s.is_some_and(|s| table.find(s).is_none() && table.is_full())
+        };
+        if full(&self.links, link) || full(&self.clusters, cluster) || self.extras.is_full() {
             self.collect_strings();
         }
-        self.clusters.insert(tail)
     }
 
-    /// Drops the hyperlinks and cluster tails no cell refers to any more,
-    /// renumbering the rest, so that the tables don't fill up over a long
-    /// session.
+    /// Changes the extra of the cursor's template (its link or underline
+    /// color); new cells get it. Left as it was if the table is full, so
+    /// callers make room first.
+    fn update_template_extra(&mut self, update: impl FnOnce(&mut Extra)) {
+        let mut extra = self.extra(&self.cursor.template);
+        update(&mut extra);
+        match self.intern_extra(&extra) {
+            Some(id) => self.cursor.template.extra = id,
+            None => log::debug!("too many distinct links and underline colors; ignoring one"),
+        }
+    }
+
+    /// Drops the hyperlinks, cluster tails and extras no cell refers to any
+    /// more, renumbering the rest, so that the tables don't fill up over a
+    /// long session.
     fn collect_strings(&mut self) {
-        let mut links = self.links.unused();
-        let mut clusters = self.clusters.unused();
-        let mut mark = |cell: &Cell| {
-            links[usize::from(cell.link)] = true;
-            clusters[usize::from(cell.cluster)] = true;
-        };
+        let mut extras = self.extras.unused();
+        let mut mark = |cell: &Cell| extras[usize::from(cell.extra)] = true;
         for grid in [&self.primary, &self.alternate] {
             for row in grid.rows.iter().chain(&grid.history) {
                 row.cells.iter().for_each(&mut mark);
@@ -714,12 +752,23 @@ impl Screen {
         for saved in self.saved.iter().flatten() {
             mark(&saved.cursor.template);
         }
+        let mut links = self.links.unused();
+        let mut clusters = self.clusters.unused();
+        for (id, _) in extras.iter().enumerate().filter(|(_, used)| **used) {
+            if let Some(extra) = self.extras.get(id as u16) {
+                links[usize::from(extra.link)] = true;
+                clusters[usize::from(extra.cluster)] = true;
+            }
+        }
         let links = self.links.retain(&links);
         let clusters = self.clusters.retain(&clusters);
-        let remap = |cell: &mut Cell| {
-            cell.link = links[usize::from(cell.link)];
-            cell.cluster = clusters[usize::from(cell.cluster)];
-        };
+        // Distinct extras stay distinct: kept strings keep distinct ids.
+        let extras = self.extras.retain_map(&extras, |extra| Extra {
+            link: links[usize::from(extra.link)],
+            cluster: clusters[usize::from(extra.cluster)],
+            ..*extra
+        });
+        let remap = |cell: &mut Cell| cell.extra = extras[usize::from(cell.extra)];
         for grid in [&mut self.primary, &mut self.alternate] {
             for row in grid.rows.iter_mut().chain(&mut grid.history) {
                 row.cells.iter_mut().for_each(remap);
@@ -753,7 +802,7 @@ impl Screen {
         // Two printable ASCII characters never form one cluster: none is
         // Extend, ZWJ, SpacingMark, Prepend, a regional indicator or Hangul.
         // This skips the segmentation below for nearly all output.
-        if c.is_ascii() && start.c.is_ascii() && start.cluster == 0 {
+        if c.is_ascii() && self.is_lone_ascii(&start) {
             return false;
         }
         let mut text = String::new();
@@ -778,10 +827,23 @@ impl Screen {
         };
         // Past the limit the character is still consumed, so that a flood of
         // combining marks costs constant time each, but it isn't kept.
-        if tail.chars().count() <= MAX_CLUSTER_CHARS
-            && let Some(id) = self.intern_cluster(tail)
-        {
-            self.grid_mut().rows[row].cells[col].cluster = id;
+        if tail.chars().count() <= MAX_CLUSTER_CHARS {
+            self.make_room(None, Some(tail));
+            let extra = match self.clusters.insert(tail) {
+                Some(cluster) => {
+                    let start = self.grid().rows[row].cells[col];
+                    let extra = Extra {
+                        cluster,
+                        ..self.extra(&start)
+                    };
+                    self.intern_extra(&extra)
+                }
+                None => None,
+            };
+            match extra {
+                Some(id) => self.grid_mut().rows[row].cells[col].extra = id,
+                None => log::debug!("too many distinct grapheme clusters; dropping one"),
+            }
         }
         self.dirty = true;
         if c == EMOJI_PRESENTATION {
@@ -794,24 +856,23 @@ impl Screen {
     }
 
     pub fn link(&self, id: u16) -> Option<&str> {
-        self.links.get(id)
+        self.links.get(id).map(String::as_str)
     }
 
     /// Starts (`uri` non-empty) or ends a hyperlink (OSC 8). Identical
     /// targets share an id; when all ids are used by cells still on the
     /// screen or in the history, new links are ignored.
     fn set_link(&mut self, uri: &str) {
-        self.cursor.template.link = 0;
-        if uri.is_empty() {
-            return;
-        }
-        if self.links.find(uri).is_none() && self.links.is_full() {
-            self.collect_strings();
-        }
-        self.cursor.template.link = self.links.insert(uri).unwrap_or_else(|| {
-            log::debug!("too many hyperlinks; ignoring {uri}");
+        self.make_room(Some(uri).filter(|uri| !uri.is_empty()), None);
+        let link = if uri.is_empty() {
             0
-        });
+        } else {
+            self.links.insert(uri).unwrap_or_else(|| {
+                log::debug!("too many hyperlinks; ignoring {uri}");
+                0
+            })
+        };
+        self.update_template_extra(|extra| extra.link = link);
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
@@ -1340,7 +1401,7 @@ impl Screen {
         // cluster (see `join_cluster`).
         if let Some((row, col)) = self.cluster_start
             && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col))
-            && !(start.c.is_ascii() && start.cluster == 0)
+            && !self.is_lone_ascii(start)
             && let Some((&first, rest)) = run.split_first()
         {
             self.print_char(first as char);
@@ -1716,7 +1777,7 @@ impl Screen {
                 parts.push(code.into());
             }
         }
-        match t.underline {
+        match t.flags.underline() {
             Underline::None => {}
             Underline::Single => parts.push("4".into()),
             Underline::Double => parts.push("4:2".into()),
@@ -1735,7 +1796,7 @@ impl Screen {
         };
         parts.extend(color(t.fg, 30, 90, 38));
         parts.extend(color(t.bg, 40, 100, 48));
-        parts.extend(color(t.underline_color, 0, 0, 58));
+        parts.extend(color(self.extra(t).underline_color, 0, 0, 58));
         parts.join(";")
     }
 
@@ -1766,44 +1827,48 @@ impl Screen {
     }
 
     fn sgr(&mut self, params: &Params) {
+        // The underline color lives in the template's extra, which only
+        // changes after the loop, if any parameter set it.
+        let mut underline_color = None;
         let t = &mut self.cursor.template;
         // A hyperlink (OSC 8) is not an attribute; resets keep it.
         let reset = Cell {
-            link: t.link,
+            extra: t.extra,
             ..Cell::default()
         };
         if params.is_empty() {
             *t = reset;
-            return;
+            underline_color = Some(Color::Default);
         }
         let mut iter = params.iter();
         while let Some(param) = iter.next() {
             match param[0] {
-                0 => *t = reset,
+                0 => {
+                    *t = reset;
+                    underline_color = Some(Color::Default);
+                }
                 1 => t.flags.insert(Flags::BOLD),
                 2 => t.flags.insert(Flags::DIM),
                 3 => t.flags.insert(Flags::ITALIC),
-                4 => {
-                    t.underline = match param.get(1) {
-                        Some(0) => Underline::None,
-                        Some(2) => Underline::Double,
-                        Some(3) => Underline::Curly,
-                        Some(4) => Underline::Dotted,
-                        Some(5) => Underline::Dashed,
-                        _ => Underline::Single,
-                    }
-                }
+                4 => t.flags.set_underline(match param.get(1) {
+                    Some(0) => Underline::None,
+                    Some(2) => Underline::Double,
+                    Some(3) => Underline::Curly,
+                    Some(4) => Underline::Dotted,
+                    Some(5) => Underline::Dashed,
+                    _ => Underline::Single,
+                }),
                 5 | 6 => t.flags.insert(Flags::BLINK),
                 7 => t.flags.insert(Flags::INVERSE),
                 8 => t.flags.insert(Flags::HIDDEN),
                 9 => t.flags.insert(Flags::STRIKE),
-                21 => t.underline = Underline::Double,
+                21 => t.flags.set_underline(Underline::Double),
                 22 => {
                     t.flags.remove(Flags::BOLD);
                     t.flags.remove(Flags::DIM);
                 }
                 23 => t.flags.remove(Flags::ITALIC),
-                24 => t.underline = Underline::None,
+                24 => t.flags.set_underline(Underline::None),
                 25 => t.flags.remove(Flags::BLINK),
                 27 => t.flags.remove(Flags::INVERSE),
                 28 => t.flags.remove(Flags::HIDDEN),
@@ -1824,14 +1889,20 @@ impl Screen {
                 49 => t.bg = Color::Default,
                 58 => {
                     if let Some(color) = extended_color(param, &mut iter) {
-                        t.underline_color = color;
+                        underline_color = Some(color);
                     }
                 }
-                59 => t.underline_color = Color::Default,
+                59 => underline_color = Some(Color::Default),
                 n @ 90..=97 => t.fg = Color::Indexed((n - 90 + 8) as u8),
                 n @ 100..=107 => t.bg = Color::Indexed((n - 100 + 8) as u8),
                 n => log::debug!("unhandled SGR {n}"),
             }
+        }
+        if let Some(color) = underline_color
+            && self.extra(&self.cursor.template).underline_color != color
+        {
+            self.make_room(None, None);
+            self.update_template_extra(|extra| extra.underline_color = color);
         }
     }
 }

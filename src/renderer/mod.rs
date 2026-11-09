@@ -494,9 +494,15 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             if cell.flags.contains(Flags::WIDE_SPACER) {
                 continue;
             }
+            // Default (one comparison) for nearly every cell.
+            let extra = screen.extra(&cell);
             let shown = (cell.c == PLACEHOLDER).then(|| {
-                let decoded =
-                    graphics::decode_placeholder(&cell, screen.cluster(cell.cluster), placeholder);
+                let decoded = graphics::decode_placeholder(
+                    &cell,
+                    screen.cluster(&cell),
+                    extra.underline_color,
+                    placeholder,
+                );
                 let px = ox + x as f32 * cw;
                 images.extend(placeholder_quad(screen, decoded, (px, py), m));
                 decoded
@@ -539,7 +545,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 || cell.c == PLACEHOLDER
             {
                 None
-            } else if cell.cluster != 0 {
+            } else if extra.cluster != 0 {
                 cluster_text.clear();
                 screen.cell_text(&cell, &mut cluster_text);
                 // Emoji sequences span several cells; draw them two wide.
@@ -556,7 +562,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                     || is_icon(cell.c)
                         && row.cells.get(x + 1).is_some_and(|next| {
                             next.c == ' '
-                                && next.cluster == 0
+                                && screen.cluster(next).is_empty()
                                 && !next.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
                         });
                 glyphs.glyph(cell.c, style_of(&cell), wide)
@@ -566,10 +572,11 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
             if let Some(glyph) = glyph {
                 front.glyph(px, py, &glyph, fg);
             }
-            if cell.underline != Underline::None
-                && let Some(glyph) = glyphs.underline(cell.underline, span as u32)
+            let underline = cell.flags.underline();
+            if underline != Underline::None
+                && let Some(glyph) = glyphs.underline(underline, span as u32)
             {
-                let color = match cell.underline_color {
+                let color = match extra.underline_color {
                     Color::Default => fg,
                     Color::Indexed(i) => theme.indexed(i),
                     Color::Rgb(r, g, b) => Rgb(r, g, b),
@@ -577,7 +584,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 front.glyph(px, py, &glyph, color);
             }
             let point = Point { line, col: x };
-            if cell.underline == Underline::None
+            if underline == Underline::None
                 && frame
                     .link
                     .is_some_and(|(start, end)| start <= point && point <= end)

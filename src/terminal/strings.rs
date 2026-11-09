@@ -1,40 +1,62 @@
-//! Strings that cells refer to by a 16-bit id: hyperlink targets and
-//! grapheme cluster tails.
+//! Values that cells refer to by a 16-bit id: hyperlink targets, grapheme
+//! cluster tails, and the combinations of those and underline colors that
+//! a cell carries (`Extra`).
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 
-/// A table of distinct strings. Id 0 means "none"; a string's id is its
-/// index + 1, so a table holds at most `u16::MAX` strings.
-#[derive(Debug, Default)]
-pub(super) struct StringTable {
-    items: Vec<String>,
-    ids: HashMap<String, u16>,
+/// A table of distinct values. Id 0 means "none"; a value's id is its
+/// index + 1, so a table holds at most `u16::MAX` values.
+#[derive(Debug)]
+pub(super) struct Table<T> {
+    items: Vec<T>,
+    ids: HashMap<T, u16>,
 }
 
-impl StringTable {
+pub(super) type StringTable = Table<String>;
+
+impl<T> Default for Table<T> {
+    fn default() -> Self {
+        Table {
+            items: Vec::new(),
+            ids: HashMap::new(),
+        }
+    }
+}
+
+impl<T: Clone + Eq + Hash> Table<T> {
     const CAPACITY: usize = u16::MAX as usize;
 
-    pub(super) fn get(&self, id: u16) -> Option<&str> {
+    pub(super) fn get(&self, id: u16) -> Option<&T> {
         let index = usize::from(id).checked_sub(1)?;
-        self.items.get(index).map(String::as_str)
+        self.items.get(index)
     }
 
-    /// The id of `s`, if the table has it.
-    pub(super) fn find(&self, s: &str) -> Option<u16> {
-        self.ids.get(s).copied()
+    /// The id of `value`, if the table has it.
+    pub(super) fn find<Q>(&self, value: &Q) -> Option<u16>
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.ids.get(value).copied()
     }
 
-    /// The id of `s`, adding it if new; `None` when the table is full.
-    pub(super) fn insert(&mut self, s: &str) -> Option<u16> {
-        if let Some(id) = self.find(s) {
+    /// The id of `value`, adding it if new; `None` when the table is full.
+    pub(super) fn insert<Q>(&mut self, value: &Q) -> Option<u16>
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq + ToOwned<Owned = T> + ?Sized,
+    {
+        if let Some(id) = self.find(value) {
             return Some(id);
         }
-        if self.items.len() >= Self::CAPACITY {
+        if self.is_full() {
             return None;
         }
-        self.items.push(s.to_string());
+        self.items.push(value.to_owned());
         let id = self.items.len() as u16;
-        self.ids.insert(s.to_string(), id);
+        self.ids.insert(value.to_owned(), id);
         Some(id)
     }
 
@@ -42,17 +64,24 @@ impl StringTable {
         self.items.len() >= Self::CAPACITY
     }
 
-    /// Keeps only the strings whose id is marked in `used` (indexed by id),
+    /// Keeps only the values whose id is marked in `used` (indexed by id),
     /// and returns the new id of every old one (0 for dropped ones).
     pub(super) fn retain(&mut self, used: &[bool]) -> Vec<u16> {
+        self.retain_map(used, T::clone)
+    }
+
+    /// Like `retain`, replacing each kept value with `map` of it. Values
+    /// that `map` makes equal must not both be kept.
+    pub(super) fn retain_map(&mut self, used: &[bool], mut map: impl FnMut(&T) -> T) -> Vec<u16> {
         let mut remap = vec![0; self.items.len() + 1];
         let old = std::mem::take(&mut self.items);
         self.ids.clear();
-        for (index, s) in old.into_iter().enumerate() {
+        for (index, value) in old.iter().enumerate() {
             if used.get(index + 1).copied().unwrap_or(false) {
-                self.items.push(s.clone());
+                let value = map(value);
+                self.items.push(value.clone());
                 let id = self.items.len() as u16;
-                self.ids.insert(s, id);
+                self.ids.insert(value, id);
                 remap[index + 1] = id;
             }
         }
@@ -75,7 +104,7 @@ mod tests {
         let a = table.insert("a").unwrap();
         assert_eq!(table.insert("b"), Some(a + 1));
         assert_eq!(table.insert("a"), Some(a));
-        assert_eq!(table.get(a), Some("a"));
+        assert_eq!(table.get(a).map(String::as_str), Some("a"));
         assert_eq!(table.get(0), None);
     }
 
@@ -89,8 +118,24 @@ mod tests {
         used[3] = true;
         let remap = table.retain(&used);
         assert_eq!(remap, vec![0, 0, 0, 1]);
-        assert_eq!(table.get(1), Some("c"));
+        assert_eq!(table.get(1).map(String::as_str), Some("c"));
         assert_eq!(table.find("a"), None);
         assert_eq!(table.insert("a"), Some(2));
+    }
+
+    #[test]
+    fn retain_map_rewrites_kept_values() {
+        let mut table = Table::<(u16, u16)>::default();
+        for value in [(1, 1), (2, 2), (3, 3)] {
+            table.insert(&value);
+        }
+        let mut used = table.unused();
+        used[1] = true;
+        used[3] = true;
+        let remap = table.retain_map(&used, |&(a, b)| (a * 10, b));
+        assert_eq!(remap, vec![0, 1, 0, 2]);
+        assert_eq!(table.get(2), Some(&(30, 3)));
+        assert_eq!(table.find(&(30, 3)), Some(2));
+        assert_eq!(table.find(&(3, 3)), None);
     }
 }
