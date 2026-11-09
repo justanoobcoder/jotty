@@ -929,12 +929,13 @@ fn color_number(color: Color) -> u32 {
 }
 
 /// Decodes a placeholder cell: the foreground color holds the image id
-/// (with the third diacritic as its high byte), the underline color the
+/// (with the third diacritic as its high byte), its `underline_color` the
 /// placement id, and the first two diacritics in `marks` the row and
 /// column. Omitted diacritics continue the cell to the left, `left`.
 pub fn decode_placeholder(
     cell: &Cell,
     marks: &str,
+    underline_color: Color,
     left: Option<PlaceholderCell>,
 ) -> PlaceholderCell {
     let mut values = marks
@@ -946,7 +947,7 @@ pub fn decode_placeholder(
         values.next().flatten(),
     );
     let low = color_number(cell.fg);
-    let placement = color_number(cell.underline_color);
+    let placement = color_number(underline_color);
     // The left cell continues into this one if it shows the same placement.
     let left = left.filter(|l| l.image & 0xff_ffff == low && l.placement == placement);
     let row = row.unwrap_or_else(|| left.map_or(0, |l| l.row));
@@ -1137,7 +1138,7 @@ mod tests {
             fg: Color::Rgb(0, 0, 42),
             ..Cell::default()
         };
-        let first = decode_placeholder(&cell, "\u{0305}\u{030D}\u{030E}", None);
+        let first = decode_placeholder(&cell, "\u{0305}\u{030D}\u{030E}", Color::Default, None);
         assert_eq!(
             first,
             PlaceholderCell {
@@ -1147,7 +1148,7 @@ mod tests {
                 col: 1,
             }
         );
-        let next = decode_placeholder(&cell, "", Some(first));
+        let next = decode_placeholder(&cell, "", Color::Default, Some(first));
         assert_eq!((next.image, next.row, next.col), (first.image, 0, 2));
     }
 }

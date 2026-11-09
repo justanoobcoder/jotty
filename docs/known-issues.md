@@ -80,9 +80,12 @@ nothing surprises you.
   A burst of 4 is shown, then one every 2 seconds; the rest are dropped, as
   they are for 30 seconds after failing to reach the session bus.
 - Hyperlinks (OSC 8) and grapheme clusters are stored in tables of 65535
-  entries per terminal. When one fills, entries no cell uses any more are
-  dropped; only when 65535 are still on the screen or in the history are
-  new ones dropped (the text stays).
+  entries per terminal, and so are the distinct combinations of hyperlink,
+  cluster and underline color (SGR 58) that cells carry. When one fills,
+  entries no cell uses any more are dropped; only when 65535 are still on
+  the screen or in the history are new ones dropped (the text stays, without
+  that link, cluster tail or underline color). A link the program ends
+  always ends, even if its underline color has to go with it.
 - Limits against runaway output: a grapheme cluster keeps at most 32
   characters after its first one, a window title 256 characters, and an
   OSC string 16 KiB; the rest is dropped. `CSI n b` (REP) repeats at most

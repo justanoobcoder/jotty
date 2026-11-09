@@ -78,8 +78,10 @@ so it lands as if printed character by character.
   `take_bell()`, `take_notifications()` and `take_dirty()`.
 - colors the program changed (OSC 4/10/11/12), which the renderer applies
   over the theme, and the configured defaults that queries report.
-- tables of hyperlink targets (OSC 8) and grapheme cluster tails, which
-  cells refer to by a 16-bit id.
+- tables of hyperlink targets (OSC 8), grapheme cluster tails, and the
+  `Extra`s that combine them with an underline color, each by a 16-bit id.
+  When a table fills up, `collect_strings` drops what no cell, template or
+  saved cursor refers to and renumbers the rest.
 - the scrollback view offset, and the prompt marker from OSC 133;B.
 
 Each `Row` also keeps the last OSC 133 mark set on it (prompt, command line
@@ -87,10 +89,13 @@ or output start), which moves into the history with the row and is cleared
 when the row is erased. `Screen::command_output` walks these marks to find
 the output a Ctrl+double click selects.
 
-A `Cell` (24 bytes) is a `char`, foreground and background colors
-(default, 256-color index or RGB), attribute flags, an underline style
-(single, double, curly, dotted, dashed; SGR `4:n`) with its own color
-(SGR 58), a hyperlink id and a cluster id. A double-width character
+A `Cell` is 16 bytes, since the grid and its history hold millions of them
+and printing and scrolling are bound by writing them. It is a `char`,
+foreground and background colors (default, 256-color index or RGB),
+attribute flags that also hold the underline style (single, double, curly,
+dotted, dashed; SGR `4:n`), and the id of its `Extra`: the hyperlink id,
+cluster id and underline color (SGR 58), which few cells have. Id 0 is none
+of them, so most cells never look the table up. A double-width character
 occupies a `WIDE` cell followed by a `WIDE_SPACER` cell. Every write and
 erase calls `split_wide()` so a wide character is never left
 half-overwritten.
