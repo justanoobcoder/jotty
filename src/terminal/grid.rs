@@ -147,6 +147,19 @@ impl Row {
         }
     }
 
+    /// Makes this a blank row of `cols` cells, keeping its allocation.
+    fn reset(&mut self, cols: usize, template: &Cell) {
+        let blank = Cell::blank(template);
+        if self.cells.len() == cols {
+            self.cells.fill(blank);
+        } else {
+            self.cells.clear();
+            self.cells.resize(cols, blank);
+        }
+        self.wrapped = false;
+        self.mark = None;
+    }
+
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
         if let Some(last) = self.cells.last_mut()
@@ -201,15 +214,31 @@ impl Grid {
         self.rows.len()
     }
 
-    pub fn push_history(&mut self, row: Row) {
+    /// Adds `row` to the history. Returns the row that no longer fits (the
+    /// oldest, or `row` itself without history), for reuse.
+    pub fn push_history(&mut self, row: Row) -> Option<Row> {
         self.scrolled += 1;
         if self.max_history == 0 {
-            return;
+            return Some(row);
         }
-        if self.history.len() == self.max_history {
-            self.history.pop_front();
-        }
+        let dropped = if self.history.len() == self.max_history {
+            self.history.pop_front()
+        } else {
+            None
+        };
         self.history.push_back(row);
+        dropped
+    }
+
+    /// A blank row, made from `spare` when there is one.
+    fn blank_row(&self, spare: Option<Row>, template: &Cell) -> Row {
+        match spare {
+            Some(mut row) => {
+                row.reset(self.cols, template);
+                row
+            }
+            None => Row::new(self.cols, template),
+        }
     }
 
     /// Scrolls rows `top..=bottom` up by `n`, filling the bottom with blank
@@ -225,11 +254,16 @@ impl Grid {
     ) -> usize {
         let n = n.min(bottom + 1 - top);
         for _ in 0..n {
+            // Every line of output scrolls the screen once it is full, so
+            // the row that leaves is reused instead of freed and allocated.
             let row = self.rows.remove(top);
-            if keep {
-                self.push_history(row);
-            }
-            self.rows.insert(bottom, Row::new(self.cols, template));
+            let spare = if keep {
+                self.push_history(row)
+            } else {
+                Some(row)
+            };
+            let blank = self.blank_row(spare, template);
+            self.rows.insert(bottom, blank);
         }
         n
     }
@@ -238,8 +272,9 @@ impl Grid {
     pub fn scroll_down(&mut self, top: usize, bottom: usize, n: usize, template: &Cell) {
         let n = n.min(bottom + 1 - top);
         for _ in 0..n {
-            self.rows.remove(bottom);
-            self.rows.insert(top, Row::new(self.cols, template));
+            let row = self.rows.remove(bottom);
+            let blank = self.blank_row(Some(row), template);
+            self.rows.insert(top, blank);
         }
     }
 
@@ -256,7 +291,8 @@ impl Grid {
         if rows < self.rows.len() {
             let excess = (keep_row + 1).saturating_sub(rows);
             for row in self.rows.drain(..excess).collect::<Vec<_>>() {
-                self.push_history(row);
+                // Resizing is rare; the dropped row isn't worth keeping.
+                let _ = self.push_history(row);
                 moved -= 1;
             }
             self.rows.truncate(rows);
@@ -515,6 +551,35 @@ mod tests {
         }
         let history: Vec<_> = grid.history.iter().map(Row::text).collect();
         assert_eq!(history, ["b", "c"]);
+    }
+
+    #[test]
+    fn reused_rows_come_back_blank() {
+        let template = Cell {
+            bg: Color::Indexed(4),
+            ..Cell::default()
+        };
+        // A full history and no history both hand back a used row.
+        for max_history in [1, 0] {
+            let mut grid = Grid::new(3, 1, max_history);
+            for c in ['a', 'b', 'c'] {
+                let row = &mut grid.rows[0];
+                row.cells[0].c = c;
+                row.cells[1].link = 1;
+                row.wrapped = true;
+                row.mark = Some(Mark::Prompt);
+                grid.scroll_up(0, 0, 1, &template, true);
+                let row = &grid.rows[0];
+                assert_eq!(row.cells, [Cell::blank(&template); 3]);
+                assert!(!row.wrapped);
+                assert_eq!(row.mark, None);
+            }
+        }
+        let mut grid = grid_with_lines(&["a", "b"], 3);
+        grid.rows[1].wrapped = true;
+        grid.scroll_down(0, 1, 1, &template);
+        assert_eq!(grid.rows[0].cells, [Cell::blank(&template); 3]);
+        assert!(!grid.rows[0].wrapped);
     }
 
     #[test]

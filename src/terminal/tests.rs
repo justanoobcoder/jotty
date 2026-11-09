@@ -49,6 +49,36 @@ fn pending_wrap_holds_cursor_on_last_column() {
 }
 
 #[test]
+fn ascii_runs_wrap_across_rows_and_scroll() {
+    let mut t = term(4, 2);
+    t.feed(b"abcdefghij");
+    assert_eq!(lines(&t), ["efgh", "ij"]);
+    assert!(t.screen().grid().rows[0].wrapped);
+    assert_eq!(t.screen().cursor(), (1, 2));
+    // A run that exactly fills the row leaves a pending wrap.
+    t.feed(b"\r\nwxyz");
+    assert_eq!(lines(&t), ["ij", "wxyz"]);
+    assert_eq!(t.screen().cursor(), (1, 3));
+    t.feed(b"!");
+    assert_eq!(lines(&t), ["wxyz", "!"]);
+}
+
+#[test]
+fn queued_ascii_is_written_before_the_next_sequence() {
+    let mut t = term(10, 2);
+    // Across feeds, before a report, and before an attribute change.
+    t.feed(b"ab");
+    t.feed(b"c\x1b[6nd\x1b[1me");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b[1;4R");
+    assert_eq!(lines(&t), ["abcde", ""]);
+    assert!(!cell(&t, 0, 3).flags.contains(Flags::BOLD));
+    assert!(cell(&t, 0, 4).flags.contains(Flags::BOLD));
+    // REP repeats the last character of a run.
+    t.feed(b"xy\x1b[2b");
+    assert_eq!(lines(&t), ["abcdexyyy", ""]);
+}
+
+#[test]
 fn autowrap_disabled_overwrites_last_column() {
     let mut t = term(4, 2);
     t.feed(b"\x1b[?7labcdef");

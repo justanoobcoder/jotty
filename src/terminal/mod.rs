@@ -54,7 +54,12 @@ impl Terminal {
 
     /// Processes output from the child process. APC strings are taken out
     /// before the parser sees the bytes.
-    pub fn feed(&mut self, mut bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.feed_parts(bytes);
+        self.screen.flush_ascii();
+    }
+
+    fn feed_parts(&mut self, mut bytes: &[u8]) {
         while let Some(&first) = bytes.first() {
             match std::mem::take(&mut self.apc) {
                 Apc::Outside => {
@@ -281,6 +286,9 @@ pub struct Screen {
     pub modes: Modes,
     pub cursor_shape: CursorShape,
     last_char: Option<char>,
+    /// Printable ASCII from `print` not written to the grid yet, so that
+    /// it can be written a row at a time; see `flush_ascii`.
+    ascii_run: Vec<u8>,
     /// Cursor color set by the program (OSC 12), overriding the configured one.
     cursor_color: Option<(u8, u8, u8)>,
     /// The configured cursor color, reported by OSC 12 queries.
@@ -436,6 +444,7 @@ impl Screen {
             modes: Modes::default(),
             cursor_shape: CursorShape::default(),
             last_char: None,
+            ascii_run: Vec::new(),
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
@@ -883,6 +892,7 @@ impl Screen {
 
     /// Handles an APC string; kitty graphics commands start with `G`.
     fn apc_dispatch(&mut self, body: &[u8]) {
+        self.flush_ascii();
         self.last_printed = None;
         self.cluster_start = None;
         let Some(command) = body.strip_prefix(b"G") else {
@@ -1277,9 +1287,6 @@ impl Screen {
     }
 
     fn print_char(&mut self, c: char) {
-        if self.print_ascii(c) {
-            return;
-        }
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
         let width = c.width().unwrap_or(0).min(2);
         if self.join_cluster(c, width) || width == 0 {
@@ -1289,45 +1296,80 @@ impl Screen {
         self.cluster_start = self.print_cell(c, width, Flags::empty());
     }
 
-    /// Prints `c` when it is printable ASCII in the common case, which is
-    /// what nearly all output is: one column, no charset mapping, no
-    /// cluster to join, no pending wrap, insert mode or wide character to
-    /// split. Returns false, having done nothing, for anything else, which
-    /// `print_char` then handles in full.
-    #[inline]
-    fn print_ascii(&mut self, c: char) -> bool {
-        if !matches!(c, ' '..='~')
-            || self.cursor.charsets[self.cursor.active_charset] != Charset::Ascii
-            || self.cursor.pending_wrap
-            || self.modes.insert
-        {
-            return false;
+    /// Writes the printable ASCII queued by `print`. Everything that could
+    /// change how it prints (charset, modes, attributes, the cursor) comes
+    /// through another `Perform` call, which writes the queue first, so it
+    /// prints as if each character had been printed when it arrived.
+    pub(crate) fn flush_ascii(&mut self) {
+        if self.ascii_run.is_empty() {
+            return;
         }
-        // Mirrors `join_cluster`: only a lone ASCII base can't take `c`.
+        let run = std::mem::take(&mut self.ascii_run);
+        self.write_ascii(&run);
+        self.ascii_run = run;
+        self.ascii_run.clear();
+    }
+
+    /// Prints printable ASCII a row at a time: one column each, nothing to
+    /// look up per character. Whatever the general path must handle (a
+    /// charset, insert mode, a pending wrap, wide characters to split, a
+    /// cluster the first character might join) goes through `print_char`.
+    fn write_ascii(&mut self, mut run: &[u8]) {
+        if self.cursor.charsets[self.cursor.active_charset] != Charset::Ascii || self.modes.insert {
+            for &b in run {
+                self.print_char(b as char);
+            }
+            return;
+        }
+        // Only a lone ASCII base can't take the first character into its
+        // cluster (see `join_cluster`).
         if let Some((row, col)) = self.cluster_start
             && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col))
             && !(start.c.is_ascii() && start.cluster == 0)
+            && let Some((&first, rest)) = run.split_first()
         {
-            return false;
+            self.print_char(first as char);
+            run = rest;
         }
-        let (row, col) = (self.cursor.row, self.cursor.col);
-        let mut cell = self.cursor.template;
-        cell.c = c;
-        let target = &mut self.grid_mut().rows[row].cells[col];
-        if target.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER) {
-            return false;
+        while let Some(&first) = run.first() {
+            if self.cursor.pending_wrap {
+                self.print_char(first as char);
+                run = &run[1..];
+                continue;
+            }
+            let (row, col) = (self.cursor.row, self.cursor.col);
+            let (chunk, rest) = run.split_at(run.len().min(self.cols - col));
+            run = rest;
+            let template = self.cursor.template;
+            let cells = &mut self.grid_mut().rows[row].cells[col..col + chunk.len()];
+            // Branchless, so that it vectorizes.
+            let wide = cells.iter().fold(false, |any, cell| {
+                any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
+            });
+            if wide {
+                for &b in chunk {
+                    self.print_char(b as char);
+                }
+                continue;
+            }
+            for (cell, &b) in cells.iter_mut().zip(chunk) {
+                *cell = Cell {
+                    c: b as char,
+                    ..template
+                };
+            }
+            let last = col + chunk.len() - 1;
+            if last + 1 >= self.cols {
+                self.cursor.col = self.cols - 1;
+                self.cursor.pending_wrap = self.modes.autowrap;
+            } else {
+                self.cursor.col = last + 1;
+            }
+            self.last_char = Some(chunk[chunk.len() - 1] as char);
+            self.last_printed = Some((row, last));
+            self.cluster_start = Some((row, last));
+            self.dirty = true;
         }
-        *target = cell;
-        if col + 1 >= self.cols {
-            self.cursor.pending_wrap = self.modes.autowrap;
-        } else {
-            self.cursor.col += 1;
-        }
-        self.last_char = Some(c);
-        self.last_printed = Some((row, col));
-        self.cluster_start = Some((row, col));
-        self.dirty = true;
-        true
     }
 
     /// Writes `c` at the cursor with the current attributes and advances.
@@ -1833,12 +1875,20 @@ fn extended_color<'a>(param: &[u16], iter: &mut impl Iterator<Item = &'a [u16]>)
     }
 }
 
+// Every method but `print` first writes the queued ASCII (`flush_ascii`).
 impl Perform for Screen {
+    #[inline]
     fn print(&mut self, c: char) {
-        self.print_char(c);
+        if matches!(c, ' '..='~') {
+            self.ascii_run.push(c as u8);
+        } else {
+            self.flush_ascii();
+            self.print_char(c);
+        }
     }
 
     fn execute(&mut self, byte: u8) {
+        self.flush_ascii();
         self.last_printed = None;
         self.cluster_start = None;
         match byte {
@@ -1860,6 +1910,7 @@ impl Perform for Screen {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        self.flush_ascii();
         // Too many parameters or intermediates: acting on what's left would
         // do something the program didn't ask for.
         if ignore {
@@ -2028,6 +2079,7 @@ impl Perform for Screen {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        self.flush_ascii();
         if ignore {
             return;
         }
@@ -2084,6 +2136,7 @@ impl Perform for Screen {
     }
 
     fn hook(&mut self, _params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        self.flush_ascii();
         if ignore {
             return;
         }
@@ -2095,6 +2148,7 @@ impl Perform for Screen {
     }
 
     fn put(&mut self, byte: u8) {
+        self.flush_ascii();
         if let Some(data) = &mut self.decrqss
             && data.len() < 16
         {
@@ -2103,12 +2157,14 @@ impl Perform for Screen {
     }
 
     fn unhook(&mut self) {
+        self.flush_ascii();
         if let Some(request) = self.decrqss.take() {
             self.report_setting(&request);
         }
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        self.flush_ascii();
         match params {
             // Each further argument applies to the next color, as in xterm:
             // `OSC 10 ; fg ; bg` also sets the background.
