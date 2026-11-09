@@ -12,6 +12,8 @@ use std::hash::Hash;
 pub(super) struct Table<T> {
     items: Vec<T>,
     ids: HashMap<T, u16>,
+    /// At most `u16::MAX`; tests lower it to fill tables quickly.
+    capacity: usize,
 }
 
 pub(super) type StringTable = Table<String>;
@@ -21,12 +23,16 @@ impl<T> Default for Table<T> {
         Table {
             items: Vec::new(),
             ids: HashMap::new(),
+            capacity: u16::MAX as usize,
         }
     }
 }
 
 impl<T: Clone + Eq + Hash> Table<T> {
-    const CAPACITY: usize = u16::MAX as usize;
+    #[cfg(test)]
+    pub(super) fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.min(u16::MAX as usize);
+    }
 
     pub(super) fn get(&self, id: u16) -> Option<&T> {
         let index = usize::from(id).checked_sub(1)?;
@@ -61,7 +67,7 @@ impl<T: Clone + Eq + Hash> Table<T> {
     }
 
     pub(super) fn is_full(&self) -> bool {
-        self.items.len() >= Self::CAPACITY
+        self.items.len() >= self.capacity
     }
 
     /// Keeps only the values whose id is marked in `used` (indexed by id),

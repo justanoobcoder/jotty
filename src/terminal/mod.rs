@@ -43,6 +43,13 @@ enum Apc {
     BodyEscape(Option<Vec<u8>>),
 }
 
+/// The string tables that extras refer to, see `Screen::make_room`.
+#[derive(Clone, Copy)]
+enum Strings {
+    Links,
+    Clusters,
+}
+
 impl Terminal {
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         Terminal {
@@ -674,7 +681,11 @@ impl Screen {
 
     /// What `cell` carries besides its character, colors and flags.
     pub fn extra(&self, cell: &Cell) -> Extra {
-        self.extras.get(cell.extra).copied().unwrap_or_default()
+        self.extra_by_id(cell.extra)
+    }
+
+    fn extra_by_id(&self, id: u16) -> Extra {
+        self.extras.get(id).copied().unwrap_or_default()
     }
 
     /// The characters after a cell's `c` in its grapheme cluster.
@@ -712,29 +723,74 @@ impl Screen {
         self.extras.insert(extra)
     }
 
-    /// Drops unused strings and extras when adding `link` or `cluster`, or
-    /// a new extra, might not fit otherwise. This renumbers ids, so ids are
-    /// read only after it, and what gets added is added after it too: it
-    /// would drop a new string that no cell refers to yet.
-    fn make_room(&mut self, link: Option<&str>, cluster: Option<&str>) {
-        let full = |table: &StringTable, s: Option<&str>| {
-            s.is_some_and(|s| table.find(s).is_none() && table.is_full())
+    /// Drops unused strings and extras if adding `string` (when given)
+    /// and then the extra that `extra` makes from its id won't fit
+    /// otherwise. Only then: a collection scans the whole history.
+    ///
+    /// This renumbers ids, so callers read ids only after it, and add the
+    /// string after it: it would drop a new string no cell refers to yet.
+    fn make_room(&mut self, string: Option<(Strings, &str)>, extra: impl FnOnce(u16) -> Extra) {
+        let id = match string {
+            None => 0,
+            Some((kind, s)) => {
+                let table = match kind {
+                    Strings::Links => &self.links,
+                    Strings::Clusters => &self.clusters,
+                };
+                match table.find(s) {
+                    Some(id) => id,
+                    // A new string makes a new extra too.
+                    None => {
+                        if table.is_full() || self.extras.is_full() {
+                            self.collect_strings();
+                        }
+                        return;
+                    }
+                }
+            }
         };
-        if full(&self.links, link) || full(&self.clusters, cluster) || self.extras.is_full() {
+        let extra = extra(id);
+        if self.extras.is_full() && extra != Extra::default() && self.extras.find(&extra).is_none()
+        {
             self.collect_strings();
         }
     }
 
     /// Changes the extra of the cursor's template (its link or underline
-    /// color); new cells get it. Left as it was if the table is full, so
-    /// callers make room first.
+    /// color); new cells get it. Callers make room first; this doesn't, as
+    /// they may have just added a string it would drop.
+    ///
+    /// If the table is still full of extras in use, the underline color is
+    /// dropped to make it fit, and failing that the link: a link must still
+    /// end when the program ends it. Only an underline color that can't be
+    /// set leaves the template as it was.
     fn update_template_extra(&mut self, update: impl FnOnce(&mut Extra)) {
-        let mut extra = self.extra(&self.cursor.template);
-        update(&mut extra);
-        match self.intern_extra(&extra) {
-            Some(id) => self.cursor.template.extra = id,
-            None => log::debug!("too many distinct links and underline colors; ignoring one"),
+        let current = self.extra(&self.cursor.template);
+        let mut wanted = current;
+        update(&mut wanted);
+        let plain = Extra {
+            underline_color: Color::Default,
+            ..wanted
+        };
+        let id = self
+            .intern_extra(&wanted)
+            .or_else(|| self.intern_extra(&plain))
+            .or((wanted.link != current.link).then_some(0));
+        if id.is_none_or(|id| self.extra_by_id(id) != wanted) {
+            log::debug!("too many distinct links and underline colors; dropping one");
         }
+        if let Some(id) = id {
+            self.cursor.template.extra = id;
+        }
+    }
+
+    /// Lowers the capacity of the string and extra tables, to fill them in
+    /// tests.
+    #[cfg(test)]
+    pub(super) fn limit_tables(&mut self, capacity: usize) {
+        self.links.set_capacity(capacity);
+        self.clusters.set_capacity(capacity);
+        self.extras.set_capacity(capacity);
     }
 
     /// Drops the hyperlinks, cluster tails and extras no cell refers to any
@@ -828,7 +884,11 @@ impl Screen {
         // Past the limit the character is still consumed, so that a flood of
         // combining marks costs constant time each, but it isn't kept.
         if tail.chars().count() <= MAX_CLUSTER_CHARS {
-            self.make_room(None, Some(tail));
+            let joined = self.extra(&start);
+            self.make_room(Some((Strings::Clusters, tail)), |cluster| Extra {
+                cluster,
+                ..joined
+            });
             let extra = match self.clusters.insert(tail) {
                 Some(cluster) => {
                     let start = self.grid().rows[row].cells[col];
@@ -863,16 +923,26 @@ impl Screen {
     /// targets share an id; when all ids are used by cells still on the
     /// screen or in the history, new links are ignored.
     fn set_link(&mut self, uri: &str) {
-        self.make_room(Some(uri).filter(|uri| !uri.is_empty()), None);
-        let link = if uri.is_empty() {
-            0
-        } else {
-            self.links.insert(uri).unwrap_or_else(|| {
-                log::debug!("too many hyperlinks; ignoring {uri}");
-                0
-            })
+        // The current link ends first, so that a collection to make room
+        // for the new one can drop it if no cell has it.
+        let ended = Extra {
+            link: 0,
+            ..self.extra(&self.cursor.template)
         };
-        self.update_template_extra(|extra| extra.link = link);
+        self.make_room(None, |_| ended);
+        self.update_template_extra(|extra| extra.link = 0);
+        if uri.is_empty() {
+            return;
+        }
+        let unlinked = self.extra(&self.cursor.template);
+        self.make_room(Some((Strings::Links, uri)), |link| Extra {
+            link,
+            ..unlinked
+        });
+        match self.links.insert(uri) {
+            Some(link) => self.update_template_extra(|extra| extra.link = link),
+            None => log::debug!("too many hyperlinks; ignoring {uri}"),
+        }
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
@@ -1898,10 +1968,14 @@ impl Screen {
                 n => log::debug!("unhandled SGR {n}"),
             }
         }
+        let current = self.extra(&self.cursor.template);
         if let Some(color) = underline_color
-            && self.extra(&self.cursor.template).underline_color != color
+            && current.underline_color != color
         {
-            self.make_room(None, None);
+            self.make_room(None, |_| Extra {
+                underline_color: color,
+                ..current
+            });
             self.update_template_extra(|extra| extra.underline_color = color);
         }
     }

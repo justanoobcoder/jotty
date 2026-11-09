@@ -84,7 +84,8 @@ nothing surprises you.
   cluster and underline color (SGR 58) that cells carry. When one fills,
   entries no cell uses any more are dropped; only when 65535 are still on
   the screen or in the history are new ones dropped (the text stays, without
-  that link, cluster tail or underline color).
+  that link, cluster tail or underline color). A link the program ends
+  always ends, even if its underline color has to go with it.
 - Limits against runaway output: a grapheme cluster keeps at most 32
   characters after its first one, a window title 256 characters, and an
   OSC string 16 KiB; the rest is dropped. `CSI n b` (REP) repeats at most

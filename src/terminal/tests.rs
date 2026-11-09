@@ -1356,6 +1356,42 @@ fn a_cell_keeps_its_link_cluster_and_underline_color_together() {
 }
 
 #[test]
+fn a_new_link_replaces_one_only_the_cursor_had() {
+    let mut t = term(10, 1);
+    t.screen_mut().limit_tables(2);
+    // `b` fills the link table, but no cell has it: `c` takes its place.
+    t.feed(b"\x1b]8;;a\x1b\\x\x1b]8;;b\x1b\\\x1b]8;;c\x1b\\y");
+    assert_eq!(t.screen().link(extra(&t, 0, 0).link), Some("a"));
+    assert_eq!(t.screen().link(extra(&t, 0, 1).link), Some("c"));
+}
+
+#[test]
+fn links_end_even_when_the_extra_table_is_full() {
+    let mut t = term(10, 1);
+    t.screen_mut().limit_tables(2);
+    // Two extras in use fill the table; ending the link would need a
+    // third, (no link, color 1). The color goes rather than the link stay.
+    t.feed(b"\x1b]8;;L\x1b\\y\x1b[58;5;1mx\x1b]8;;\x1b\\z");
+    assert_eq!(t.screen().link(extra(&t, 0, 1).link), Some("L"));
+    assert_eq!(extra(&t, 0, 2), Extra::default());
+}
+
+#[test]
+fn a_full_extra_table_is_not_collected_for_an_extra_it_has() {
+    let mut t = term(10, 1);
+    t.screen_mut().limit_tables(2);
+    // `a` is overwritten, so its extra is unused, but the table is full.
+    t.feed(b"\x1b]8;;a\x1b\\x\x1b]8;;\x1b\\\ry\x1b]8;;b\x1b\\z");
+    let id = cell(&t, 0, 1).extra;
+    // Starting `b` again needs no new extra, so nothing is collected and
+    // ids stay as they are (a collection would renumber `z`'s).
+    t.feed(b"\x1b]8;;b\x1b\\w");
+    assert_eq!(cell(&t, 0, 1).extra, id);
+    assert_eq!(cell(&t, 0, 2).extra, id);
+    assert_eq!(t.screen().link(extra(&t, 0, 2).link), Some("b"));
+}
+
+#[test]
 fn unused_extras_are_dropped_when_the_table_fills() {
     // Every line gets an underline color of its own, so each takes an
     // extra; without history they scroll away and their ids are freed.
