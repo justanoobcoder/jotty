@@ -65,7 +65,8 @@ so it lands as if printed character by character.
 
 `Screen` holds:
 
-- two `Grid`s, primary and alternate. Each grid has visible `Row`s plus a
+- two `Grid`s, primary and alternate. Each grid has visible `Row`s, in a
+  `VecDeque` so that scrolling the whole screen shifts none of them, plus a
   bounded `VecDeque` of history rows; the alternate grid keeps no history.
 - the cursor: position, a template cell carrying the current attributes, the
   pending-wrap flag (set after writing the last column), and the G0/G1

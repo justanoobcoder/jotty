@@ -268,7 +268,7 @@ impl Row {
 /// One screen buffer: the visible rows plus scrollback history.
 #[derive(Debug, Clone)]
 pub struct Grid {
-    pub rows: Vec<Row>,
+    pub rows: VecDeque<Row>,
     pub history: VecDeque<Row>,
     pub max_history: usize,
     /// Rows scrolled off the top so far (kept in history or not), so that
@@ -337,7 +337,9 @@ impl Grid {
         for _ in 0..n {
             // Every line of output scrolls the screen once it is full, so
             // the row that leaves is reused instead of freed and allocated.
-            let row = self.rows.remove(top);
+            // At the top of the screen, as nearly always, this takes no
+            // shifting: the rows are a ring.
+            let row = self.rows.remove(top).expect("the region is on screen");
             let spare = if keep {
                 self.push_history(row)
             } else {
@@ -353,7 +355,7 @@ impl Grid {
     pub fn scroll_down(&mut self, top: usize, bottom: usize, n: usize, template: &Cell) {
         let n = n.min(bottom + 1 - top);
         for _ in 0..n {
-            let row = self.rows.remove(bottom);
+            let row = self.rows.remove(bottom).expect("the region is on screen");
             let blank = self.blank_row(Some(row), template);
             self.rows.insert(top, blank);
         }
@@ -386,7 +388,7 @@ impl Grid {
                     self.scrolled = self.scrolled.saturating_sub(1);
                     moved += 1;
                 }
-                None => self.rows.push(Row::new(cols, &Cell::default())),
+                None => self.rows.push_back(Row::new(cols, &Cell::default())),
             }
         }
         moved
@@ -534,7 +536,7 @@ impl Grid {
         }
         let drop = out.len().saturating_sub(self.max_history);
         self.history = out.into_iter().skip(drop).collect();
-        self.rows = screen;
+        self.rows = screen.into();
         self.cols = cols;
     }
 }
