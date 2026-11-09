@@ -71,8 +71,8 @@ impl Terminal {
             match std::mem::take(&mut self.apc) {
                 Apc::Outside => {
                     // The first `ESC _`, or an `ESC` at the end.
-                    let start = (0..bytes.len())
-                        .find(|&i| bytes[i] == 0x1b && bytes.get(i + 1).is_none_or(|&b| b == b'_'));
+                    let start = memchr::memchr_iter(0x1b, bytes)
+                        .find(|&i| bytes.get(i + 1).is_none_or(|&b| b == b'_'));
                     let Some(i) = start else {
                         self.parser.advance(&mut self.screen, bytes);
                         return;
@@ -91,7 +91,7 @@ impl Terminal {
                 }
                 Apc::Escape => self.parser.advance(&mut self.screen, b"\x1b"),
                 Apc::Body(mut body) => {
-                    let end = bytes.iter().position(|&b| matches!(b, 0x1b | 0x18 | 0x1a));
+                    let end = memchr::memchr3(0x1b, 0x18, 0x1a, bytes);
                     let part = &bytes[..end.unwrap_or(bytes.len())];
                     if body
                         .as_ref()
