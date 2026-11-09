@@ -600,6 +600,17 @@ fn combining_marks_join_the_previous_cell() {
 }
 
 #[test]
+fn ascii_after_a_cluster_starts_a_new_cell() {
+    let mut t = term(10, 1);
+    // The ASCII fast path must not skip a base cell that already has a tail.
+    t.feed("e\u{301}\u{302}ab".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "e\u{301}\u{302}");
+    assert_eq!(text_at(&t, 0, 1), "a");
+    assert_eq!(text_at(&t, 0, 2), "b");
+    assert_eq!(t.screen().cursor(), (0, 3));
+}
+
+#[test]
 fn emoji_sequences_join_and_keep_their_width() {
     let mut t = term(20, 1);
     // A ZWJ family (2+0+2 columns) and a flag (1+1), as wcwidth counts.

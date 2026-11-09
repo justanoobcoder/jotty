@@ -733,6 +733,12 @@ impl Screen {
         let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
             return false;
         };
+        // Two printable ASCII characters never form one cluster: none is
+        // Extend, ZWJ, SpacingMark, Prepend, a regional indicator or Hangul.
+        // This skips the segmentation below for nearly all output.
+        if c.is_ascii() && start.c.is_ascii() && start.cluster == 0 {
+            return false;
+        }
         let mut text = String::new();
         self.cell_text(&start, &mut text);
         let base = start.c.len_utf8();
