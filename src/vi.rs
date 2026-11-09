@@ -243,7 +243,7 @@ fn top(screen: &Screen) -> isize {
 fn cell_flags(screen: &Screen, p: Point) -> Flags {
     screen
         .row_at(p.line)
-        .and_then(|r| r.cells.get(p.col))
+        .and_then(|r| r.cells().get(p.col))
         .map_or(Flags::empty(), |c| c.flags)
 }
 
@@ -253,8 +253,8 @@ fn char_at(screen: &Screen, p: Point) -> char {
     let Some(row) = screen.row_at(p.line) else {
         return ' ';
     };
-    match row.cells.get(p.col) {
-        Some(c) if c.flags.contains(Flags::WIDE_SPACER) && p.col > 0 => row.cells[p.col - 1].c,
+    match row.cells().get(p.col) {
+        Some(c) if c.flags.contains(Flags::WIDE_SPACER) && p.col > 0 => row.cells()[p.col - 1].c,
         Some(c) => c.c,
         None => ' ',
     }
@@ -332,7 +332,7 @@ fn prev(screen: &Screen, p: Point) -> Option<(Point, bool)> {
 fn is_empty_line(screen: &Screen, p: Point) -> bool {
     screen
         .row_at(p.line)
-        .is_some_and(|row| !row.wrapped && row.cells.iter().all(|c| c.c == ' '))
+        .is_some_and(|row| !row.wrapped && row.cells().iter().all(|c| c.c == ' '))
 }
 
 /// Where `w`, `b`, `e` (or `W`, `B`, `E`) move from `p`. The end of a line

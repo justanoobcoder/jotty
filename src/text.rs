@@ -43,7 +43,7 @@ impl LineText {
         let mut cells = Vec::new();
         let mut line = first;
         while let Some(row) = screen.row_at(line) {
-            for (col, cell) in row.cells.iter().enumerate() {
+            for (col, cell) in row.cells().iter().enumerate() {
                 if cell.flags.intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP) {
                     continue;
                 }

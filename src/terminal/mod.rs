@@ -583,7 +583,7 @@ impl Screen {
             .map_or(self.cursor.row as isize, |l| l - 1);
         let blank = |l: isize| {
             self.row_at(l)
-                .is_none_or(|r| r.cells.iter().all(|c| c.c == ' '))
+                .is_none_or(|r| r.cells().iter().all(|c| c.c == ' '))
         };
         while last >= first && blank(last) {
             last -= 1;
@@ -820,7 +820,7 @@ impl Screen {
         let mut mark = |cell: &Cell| extras[usize::from(cell.extra)] = true;
         for grid in [&self.primary, &self.alternate] {
             for row in grid.rows.iter().chain(&grid.history) {
-                row.cells.iter().for_each(&mut mark);
+                row.cells().iter().for_each(&mut mark);
             }
         }
         mark(&self.cursor.template);
@@ -846,7 +846,7 @@ impl Screen {
         let remap = |cell: &mut Cell| cell.extra = extras[usize::from(cell.extra)];
         for grid in [&mut self.primary, &mut self.alternate] {
             for row in grid.rows.iter_mut().chain(&mut grid.history) {
-                row.cells.iter_mut().for_each(remap);
+                row.cells_mut().iter_mut().for_each(remap);
             }
         }
         remap(&mut self.cursor.template);
@@ -866,7 +866,7 @@ impl Screen {
         let Some((row, col)) = self.cluster_start else {
             return false;
         };
-        let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
+        let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells().get(col)) else {
             return false;
         };
         // The cell must still hold the cluster's start: its text is what
@@ -910,7 +910,7 @@ impl Screen {
             });
             let extra = match self.clusters.insert(tail) {
                 Some(cluster) => {
-                    let start = self.grid().rows[row].cells[col];
+                    let start = self.grid().rows[row].cells()[col];
                     let extra = Extra {
                         cluster,
                         ..self.extra(&start)
@@ -920,7 +920,7 @@ impl Screen {
                 None => None,
             };
             match extra {
-                Some(id) => self.grid_mut().rows[row].cells[col].extra = id,
+                Some(id) => self.grid_mut().rows[row].cell_mut(col).extra = id,
                 None => log::debug!("too many distinct grapheme clusters; dropping one"),
             }
         }
@@ -1345,15 +1345,14 @@ impl Screen {
     fn split_wide(&mut self, row: usize, col: usize) {
         let template = self.cursor.template;
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
-        if col >= cells.len() {
+        let row = &mut self.grid_mut().rows[row];
+        let Some(&cell) = row.cells().get(col) else {
             return;
-        }
-        let flags = cells[col].flags;
-        if flags.contains(Flags::WIDE_SPACER) && col > 0 {
-            cells[col - 1] = Cell::blank(&template);
-        } else if flags.contains(Flags::WIDE) && col + 1 < cols {
-            cells[col + 1] = Cell::blank(&template);
+        };
+        if cell.flags.contains(Flags::WIDE_SPACER) && col > 0 {
+            *row.cell_mut(col - 1) = Cell::blank(&template);
+        } else if cell.flags.contains(Flags::WIDE) && col + 1 < cols {
+            *row.cell_mut(col + 1) = Cell::blank(&template);
         }
     }
 
@@ -1366,7 +1365,7 @@ impl Screen {
         self.split_wide(row, start);
         self.split_wide(row, end - 1);
         let blank = Cell::blank(&self.cursor.template);
-        self.grid_mut().rows[row].cells[start..end].fill(blank);
+        self.grid_mut().rows[row].cells_in(start..end).fill(blank);
         self.dirty = true;
     }
 
@@ -1391,7 +1390,7 @@ impl Screen {
         let n = n.min(self.cols - col);
         // A wide character at `col` moves whole; one the insertion lands in
         // the middle of can't.
-        if self.grid().rows[row].cells[col]
+        if self.grid().rows[row].cells()[col]
             .flags
             .contains(Flags::WIDE_SPACER)
         {
@@ -1399,7 +1398,7 @@ impl Screen {
         }
         let blank = Cell::blank(&self.cursor.template);
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
+        let cells = self.grid_mut().rows[row].cells_mut();
         cells[col..].rotate_right(n);
         cells[col..col + n].fill(blank);
         if cells[cols - 1].flags.contains(Flags::WIDE) {
@@ -1416,7 +1415,7 @@ impl Screen {
         self.split_wide(row, col + n - 1);
         let blank = Cell::blank(&self.cursor.template);
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
+        let cells = self.grid_mut().rows[row].cells_mut();
         cells[col..].rotate_left(n);
         cells[cols - n..].fill(blank);
         self.cursor.pending_wrap = false;
@@ -1489,7 +1488,7 @@ impl Screen {
         // Only a lone ASCII base can't take the first character into its
         // cluster (see `join_cluster`).
         if let Some((row, col)) = self.cluster_start
-            && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col))
+            && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells().get(col))
             && !self.is_lone_ascii(start)
             && let Some((&first, rest)) = run.split_first()
         {
@@ -1506,7 +1505,7 @@ impl Screen {
             let (chunk, rest) = run.split_at(run.len().min(self.cols - col));
             run = rest;
             let template = self.cursor.template;
-            let cells = &mut self.grid_mut().rows[row].cells[col..col + chunk.len()];
+            let cells = self.grid_mut().rows[row].cells_in(col..col + chunk.len());
             // Branchless, so that it vectorizes.
             let wide = cells.iter().fold(false, |any, cell| {
                 any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
@@ -1551,7 +1550,8 @@ impl Screen {
             if self.modes.autowrap && self.cols >= 2 {
                 let (row, col) = (self.cursor.row, self.cursor.col);
                 self.erase_cells(row, col, self.cols);
-                self.grid_mut().rows[row].cells[col]
+                self.grid_mut().rows[row]
+                    .cell_mut(col)
                     .flags
                     .insert(Flags::WRAP_GAP);
                 self.wrap_line();
@@ -1576,15 +1576,15 @@ impl Screen {
         if width == 2 {
             cell.flags.insert(Flags::WIDE);
         }
-        let cells = &mut self.grid_mut().rows[row].cells;
-        cells[col] = cell;
+        let cells = self.grid_mut().rows[row].cells_in(col..col + width);
+        cells[0] = cell;
         if width == 2 {
-            cells[col + 1] = Cell {
+            cells[1] = Cell {
                 c: ' ',
                 flags: cell.flags | Flags::WIDE_SPACER,
                 ..cell
             };
-            cells[col + 1].flags.remove(Flags::WIDE);
+            cells[1].flags.remove(Flags::WIDE);
         }
 
         if col + width >= self.cols {
@@ -1606,7 +1606,7 @@ impl Screen {
         let Some((row, col)) = self.last_printed else {
             return;
         };
-        let cell = self.grid().rows[row].cells[col];
+        let cell = self.grid().rows[row].cells()[col];
         let pair: String = [cell.c, EMOJI_PRESENTATION].into_iter().collect();
         if row != self.cursor.row
             || col + 1 >= self.cols
@@ -1616,9 +1616,9 @@ impl Screen {
             return;
         }
         self.split_wide(row, col + 1);
-        let cells = &mut self.grid_mut().rows[row].cells;
-        cells[col].flags.insert(Flags::WIDE);
-        cells[col + 1] = Cell {
+        let cells = self.grid_mut().rows[row].cells_in(col..col + 2);
+        cells[0].flags.insert(Flags::WIDE);
+        cells[1] = Cell {
             c: ' ',
             flags: cell.flags | Flags::WIDE_SPACER,
             ..cell
@@ -2287,7 +2287,7 @@ impl Perform for Screen {
             ([b'#'], b'8') => {
                 for row in &mut self.grid_mut().rows {
                     row.wrapped = false;
-                    for cell in &mut row.cells {
+                    for cell in row.cells_mut() {
                         *cell = Cell {
                             c: 'E',
                             ..Cell::default()

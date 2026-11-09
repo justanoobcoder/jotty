@@ -9,7 +9,7 @@ fn lines(t: &Terminal) -> Vec<String> {
 }
 
 fn cell(t: &Terminal, row: usize, col: usize) -> Cell {
-    t.screen().grid().rows[row].cells[col]
+    t.screen().grid().rows[row].cells()[col]
 }
 
 fn extra(t: &Terminal, row: usize, col: usize) -> Extra {
@@ -1586,7 +1586,7 @@ fn assert_grid_shape(t: &Terminal, seed: u64) {
     let grid = screen.grid();
     assert_eq!(grid.rows.len(), rows, "seed {seed}");
     for row in grid.rows.iter().chain(&grid.history) {
-        assert_eq!(row.cells.len(), cols, "seed {seed}");
+        assert_eq!(row.cells().len(), cols, "seed {seed}");
     }
     let (row, col) = screen.cursor();
     assert!(row < rows && col < cols, "seed {seed}");
