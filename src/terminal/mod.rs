@@ -767,9 +767,14 @@ impl Screen {
         if width > 0 && (wraps || row != self.cursor.row || self.cursor.col <= col) {
             return false;
         }
+        // `text` starts with the start cell's character, so this always
+        // succeeds; should that ever break, the character starts a cluster
+        // of its own instead of output crashing the terminal.
+        let Some(tail) = text.get(base..) else {
+            return false;
+        };
         // Past the limit the character is still consumed, so that a flood of
         // combining marks costs constant time each, but it isn't kept.
-        let tail = &text[base..];
         if tail.chars().count() <= MAX_CLUSTER_CHARS
             && let Some(id) = self.intern_cluster(tail)
         {
