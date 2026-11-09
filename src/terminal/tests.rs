@@ -79,6 +79,101 @@ fn queued_ascii_is_written_before_the_next_sequence() {
 }
 
 #[test]
+fn ascii_runs_over_wide_characters_split_them() {
+    let mut t = term(6, 1);
+    // The run starts on the spacer of one and ends on the first half of
+    // the other; both lose their other half.
+    t.feed("日本\x1b[2Gab".as_bytes());
+    assert_eq!(lines(&t), [" ab"]);
+    for col in 0..4 {
+        let flags = cell(&t, 0, col).flags;
+        assert!(
+            !flags.intersects(Flags::WIDE | Flags::WIDE_SPACER),
+            "column {col}"
+        );
+    }
+}
+
+#[test]
+fn ascii_runs_in_one_column() {
+    let mut t = term(1, 2);
+    t.feed(b"abc");
+    assert_eq!(lines(&t), ["b", "c"]);
+    t.feed(b"\r\x1b[?7lxyz");
+    assert_eq!(lines(&t), ["b", "z"]);
+    assert_eq!(t.screen().cursor(), (1, 0));
+}
+
+/// Output arrives in pieces of any size; the grid mustn't depend on where
+/// they split, whether in the middle of a sequence, a character or a run
+/// of ASCII.
+#[test]
+fn output_split_anywhere_gives_the_same_screen() {
+    let pieces: &[&str] = &[
+        "abc",
+        "0123456789",
+        " ",
+        "\r",
+        "\n",
+        "\x08",
+        "\t",
+        "\x1b[1m",
+        "\x1b[0m",
+        "\x1b[2;3H",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b(0",
+        "\x1b(B",
+        "\x0e",
+        "\x0f",
+        "\x1b[3b",
+        "\x1b[2;3r",
+        "\x1b[3@",
+        "\x1b[2P",
+        "\x1b[S",
+        "\x1b[6n",
+        "\x1b]0;t\x07",
+        "日本",
+        "é",
+        "e\u{301}",
+        "\u{200d}",
+        "❄\u{fe0f}",
+        "\u{600}",
+        "\u{1f1fb}\u{1f1f3}",
+    ];
+    // A fixed xorshift sequence, so that failures reproduce.
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed as usize
+    };
+    for _ in 0..2000 {
+        let (cols, rows) = (1 + next() % 8, 1 + next() % 4);
+        let input: String = (0..next() % 24)
+            .map(|_| pieces[next() % pieces.len()])
+            .collect();
+        let mut whole = Terminal::new(cols, rows, 3);
+        whole.feed(input.as_bytes());
+        let mut bytewise = Terminal::new(cols, rows, 3);
+        for byte in input.bytes() {
+            bytewise.feed(&[byte]);
+        }
+        let (a, b) = (whole.screen(), bytewise.screen());
+        assert_eq!(a.grid().rows, b.grid().rows, "{cols}x{rows} {input:?}");
+        assert_eq!(
+            a.grid().history,
+            b.grid().history,
+            "{cols}x{rows} {input:?}"
+        );
+        assert_eq!(a.cursor(), b.cursor(), "{cols}x{rows} {input:?}");
+    }
+}
+
+#[test]
 fn autowrap_disabled_overwrites_last_column() {
     let mut t = term(4, 2);
     t.feed(b"\x1b[?7labcdef");
