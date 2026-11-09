@@ -108,6 +108,11 @@ nothing surprises you.
 - The text selection isn't reported as the IME anchor; the anchor always
   equals the cursor.
 - The preedit is clipped at the end of the line rather than wrapped.
+- **Password prompts are only seen in jotty's own pty.** Inside a
+  multiplexer (zellij, tmux) jotty's pty is the multiplexer's, which is
+  always in raw mode, so a `sudo` prompt in a pane is not reported as a
+  password field. The same goes for a prompt on the far side of `ssh`, or
+  one from a full-screen program that reads passwords itself.
 
 ## Wayland integration
 

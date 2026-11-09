@@ -203,6 +203,12 @@ After every frame, jotty recomputes the surrounding text and cursor
 rectangle. If either changed, it sends them (`set_surrounding_text`,
 `set_text_change_cause`, `set_cursor_rectangle`, `commit`).
 
+The content type is purpose `terminal`, except at a password prompt: when the
+pty has echo off but still edits lines (`sudo`, `passwd`, `ssh` set it so),
+jotty sends purpose `password` with hints `hidden_text` and `sensitive_data`.
+Input methods then pass keys through as typed. jotty checks the pty's
+settings after every frame, so it notices once the prompt is drawn.
+
 A terminal doesn't know what text is being edited; the shell does. The
 surrounding text is therefore approximated as **the cursor's row**, starting
 right after the prompt when the shell marked it with OSC 133;B, and trimmed of
