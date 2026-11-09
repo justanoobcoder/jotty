@@ -141,7 +141,20 @@ fn output_split_anywhere_gives_the_same_screen() {
         "\u{200d}",
         "❄\u{fe0f}",
         "\u{600}",
+        "\u{110bd}",
         "\u{1f1fb}\u{1f1f3}",
+        "\u{1f1fb}",
+        "\u{1100}",
+        "\u{1161}",
+        "\u{1f468}\u{200d}\u{1f469}",
+        "\u{1f3fb}",
+        "\u{903}",
+        "\x1b[?6h",
+        "\x1b[?6l",
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b7",
+        "\x1b8",
     ];
     // A fixed xorshift sequence, so that failures reproduce.
     let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
