@@ -82,6 +82,17 @@ fn overwriting_half_of_wide_char_clears_other_half() {
 }
 
 #[test]
+fn ascii_over_the_left_half_of_wide_char_clears_the_right_half() {
+    let mut t = term(6, 1);
+    t.feed("中\r\x1b[1mx\x7fy".as_bytes());
+    assert_eq!(lines(&t), ["xy"]);
+    assert!(cell(&t, 0, 0).flags.contains(Flags::BOLD));
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert!(!cell(&t, 0, 1).flags.contains(Flags::WIDE_SPACER));
+    assert_eq!(t.screen().cursor(), (0, 2));
+}
+
+#[test]
 fn zero_width_characters_are_dropped() {
     let mut t = term(6, 1);
     t.feed("e\u{301}x".as_bytes());
@@ -597,6 +608,17 @@ fn combining_marks_join_the_previous_cell() {
     assert_eq!(text_at(&t, 0, 0), "e\u{301}");
     assert_eq!(cell(&t, 0, 1).c, 'x');
     assert_eq!(t.screen().cursor(), (0, 2));
+}
+
+#[test]
+fn ascii_after_a_cluster_starts_a_new_cell() {
+    let mut t = term(10, 1);
+    // The ASCII fast path must not skip a base cell that already has a tail.
+    t.feed("e\u{301}\u{302}ab".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "e\u{301}\u{302}");
+    assert_eq!(text_at(&t, 0, 1), "a");
+    assert_eq!(text_at(&t, 0, 2), "b");
+    assert_eq!(t.screen().cursor(), (0, 3));
 }
 
 #[test]

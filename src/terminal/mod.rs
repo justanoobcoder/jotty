@@ -733,6 +733,12 @@ impl Screen {
         let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
             return false;
         };
+        // Two printable ASCII characters never form one cluster: none is
+        // Extend, ZWJ, SpacingMark, Prepend, a regional indicator or Hangul.
+        // This skips the segmentation below for nearly all output.
+        if c.is_ascii() && start.c.is_ascii() && start.cluster == 0 {
+            return false;
+        }
         let mut text = String::new();
         self.cell_text(&start, &mut text);
         let base = start.c.len_utf8();
@@ -1271,6 +1277,9 @@ impl Screen {
     }
 
     fn print_char(&mut self, c: char) {
+        if self.print_ascii(c) {
+            return;
+        }
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
         let width = c.width().unwrap_or(0).min(2);
         if self.join_cluster(c, width) || width == 0 {
@@ -1278,6 +1287,47 @@ impl Screen {
             return;
         }
         self.cluster_start = self.print_cell(c, width, Flags::empty());
+    }
+
+    /// Prints `c` when it is printable ASCII in the common case, which is
+    /// what nearly all output is: one column, no charset mapping, no
+    /// cluster to join, no pending wrap, insert mode or wide character to
+    /// split. Returns false, having done nothing, for anything else, which
+    /// `print_char` then handles in full.
+    #[inline]
+    fn print_ascii(&mut self, c: char) -> bool {
+        if !matches!(c, ' '..='~')
+            || self.cursor.charsets[self.cursor.active_charset] != Charset::Ascii
+            || self.cursor.pending_wrap
+            || self.modes.insert
+        {
+            return false;
+        }
+        // Mirrors `join_cluster`: only a lone ASCII base can't take `c`.
+        if let Some((row, col)) = self.cluster_start
+            && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col))
+            && !(start.c.is_ascii() && start.cluster == 0)
+        {
+            return false;
+        }
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        let mut cell = self.cursor.template;
+        cell.c = c;
+        let target = &mut self.grid_mut().rows[row].cells[col];
+        if target.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER) {
+            return false;
+        }
+        *target = cell;
+        if col + 1 >= self.cols {
+            self.cursor.pending_wrap = self.modes.autowrap;
+        } else {
+            self.cursor.col += 1;
+        }
+        self.last_char = Some(c);
+        self.last_printed = Some((row, col));
+        self.cluster_start = Some((row, col));
+        self.dirty = true;
+        true
     }
 
     /// Writes `c` at the cursor with the current attributes and advances.
