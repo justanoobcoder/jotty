@@ -222,6 +222,21 @@ impl Pty {
             .or_else(|| cwd(self.child.id()))
     }
 
+    /// Whether the program is reading a password: echo is off while the
+    /// terminal still edits lines, as `sudo`, `passwd` and `ssh` set it.
+    /// Full-screen programs (and multiplexers such as zellij) turn off line
+    /// editing as well, so they don't count.
+    pub fn password_input(&self) -> bool {
+        // SAFETY: an all-zero termios is a valid value for tcgetattr to fill.
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: tcgetattr writes into the termios it is given; on a pty
+        // master it reports the settings of the slave side.
+        if unsafe { libc::tcgetattr(self.master.as_raw_fd(), &mut termios) } != 0 {
+            return false;
+        }
+        termios.c_lflag & libc::ECHO == 0 && termios.c_lflag & libc::ICANON != 0
+    }
+
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }
@@ -347,6 +362,39 @@ mod tests {
         .unwrap();
         pty.write(b"\n").unwrap();
         assert!(read_to_end(&mut pty).contains("30 100"));
+    }
+
+    /// Waits until the child prints `marker`, so its tty settings are in place.
+    fn wait_for(pty: &mut Pty, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !String::from_utf8_lossy(&out).contains(marker) {
+            assert!(Instant::now() < deadline, "no {marker:?} from the child");
+            match pty.read(&mut buf) {
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn password_input_is_echo_off_with_line_editing() {
+        let mut pty = sh("echo ready; read _");
+        wait_for(&mut pty, "ready");
+        assert!(!pty.password_input());
+
+        let mut pty = sh("stty -echo; echo ready; read _");
+        wait_for(&mut pty, "ready");
+        assert!(pty.password_input());
+
+        // Raw mode, as full-screen programs and multiplexers use.
+        let mut pty = sh("stty raw -echo; echo ready; read _");
+        wait_for(&mut pty, "ready");
+        assert!(!pty.password_input());
     }
 
     #[test]
