@@ -113,6 +113,13 @@ nothing surprises you.
   always in raw mode, so a `sudo` prompt in a pane is not reported as a
   password field. The same goes for a prompt on the far side of `ssh`, or
   one from a full-screen program that reads passwords itself.
+- **The password state is only re-checked after a frame.** jotty reads the
+  pty's echo setting when it draws. A program that turns echo back on
+  without printing anything leaves the input method in password mode (no
+  composition) until the next frame; one that turns echo off after its
+  prompt was already drawn isn't reported until something redraws, such as
+  a key press or the cursor blinking. A shell prompt usually redraws at once,
+  so in practice the gap is short.
 
 ## Wayland integration
 
