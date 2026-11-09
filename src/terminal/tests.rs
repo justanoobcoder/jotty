@@ -187,6 +187,21 @@ fn output_split_anywhere_gives_the_same_screen() {
 }
 
 #[test]
+fn autowrap_is_checked_when_wrapping_not_when_reaching_the_edge() {
+    // As in xterm, foot and rio: turning autowrap off after the last column
+    // was written keeps the next character on that column...
+    let mut t = term(4, 2);
+    t.feed(b"abcd\x1b[?7lx");
+    assert_eq!(lines(&t), ["abcx", ""]);
+    assert_eq!(t.screen().cursor(), (0, 3));
+    // ...and turning it back on wraps the next one, though the column was
+    // written with autowrap off.
+    t.feed(b"\x1b[?7hy");
+    assert_eq!(lines(&t), ["abcx", "y"]);
+    assert!(t.screen().grid().rows[0].wrapped);
+}
+
+#[test]
 fn autowrap_disabled_overwrites_last_column() {
     let mut t = term(4, 2);
     t.feed(b"\x1b[?7labcdef");

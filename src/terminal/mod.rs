@@ -206,7 +206,10 @@ struct Cursor {
     col: usize,
     /// Attributes applied to newly printed characters.
     template: Cell,
-    /// The last column was written; the next printable character wraps first.
+    /// The last column was written; the next printable character wraps
+    /// first if autowrap is on then, and overwrites that column if not.
+    /// Autowrap is checked when wrapping, as in xterm, so turning it on
+    /// after the column was written still wraps.
     pending_wrap: bool,
     charsets: [Charset; 2],
     active_charset: usize,
@@ -1373,7 +1376,7 @@ impl Screen {
             let last = col + chunk.len() - 1;
             if last + 1 >= self.cols {
                 self.cursor.col = self.cols - 1;
-                self.cursor.pending_wrap = self.modes.autowrap;
+                self.cursor.pending_wrap = true;
             } else {
                 self.cursor.col = last + 1;
             }
@@ -1388,7 +1391,11 @@ impl Screen {
     /// Returns where it went, if it fit.
     fn print_cell(&mut self, c: char, width: usize, flags: Flags) -> Option<(usize, usize)> {
         if self.cursor.pending_wrap {
-            self.wrap_line();
+            if self.modes.autowrap {
+                self.wrap_line();
+            } else {
+                self.cursor.pending_wrap = false;
+            }
         }
         if width == 2 && self.cursor.col + 1 >= self.cols {
             if self.modes.autowrap && self.cols >= 2 {
@@ -1432,7 +1439,7 @@ impl Screen {
 
         if col + width >= self.cols {
             self.cursor.col = self.cols - 1;
-            self.cursor.pending_wrap = self.modes.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col += width;
         }
@@ -1468,7 +1475,7 @@ impl Screen {
         };
         if col + 2 >= self.cols {
             self.cursor.col = self.cols - 1;
-            self.cursor.pending_wrap = self.modes.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = col + 2;
         }
