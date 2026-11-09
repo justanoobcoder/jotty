@@ -107,6 +107,8 @@ pub struct ImeState {
     pub preedit: Option<Preedit>,
     /// Surrounding text last sent to the input method.
     pub surrounding: Surrounding,
+    /// Whether the input method was last told this is a password prompt.
+    pub password: bool,
     /// Number of `commit` requests sent, used to recognize stale events.
     pub serial: u32,
     pending_preedit: Option<Preedit>,

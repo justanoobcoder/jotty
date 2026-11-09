@@ -2049,7 +2049,6 @@ impl App {
             Event::Enter { surface } if &surface == self.window.wl_surface() => {
                 self.ime.active = true;
                 text_input.enable();
-                text_input.set_content_type(ContentHint::None, ContentPurpose::Terminal);
                 self.update_text_input(true);
             }
             Event::Leave { .. } => {
@@ -2109,8 +2108,25 @@ impl App {
             logical(cell.width).max(1),
             logical(cell.height).max(1),
         );
-        if !force && surrounding == self.ime.surrounding && rect == self.ime_cursor_rect {
+        // A password prompt (echo off) tells the input method to pass keys
+        // through as typed. Inside a multiplexer this sees only its raw mode.
+        let password = self.pty.password_input();
+        if !force
+            && surrounding == self.ime.surrounding
+            && rect == self.ime_cursor_rect
+            && password == self.ime.password
+        {
             return;
+        }
+        if force || password != self.ime.password {
+            if password {
+                text_input.set_content_type(
+                    ContentHint::HiddenText | ContentHint::SensitiveData,
+                    ContentPurpose::Password,
+                );
+            } else {
+                text_input.set_content_type(ContentHint::None, ContentPurpose::Terminal);
+            }
         }
         let cursor = surrounding.cursor as i32;
         text_input.set_surrounding_text(surrounding.text.clone(), cursor, cursor);
@@ -2125,6 +2141,7 @@ impl App {
         self.ime.serial = self.ime.serial.wrapping_add(1);
         self.ime.surrounding = surrounding;
         self.ime_cursor_rect = rect;
+        self.ime.password = password;
     }
 }
 
