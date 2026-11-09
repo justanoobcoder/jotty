@@ -742,6 +742,11 @@ impl Screen {
         let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
             return false;
         };
+        // The cell must still hold the cluster's start: its text is what
+        // the tail is cut from below.
+        if start.flags.contains(Flags::CONTINUATION) {
+            return false;
+        }
         // Two printable ASCII characters never form one cluster: none is
         // Extend, ZWJ, SpacingMark, Prepend, a regional indicator or Hangul.
         // This skips the segmentation below for nearly all output.
@@ -755,9 +760,11 @@ impl Screen {
         if text.graphemes(true).nth(1).is_some() {
             return false;
         }
-        // Continuation cells must stay on the cluster's row.
+        // Continuation cells must stay on the cluster's row, after its
+        // first cell. Without autowrap the cursor stays on the last column,
+        // which may be that cell; the character then overwrites it instead.
         let wraps = self.cursor.pending_wrap || self.cursor.col + width > self.cols;
-        if width > 0 && (wraps || row != self.cursor.row) {
+        if width > 0 && (wraps || row != self.cursor.row || self.cursor.col <= col) {
             return false;
         }
         // Past the limit the character is still consumed, so that a flood of
