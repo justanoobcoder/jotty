@@ -82,6 +82,17 @@ fn overwriting_half_of_wide_char_clears_other_half() {
 }
 
 #[test]
+fn ascii_over_the_left_half_of_wide_char_clears_the_right_half() {
+    let mut t = term(6, 1);
+    t.feed("中\r\x1b[1mx\x7fy".as_bytes());
+    assert_eq!(lines(&t), ["xy"]);
+    assert!(cell(&t, 0, 0).flags.contains(Flags::BOLD));
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert!(!cell(&t, 0, 1).flags.contains(Flags::WIDE_SPACER));
+    assert_eq!(t.screen().cursor(), (0, 2));
+}
+
+#[test]
 fn zero_width_characters_are_dropped() {
     let mut t = term(6, 1);
     t.feed("e\u{301}x".as_bytes());
