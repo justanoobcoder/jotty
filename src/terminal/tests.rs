@@ -652,6 +652,21 @@ fn ascii_after_a_cluster_starts_a_new_cell() {
 }
 
 #[test]
+fn a_cluster_at_the_last_column_without_autowrap_is_overwritten() {
+    // The cursor stays on the last column, so a character that would join
+    // the cluster there (U+0600 is a prepended mark: it joins whatever
+    // follows) has nowhere to go. It overwrites the cell instead, as any
+    // character does, rather than turning the cluster's own cell into a
+    // continuation.
+    let mut t = term(10, 1);
+    t.feed("\x1b[?7lxxxxxxxxx\u{600}\u{600} ".as_bytes());
+    assert_eq!(lines(&t), ["xxxxxxxxx"]);
+    t.feed("\u{600}a".as_bytes());
+    assert_eq!(text_at(&t, 0, 9), "a");
+    assert!(!cell(&t, 0, 9).flags.contains(Flags::CONTINUATION));
+}
+
+#[test]
 fn emoji_sequences_join_and_keep_their_width() {
     let mut t = term(20, 1);
     // A ZWJ family (2+0+2 columns) and a flag (1+1), as wcwidth counts.
