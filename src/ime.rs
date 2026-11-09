@@ -99,6 +99,29 @@ pub struct Preedit {
     pub cursor: Option<(usize, usize)>,
 }
 
+/// What the input method is told the focused text is for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Content {
+    /// A shell or program reading ordinary text.
+    #[default]
+    Terminal,
+    /// A password prompt: keys should pass through as typed.
+    Password,
+}
+
+impl Content {
+    /// `password_prompt` is the pty's state; `own_input` is set while
+    /// jotty itself takes the keys (search bar, vi mode), which is never a
+    /// password field whatever the program behind it is doing.
+    pub fn new(password_prompt: bool, own_input: bool) -> Content {
+        if password_prompt && !own_input {
+            Content::Password
+        } else {
+            Content::Terminal
+        }
+    }
+}
+
 /// Double-buffered text-input state: events accumulate until `done`.
 #[derive(Debug, Default)]
 pub struct ImeState {
@@ -107,8 +130,8 @@ pub struct ImeState {
     pub preedit: Option<Preedit>,
     /// Surrounding text last sent to the input method.
     pub surrounding: Surrounding,
-    /// Whether the input method was last told this is a password prompt.
-    pub password: bool,
+    /// Content type last sent to the input method.
+    pub content: Content,
     /// Number of `commit` requests sent, used to recognize stale events.
     pub serial: u32,
     pending_preedit: Option<Preedit>,
@@ -254,6 +277,18 @@ mod tests {
         // A done without new events clears the preedit.
         assert!(ime.done().is_empty());
         assert_eq!(ime.preedit, None);
+    }
+
+    #[test]
+    fn password_prompt_is_password_content() {
+        assert_eq!(Content::new(true, false), Content::Password);
+        assert_eq!(Content::new(false, false), Content::Terminal);
+    }
+
+    #[test]
+    fn search_bar_and_vi_mode_are_never_password_content() {
+        assert_eq!(Content::new(true, true), Content::Terminal);
+        assert_eq!(Content::new(false, true), Content::Terminal);
     }
 
     #[test]

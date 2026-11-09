@@ -79,7 +79,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 
 use crate::config::{Config, RendererKind};
 use crate::font::{Fonts, points_to_px};
-use crate::ime::{ImeState, Surrounding};
+use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
@@ -2110,22 +2110,25 @@ impl App {
         );
         // A password prompt (echo off) tells the input method to pass keys
         // through as typed. Inside a multiplexer this sees only its raw mode.
-        let password = self.pty.password_input();
+        // The search bar and vi mode take keys themselves, so they never are.
+        let own_input = self.search.is_some() || self.vi.is_some();
+        let content = Content::new(self.pty.password_input(), own_input);
         if !force
             && surrounding == self.ime.surrounding
             && rect == self.ime_cursor_rect
-            && password == self.ime.password
+            && content == self.ime.content
         {
             return;
         }
-        if force || password != self.ime.password {
-            if password {
-                text_input.set_content_type(
+        if force || content != self.ime.content {
+            match content {
+                Content::Password => text_input.set_content_type(
                     ContentHint::HiddenText | ContentHint::SensitiveData,
                     ContentPurpose::Password,
-                );
-            } else {
-                text_input.set_content_type(ContentHint::None, ContentPurpose::Terminal);
+                ),
+                Content::Terminal => {
+                    text_input.set_content_type(ContentHint::None, ContentPurpose::Terminal)
+                }
             }
         }
         let cursor = surrounding.cursor as i32;
@@ -2141,7 +2144,7 @@ impl App {
         self.ime.serial = self.ime.serial.wrapping_add(1);
         self.ime.surrounding = surrounding;
         self.ime_cursor_rect = rect;
-        self.ime.password = password;
+        self.ime.content = content;
     }
 }
 
