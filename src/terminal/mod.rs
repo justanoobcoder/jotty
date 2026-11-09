@@ -8,7 +8,7 @@ pub mod graphics;
 pub mod grid;
 mod strings;
 
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::GraphemeCursor;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
@@ -299,6 +299,8 @@ pub struct Screen {
     /// Printable ASCII from `print` not written to the grid yet, so that
     /// it can be written a row at a time; see `flush_ascii`.
     ascii_run: Vec<u8>,
+    /// Scratch text for `continues_cluster`.
+    cluster_scratch: String,
     /// Cursor color set by the program (OSC 12), overriding the configured one.
     cursor_color: Option<(u8, u8, u8)>,
     /// The configured cursor color, reported by OSC 12 queries.
@@ -457,6 +459,7 @@ impl Screen {
             cursor_shape: CursorShape::default(),
             last_char: None,
             ascii_run: Vec::new(),
+            cluster_scratch: String::new(),
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
@@ -707,6 +710,22 @@ impl Screen {
         }
     }
 
+    /// Whether `c` continues the grapheme cluster that `start` begins,
+    /// rather than starting one of its own. Boundary rules look back but
+    /// never ahead, so only the boundary before `c` can be new.
+    fn continues_cluster(&mut self, start: &Cell, c: char) -> bool {
+        // Reused: this runs for most non-ASCII characters printed.
+        let mut text = std::mem::take(&mut self.cluster_scratch);
+        text.clear();
+        self.cell_text(start, &mut text);
+        let before = text.len();
+        text.push(c);
+        let boundary = GraphemeCursor::new(before, text.len(), true).is_boundary(&text, 0);
+        self.cluster_scratch = text;
+        // With the whole text given, no more context is ever asked for.
+        boundary == Ok(false)
+    }
+
     /// Whether `cell` is an ASCII character with nothing joined to it, which
     /// no ASCII character after it can join either (see `join_cluster`).
     fn is_lone_ascii(&self, cell: &Cell) -> bool {
@@ -861,13 +880,13 @@ impl Screen {
         if c.is_ascii() && self.is_lone_ascii(&start) {
             return false;
         }
+        if !self.continues_cluster(&start, c) {
+            return false;
+        }
         let mut text = String::new();
         self.cell_text(&start, &mut text);
         let base = start.c.len_utf8();
         text.push(c);
-        if text.graphemes(true).nth(1).is_some() {
-            return false;
-        }
         // Continuation cells must stay on the cluster's row, after its
         // first cell. Without autowrap the cursor stays on the last column,
         // which may be that cell; the character then overwrites it instead.

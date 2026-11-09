@@ -807,6 +807,16 @@ fn emoji_sequences_join_and_keep_their_width() {
 }
 
 #[test]
+fn hangul_jamo_join_into_one_syllable() {
+    let mut t = term(10, 1);
+    // A leading consonant (2 columns), then a vowel and a trailing
+    // consonant (none each), then a precomposed syllable of its own.
+    t.feed("\u{1100}\u{1161}\u{11a8}\u{ac00}".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "\u{1100}\u{1161}\u{11a8}");
+    assert_eq!(text_at(&t, 0, 2), "\u{ac00}");
+}
+
+#[test]
 fn clusters_end_at_controls_and_new_clusters() {
     let mut t = term(10, 2);
     // A second flag starts a new cluster; so does anything after a CR.
