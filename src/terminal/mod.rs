@@ -2101,7 +2101,15 @@ impl Perform for Screen {
         }
         self.last_printed = None;
         self.cluster_start = None;
-        let args: Vec<u16> = params.iter().map(|p| p[0]).collect();
+        // On the stack: this runs for every escape sequence that colors
+        // output. vte keeps at most 32 parameters.
+        let mut buf = [0u16; 32];
+        let mut len = 0;
+        for (slot, param) in buf.iter_mut().zip(params.iter()) {
+            *slot = param[0];
+            len += 1;
+        }
+        let args = &buf[..len];
         // Argument `i`, where 0 or absent means `default`.
         let arg = |i: usize, default: usize| match args.get(i) {
             Some(&0) | None => default,
@@ -2244,7 +2252,7 @@ impl Perform for Screen {
             }
             ([], 's') => self.save_cursor(),
             ([], 'u') => self.restore_cursor(),
-            ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, &args),
+            ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, args),
             ([b' '], 'q') => {
                 self.cursor_shape = match raw(0) {
                     3 | 4 => CursorShape::Underline,
