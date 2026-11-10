@@ -57,6 +57,8 @@ pub struct State {
     filter: String,
     /// The last result, and whether it is an error.
     message: Option<(String, bool)>,
+    /// Why the overrides can't apply over the config file, when they can't.
+    merge_error: Option<String>,
     /// The section `R` was pressed for, waiting for a second `R`.
     confirm_reset: Option<String>,
     quit: bool,
@@ -76,6 +78,7 @@ impl State {
             mode: Mode::Normal,
             filter: String::new(),
             message: None,
+            merge_error: None,
             confirm_reset: None,
             quit: false,
         };
@@ -85,15 +88,21 @@ impl State {
 
     /// Recomputes the effective config and the keys after a change.
     fn refresh(&mut self) {
-        // The overrides were checked when loaded or changed, so this is a
-        // bug if it fails; say so rather than quietly show the defaults.
-        let config = Config::from_table(self.layers.merged()).unwrap_or_else(|e| {
-            self.message = Some((format!("showing the defaults: {}", e.message()), true));
-            Config::default()
-        });
+        // A hand edit can make overrides that are valid alone but not over
+        // the config file. jotty then ignores them; show what it uses.
+        let base = Config::from_table(self.layers.base.clone()).unwrap_or_default();
+        let config = match Config::from_table(self.layers.merged()) {
+            Ok(config) => {
+                self.merge_error = None;
+                config
+            }
+            Err(e) => {
+                self.merge_error = Some(e.message().to_string());
+                base.clone()
+            }
+        };
         self.effective = toml::Table::try_from(&config).unwrap_or_default();
         self.palette = config.colors.palette();
-        let base = Config::from_table(self.layers.base.clone()).unwrap_or_default();
         self.base_palette = base.colors.palette();
         self.keys = schema::keys(&self.effective);
         self.selected = self.selected.min(self.visible().len().saturating_sub(1));
@@ -152,12 +161,11 @@ impl State {
     fn override_of(&self, key: &Key) -> Option<toml::Value> {
         let value = get_path(&self.layers.overrides, &key.path)?;
         match key.index {
-            // The whole list is saved; only colors it changes count.
-            Some(i) => {
-                let color = value.as_array()?.get(i)?;
-                let changed = color.as_str()?.parse::<Rgb>().ok() != Some(self.base_palette[i]);
-                changed.then(|| color.clone())
-            }
+            // The list replaces the config file's as a whole, so a color
+            // counts as overridden when it ends up different, also when a
+            // hand-written list is too short to name it.
+            Some(i) => (self.palette[i] != self.base_palette[i])
+                .then(|| toml::Value::String(self.palette[i].to_string())),
             None => Some(value.clone()),
         }
     }
@@ -176,9 +184,15 @@ impl State {
         let mut overrides = self.current_overrides()?;
         match (key.index, value) {
             (Some(i), value) => {
-                // One color changes the whole list. Without differences from
-                // the config file left, the override goes.
-                let mut palette = self.palette;
+                // One color changes the whole list, starting from the colors
+                // as saved now. Without differences from the config file
+                // left, the override goes.
+                let mut merged = self.layers.base.clone();
+                crate::config::merge(&mut merged, overrides.clone());
+                let mut palette = Config::from_table(merged)
+                    .map_err(|e| e.message().to_string())?
+                    .colors
+                    .palette();
                 palette[i] = match value.as_ref().and_then(toml::Value::as_str) {
                     Some(color) => color.parse()?,
                     None => self.base_palette[i],
@@ -245,14 +259,10 @@ impl State {
             KeyCode::Up | KeyCode::Char('k') => self.move_by(|at, _| at.saturating_sub(1)),
             KeyCode::Home | KeyCode::Char('g') => self.move_by(|_, _| 0),
             KeyCode::End | KeyCode::Char('G') => self.move_by(|_, last| last),
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Sections => Focus::Keys,
-                    Focus::Keys => Focus::Sections,
-                }
-            }
+            KeyCode::Tab | KeyCode::BackTab if self.focus == Focus::Keys => self.focus_sections(),
+            KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Keys,
             KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Keys,
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Sections,
+            KeyCode::Left | KeyCode::Char('h') => self.focus_sections(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Filter;
                 self.focus = Focus::Keys;
@@ -287,6 +297,13 @@ impl State {
             // Moving between sections starts each at its first key.
             self.selected = 0;
         }
+    }
+
+    /// Moves to the section list. A filter spans every section, so it is
+    /// cleared: the list then shows which section is current.
+    fn focus_sections(&mut self) {
+        self.focus = Focus::Sections;
+        self.filter.clear();
     }
 
     /// Moves the selection of the focused list to `to(current, last)`.
@@ -447,7 +464,7 @@ impl State {
         let [header, body, help, footer] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(5),
-            Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Length(1),
         ])
         .areas(frame.area());
@@ -468,13 +485,19 @@ impl State {
             "jotty config".bold(),
             format!("  overrides: {}", tilde(&self.layers.overrides_path)).dark_gray(),
         ])];
-        lines.push(match &self.layers.base_error {
-            Some(e) => Line::from(format!(
+        lines.push(match (&self.layers.base_error, &self.merge_error) {
+            (Some(e), _) => Line::from(format!(
                 "The config file is broken, so jotty applies no overrides until it is fixed: {e}"
             ))
             .red(),
-            None => Line::from("Move them into home-manager with: jotty config export --nix")
-                .dark_gray(),
+            (None, Some(e)) => Line::from(format!(
+                "jotty ignores these overrides, which conflict with the config file: {e}"
+            ))
+            .red(),
+            (None, None) => {
+                Line::from("Move them into home-manager with: jotty config export --nix")
+                    .dark_gray()
+            }
         });
         frame.render_widget(Paragraph::new(lines), area);
     }
@@ -514,9 +537,9 @@ impl State {
         let visible = self.visible();
         let label = |key: &Key| {
             if self.filter.is_empty() {
-                key.name()
+                key.list_name()
             } else {
-                key.dotted()
+                format!("{}.{}", key.section(), key.list_name())
             }
         };
         let width = visible
@@ -1115,10 +1138,10 @@ mod tests {
             .map(|k| k.name())
             .collect();
         assert_eq!(names.len(), 16);
-        assert_eq!(names[1], "palette[1]  red");
+        assert_eq!(names[1], "palette[1] red");
         assert_eq!(names[10], "palette[10] bright green");
-        let red = key(&state, "colors.palette[1]  red");
-        let black = key(&state, "colors.palette[0]  black");
+        let red = key(&state, "colors.palette[1] red");
+        let black = key(&state, "colors.palette[0] black");
         assert_eq!(
             state.base_of(&black),
             Some(toml::Value::String("#010101".into()))
@@ -1178,6 +1201,61 @@ mod tests {
         press(&mut state, KeyCode::Char('q'));
         assert_eq!(state.mode, Mode::Normal);
         assert!(!state.quit);
+    }
+
+    #[test]
+    fn palette_edits_start_from_the_saved_colors() {
+        let (mut state, dir) = state("", "");
+        // Another jotty config changes blue while this one is open.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("overrides.toml"),
+            "[colors]\npalette = [\"#000000\", \"#e06c75\", \"#98c379\", \"#e5c07b\", \"#0000ff\"]",
+        )
+        .unwrap();
+        let red = key(&state, "colors.palette[1] red");
+        state
+            .set(&red, Some(toml::Value::String("#ff0000".into())))
+            .unwrap();
+        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
+        assert_eq!(state.palette[4], Rgb(0, 0, 0xff));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn short_palette_overrides_mark_what_they_change() {
+        // The list replaces the config file's, so colors past its end fall
+        // back to the defaults, not to the config file.
+        let base: Vec<String> = (0..16).map(|i| format!("\"#0000{i:02x}\"")).collect();
+        let base = format!("[colors]\npalette = [{}]", base.join(", "));
+        let (state, dir) = state(&base, "[colors]\npalette = [\"#000000\"]");
+        let green = key(&state, "colors.palette[2] green");
+        assert_eq!(state.palette[2], DEFAULT_PALETTE[2]);
+        assert!(state.override_of(&green).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflicting_overrides_show_the_config_file() {
+        // However they got there, overrides that don't apply over the
+        // config file leave it in effect, with the reason shown.
+        let (mut state, dir) = state("[font]\nsize = 10.0", "");
+        state.layers.overrides = toml::from_str("[font]\nsize = \"big\"").unwrap();
+        state.refresh();
+        assert!(state.merge_error.is_some());
+        let size = key(&state, "font.size");
+        assert_eq!(state.effective_of(&size), Some(toml::Value::Float(10.0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leaving_the_keys_clears_the_filter() {
+        let (mut state, _dir) = state("", "");
+        state.focus = Focus::Keys;
+        state.filter = "red".into();
+        press(&mut state, KeyCode::Char('h'));
+        assert_eq!(state.focus, Focus::Sections);
+        assert!(state.filter.is_empty());
     }
 
     #[test]

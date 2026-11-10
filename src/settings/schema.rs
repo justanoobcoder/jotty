@@ -72,9 +72,21 @@ impl Key {
     pub fn name(&self) -> String {
         let name = self.path[1..].join(".");
         match self.index {
-            // Padded so the names line up past palette[9].
-            Some(i) => format!("{:<12}{}", format!("{name}[{i}]"), PALETTE_NAMES[i]),
+            Some(i) => format!("{name}[{i}] {}", PALETTE_NAMES[i]),
             None => name,
+        }
+    }
+
+    /// The name as the list shows it: padded so that color names line up
+    /// past `palette[9]`.
+    pub fn list_name(&self) -> String {
+        match self.index {
+            Some(i) => format!(
+                "{:<12}{}",
+                format!("{}[{i}]", self.path[1]),
+                PALETTE_NAMES[i]
+            ),
+            None => self.name(),
         }
     }
 

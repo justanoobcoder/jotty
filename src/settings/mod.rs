@@ -45,7 +45,9 @@ impl Layers {
             },
             None => (toml::Table::new(), None),
         };
-        let overrides = read_table(&overrides_path)?.unwrap_or_default();
+        let overrides = read_table(&overrides_path)
+            .map_err(|e| format!("{e}\nFix it, or remove it with: jotty config reset"))?
+            .unwrap_or_default();
         Ok(Layers {
             base,
             base_error,
@@ -163,6 +165,11 @@ pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
 }
 
 fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(), String> {
+    // Before reading anything: reset is how a broken file is recovered from.
+    if command == ConfigCommand::Reset {
+        let path = config::overrides_path().ok_or("neither $XDG_STATE_HOME nor $HOME is set")?;
+        return save(&path, &toml::Table::new()).map_err(|e| format!("{}: {e}", path.display()));
+    }
     let layers = Layers::load(config_path)?;
     match command {
         ConfigCommand::Edit => {
@@ -188,8 +195,7 @@ fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(),
             print!("{text}");
             Ok(())
         }
-        ConfigCommand::Reset => save(&layers.overrides_path, &toml::Table::new())
-            .map_err(|e| format!("{}: {e}", layers.overrides_path.display())),
+        ConfigCommand::Reset => unreachable!("handled before loading"),
     }
 }
 

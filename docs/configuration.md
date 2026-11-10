@@ -48,7 +48,10 @@ then move them into Nix once they are settled.
 - **Errors.** The TUI refuses values the config would refuse. If the
   overrides file is broken anyway, for example after a hand edit, jotty logs
   the error and ignores the overrides. The config file still applies.
-  `jotty config` won't open such a file, so that it can't overwrite it.
+  `jotty config` won't open such a file, so that it can't overwrite it;
+  fix it by hand, or remove it with `jotty config reset`, which works on a
+  broken file too. Overrides that are valid alone but not over the config
+  file are ignored the same way, and the TUI says so in its header.
 
 In the TUI, `Enter` toggles a bool, cycles a choice, or edits anything else.
 `Space` only toggles or cycles, and `i` edits any value as text. `?` shows
@@ -57,7 +60,7 @@ Lists are typed comma-separated, or as a TOML array (`["a,b", "c"]`) when an
 item contains a comma. `r` removes the override of a key, `R` removes those
 of a whole section, `/` filters keys across sections, and `q` quits. An
 overridden key is marked `●`. The palette is listed as its 16 colors by name
-(`palette[9]  bright red`). Changing one saves the whole list, which the TUI
+(`palette[9] bright red`). Changing one saves the whole list, which the TUI
 drops again once it matches the config file. For optional keys such as `colors.cursor`,
 saving an empty value removes the override.
 
