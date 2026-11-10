@@ -218,7 +218,11 @@ impl fmt::Display for KeyCombo {
         match self.trigger {
             Trigger::Key(keysym) => write!(f, "{}", xkb::keysym_get_name(keysym)),
             Trigger::Wheel(wheel) => {
-                let name = Wheel::ALL.iter().find(|&&(_, w)| w == wheel).unwrap().0;
+                let name = Wheel::ALL
+                    .iter()
+                    .find(|&&(_, w)| w == wheel)
+                    .expect("Wheel::ALL lists every wheel")
+                    .0;
                 write!(f, "{name}")
             }
         }

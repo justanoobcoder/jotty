@@ -207,7 +207,7 @@ fn bands(top: u32, cell_height: u32, rows: usize, height: u32) -> Vec<(u32, u32)
         let y = (top + row * cell_height).min(height);
         bands.push((y, (y + cell_height).min(height)));
     }
-    let bottom = bands.last().unwrap().1;
+    let bottom = bands.last().expect("bands starts with the top margin").1;
     bands.push((bottom, height));
     bands
 }

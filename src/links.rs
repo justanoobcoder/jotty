@@ -109,8 +109,11 @@ impl Detector {
             for caps in file.captures_iter(&line.text) {
                 // Quoted: the link covers the quotes. Bare: just the path.
                 let (span, path) = match caps.get(1) {
-                    Some(path) => (caps.get(0).unwrap(), path),
-                    None => (caps.get(2).unwrap(), caps.get(2).unwrap()),
+                    Some(path) => (caps.get(0).expect("group 0 is the whole match"), path),
+                    None => {
+                        let path = caps.get(2).expect("the bare alternative matched");
+                        (path, path)
+                    }
                 };
                 if span.start() <= offset
                     && offset < span.end()

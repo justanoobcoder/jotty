@@ -1169,12 +1169,16 @@ impl Screen {
 
         let mut points = points.into_iter();
         if !self.alt_active {
-            let (row, col) = points.next().unwrap();
+            let (row, col) = points
+                .next()
+                .expect("reflow returns every point it is given");
             self.cursor.row = row;
             self.cursor.col = col;
         }
         if let Some(saved) = &mut self.saved[0] {
-            let (row, col) = points.next().unwrap();
+            let (row, col) = points
+                .next()
+                .expect("reflow returns every point it is given");
             saved.cursor.row = row;
             saved.cursor.col = col;
         }

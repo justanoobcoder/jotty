@@ -411,7 +411,7 @@ pub fn run(
                 conn.backend().display_ptr().cast(),
                 window.wl_surface().id(),
                 size,
-                fonts.take().unwrap(),
+                fonts.take().expect("fonts are taken only here"),
                 theme.clone(),
             )
         } {
@@ -2505,7 +2505,7 @@ impl PointerHandler for App {
                     if self.reporting_mouse() && mouse_button(*button).is_some() =>
                 {
                     self.last_serial = *serial;
-                    let button = mouse_button(*button).unwrap();
+                    let button = mouse_button(*button).expect("checked by the match guard");
                     self.held_buttons.retain(|&held| held != button);
                     self.held_buttons.push(button);
                     self.mouse_cell = None;
@@ -2520,7 +2520,9 @@ impl PointerHandler for App {
                         .retain(|&held| Some(held) != mouse_button(*button));
                     self.mouse_cell = None;
                     self.report_mouse(
-                        MouseAction::Release(mouse_button(*button).unwrap()),
+                        MouseAction::Release(
+                            mouse_button(*button).expect("checked by the match guard"),
+                        ),
                         event.position,
                     );
                 }
@@ -2551,7 +2553,7 @@ impl PointerHandler for App {
                     ..
                 } if self.modifiers.shift && self.shift_mark.is_some() => {
                     self.last_serial = *serial;
-                    let mark = self.shift_mark.take().unwrap();
+                    let mark = self.shift_mark.take().expect("checked by the match guard");
                     let point = self.cell_start(self.point_at(event.position));
                     let (start, end) = (mark.min(point), mark.max(point));
                     self.selection = Some(Selection::span(start, end, Unit::Word));

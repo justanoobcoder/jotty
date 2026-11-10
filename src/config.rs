@@ -331,7 +331,8 @@ impl std::str::FromStr for Rgb {
         if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(format!("invalid color {s:?}, expected \"#rrggbb\""));
         }
-        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+        let channel =
+            |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("checked as hex digits above");
         Ok(Rgb(channel(0), channel(2), channel(4)))
     }
 }

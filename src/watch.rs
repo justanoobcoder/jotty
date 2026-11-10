@@ -64,11 +64,11 @@ pub fn changed(file: &mut File, name: &OsStr) -> bool {
 /// were lost.
 fn overflowed(mut buf: &[u8]) -> bool {
     while let Some(header) = buf.get(..16) {
-        let mask = u32::from_ne_bytes(header[4..8].try_into().unwrap());
+        let mask = u32::from_ne_bytes(header[4..8].try_into().expect("a 4-byte slice"));
         if mask & libc::IN_Q_OVERFLOW != 0 {
             return true;
         }
-        let len = u32::from_ne_bytes(header[12..16].try_into().unwrap()) as usize;
+        let len = u32::from_ne_bytes(header[12..16].try_into().expect("a 4-byte slice")) as usize;
         let Some(rest) = buf.get(16 + len..) else {
             return false;
         };
@@ -82,7 +82,7 @@ fn overflowed(mut buf: &[u8]) -> bool {
 fn event_names(mut buf: &[u8]) -> impl Iterator<Item = &[u8]> {
     std::iter::from_fn(move || {
         let header = buf.get(..16)?;
-        let len = u32::from_ne_bytes(header[12..16].try_into().unwrap()) as usize;
+        let len = u32::from_ne_bytes(header[12..16].try_into().expect("a 4-byte slice")) as usize;
         let name = buf.get(16..16 + len)?;
         buf = &buf[16 + len..];
         let end = name.iter().position(|&b| b == 0).unwrap_or(len);
