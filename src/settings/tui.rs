@@ -4,15 +4,20 @@
 use std::io;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
+use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::schema::{self, Key, SECTIONS};
-use super::{Layers, get_path, remove_path, save, set_path};
+use super::{Layers, get_path, read_table, remove_path, save, set_path};
 use crate::config::{Config, Rgb};
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -47,6 +52,8 @@ pub struct State {
     filter: String,
     /// The last result, and whether it is an error.
     message: Option<(String, bool)>,
+    /// The section `R` was pressed for, waiting for a second `R`.
+    confirm_reset: Option<String>,
     quit: bool,
 }
 
@@ -62,6 +69,7 @@ impl State {
             mode: Mode::Normal,
             filter: String::new(),
             message: None,
+            confirm_reset: None,
             quit: false,
         };
         state.refresh();
@@ -70,9 +78,12 @@ impl State {
 
     /// Recomputes the effective config and the keys after a change.
     fn refresh(&mut self) {
-        // The overrides were checked when loaded or changed, so this only
-        // fails if they got out of hand; show the defaults then.
-        let config = Config::from_table(self.layers.merged()).unwrap_or_default();
+        // The overrides were checked when loaded or changed, so this is a
+        // bug if it fails; say so rather than quietly show the defaults.
+        let config = Config::from_table(self.layers.merged()).unwrap_or_else(|e| {
+            self.message = Some((format!("showing the defaults: {}", e.message()), true));
+            Config::default()
+        });
         self.effective = toml::Table::try_from(&config).unwrap_or_default();
         self.keys = schema::keys(&self.effective);
         self.selected = self.selected.min(self.visible().len().saturating_sub(1));
@@ -111,9 +122,17 @@ impl State {
         Ok(())
     }
 
+    /// The overrides as saved now: another `jotty config`, a `reset` or a
+    /// hand edit may have changed them since this one started.
+    fn current_overrides(&self) -> Result<toml::Table, String> {
+        read_table(&self.layers.overrides_path)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("not saving over a broken file: {e}"))
+    }
+
     /// Overrides `key` with `value`, or removes its override for `None`.
     pub fn set(&mut self, key: &Key, value: Option<toml::Value>) -> Result<(), String> {
-        let mut overrides = self.layers.overrides.clone();
+        let mut overrides = self.current_overrides()?;
         match value {
             Some(value) => set_path(&mut overrides, &key.path, value),
             None => remove_path(&mut overrides, &key.path),
@@ -123,7 +142,7 @@ impl State {
 
     /// Removes the overrides of every key in `section`.
     pub fn reset_section(&mut self, section: &str) -> Result<(), String> {
-        let mut overrides = self.layers.overrides.clone();
+        let mut overrides = self.current_overrides()?;
         overrides.remove(section);
         self.commit(overrides)
     }
@@ -144,6 +163,8 @@ impl State {
     }
 
     fn handle_normal(&mut self, key: KeyEvent) {
+        // Any key but a second R cancels a pending section reset.
+        let confirm = self.confirm_reset.take();
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         match key.code {
@@ -183,8 +204,13 @@ impl State {
                     (Focus::Keys, Some(key)) => key.section().to_string(),
                     _ => SECTIONS[self.section].to_string(),
                 };
-                let result = self.reset_section(&section);
-                self.report(result.map(|()| format!("[{section}] reset")));
+                if confirm.as_deref() == Some(section.as_str()) {
+                    let result = self.reset_section(&section);
+                    self.report(result.map(|()| format!("[{section}] reset")));
+                } else {
+                    self.report(Ok(format!("Press R again to reset all of [{section}]")));
+                    self.confirm_reset = Some(section);
+                }
             }
             _ => {}
         }
@@ -231,8 +257,11 @@ impl State {
                 .nth(cursor)
                 .map_or(buffer.len(), |(i, _)| i)
         };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => return,
+            KeyCode::Char('c') if ctrl => return,
             KeyCode::Enter => {
                 if let Some(selected) = self.selected_key() {
                     let result = selected
@@ -250,11 +279,11 @@ impl State {
                 }
                 return;
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('u') if ctrl => {
                 buffer.clear();
                 cursor = 0;
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if !ctrl && !alt => {
                 buffer.insert(byte(&buffer, cursor), c);
                 cursor += 1;
             }
@@ -279,9 +308,16 @@ impl State {
             KeyCode::Enter => return,
             KeyCode::Esc => {
                 self.filter.clear();
+                self.selected = 0;
                 return;
             }
-            KeyCode::Char(c) => self.filter.push(c),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.filter.push(c)
+            }
             KeyCode::Backspace => {
                 self.filter.pop();
             }
@@ -289,6 +325,27 @@ impl State {
         }
         self.selected = 0;
         self.mode = Mode::Filter;
+    }
+
+    /// Pasted text goes into the value or the filter being typed, on one
+    /// line: a pasted newline must not save half of it.
+    fn paste(&mut self, text: &str) {
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        match &mut self.mode {
+            Mode::Edit { buffer, cursor } => {
+                let at = buffer
+                    .char_indices()
+                    .nth(*cursor)
+                    .map_or(buffer.len(), |(i, _)| i);
+                buffer.insert_str(at, &text);
+                *cursor += text.chars().count();
+            }
+            Mode::Filter => {
+                self.filter.push_str(&text);
+                self.selected = 0;
+            }
+            Mode::Normal => {}
+        }
     }
 
     fn draw(&self, frame: &mut Frame) {
@@ -314,7 +371,10 @@ impl State {
             format!("  overrides: {}", tilde(&self.layers.overrides_path)).dark_gray(),
         ])];
         lines.push(match &self.layers.base_error {
-            Some(e) => Line::from(format!("config file ignored: {e}")).red(),
+            Some(e) => Line::from(format!(
+                "The config file is broken, so jotty applies no overrides until it is fixed: {e}"
+            ))
+            .red(),
             None => Line::from("Move them into home-manager with: jotty config export --nix")
                 .dark_gray(),
         });
@@ -357,19 +417,29 @@ impl State {
         };
         let width = visible
             .iter()
-            .map(|k| label(k).chars().count())
+            .map(|k| text_width(&label(k)))
             .max()
             .unwrap_or(0);
         let editing = matches!(self.mode, Mode::Edit { .. });
+        // Border, mark and label come before a value; one column is left
+        // for the cursor at the end.
+        let text_x = area
+            .x
+            .saturating_add(u16::try_from(5 + width).unwrap_or(u16::MAX));
+        let room = usize::from(area.right().saturating_sub(1).saturating_sub(text_x));
+        let window = match &self.mode {
+            Mode::Edit { buffer, cursor } => Some(edit_window(buffer, *cursor, room)),
+            _ => None,
+        };
         let items = visible.iter().enumerate().map(|(i, key)| {
             let overridden = get_path(&self.layers.overrides, &key.path).is_some();
             let mark = if overridden { "● " } else { "  " };
             let value = get_path(&self.effective, &key.path);
             let mut spans = vec![mark.yellow(), Span::raw(format!("{:width$}  ", label(key)))];
-            if let Mode::Edit { buffer, .. } = &self.mode
+            if let (Mode::Edit { buffer, .. }, Some((start, end, _))) = (&self.mode, window)
                 && i == self.selected
             {
-                spans.push(Span::raw(buffer.clone()).underlined());
+                spans.push(Span::raw(buffer[start..end].to_string()).underlined());
             } else {
                 spans.extend(value_spans(value));
             }
@@ -398,12 +468,18 @@ impl State {
         };
         let list = List::new(items).block(block).highlight_style(highlight);
         frame.render_stateful_widget(list, area, &mut state);
-        if let Mode::Edit { cursor, .. } = &self.mode {
-            // Border, mark and label come before the text.
-            let offset = state.offset();
-            let x = area.x + 1 + 2 + width as u16 + 2 + *cursor as u16;
-            let y = area.y + 1 + (self.selected.saturating_sub(offset)) as u16;
-            frame.set_cursor_position(Position::new(x.min(area.right() - 2), y));
+        if let Some((_, _, column)) = window {
+            let row = self.selected.saturating_sub(state.offset());
+            let x = text_x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
+            let y = area
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+            let last = |start: u16, end: u16| end.saturating_sub(2).max(start);
+            frame.set_cursor_position(Position::new(
+                x.min(last(area.x, area.right())),
+                y.min(last(area.y, area.bottom())),
+            ));
         }
     }
 
@@ -483,6 +559,36 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
     spans
 }
 
+/// Columns `s` takes on screen.
+fn text_width(s: &str) -> usize {
+    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// The part of `buffer` to show in `room` columns so that the char at
+/// `cursor` is visible: its byte range, and the cursor's column in it.
+fn edit_window(buffer: &str, cursor: usize, room: usize) -> (usize, usize, usize) {
+    let chars: Vec<(usize, char)> = buffer.char_indices().collect();
+    let cursor = cursor.min(chars.len());
+    let width = |range: &[(usize, char)]| {
+        range
+            .iter()
+            .map(|&(_, c)| c.width().unwrap_or(0))
+            .sum::<usize>()
+    };
+    // Scroll right just enough to fit everything up to the cursor.
+    let mut first = 0;
+    while first < cursor && width(&chars[first..cursor]) > room.saturating_sub(1) {
+        first += 1;
+    }
+    let column = width(&chars[first..cursor]);
+    let mut last = cursor;
+    while last < chars.len() && width(&chars[first..=last]) <= room {
+        last += 1;
+    }
+    let byte = |i: usize| chars.get(i).map_or(buffer.len(), |&(b, _)| b);
+    (byte(first), byte(last), column)
+}
+
 /// `path` with the home directory written as `~`.
 fn tilde(path: &std::path::Path) -> String {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
@@ -500,16 +606,19 @@ pub fn run(layers: Layers) -> io::Result<()> {
     let mut state = State::new(layers);
     let mut terminal = ratatui::try_init()?;
     let result = (|| {
+        execute!(io::stdout(), EnableBracketedPaste)?;
         while !state.quit {
             terminal.draw(|frame| state.draw(frame))?;
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                state.handle(key);
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => state.handle(key),
+                Event::Paste(text) => state.paste(&text),
+                _ => {}
             }
         }
         Ok(())
     })();
+    // Best effort, like the rest of restoring the terminal.
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -530,6 +639,7 @@ mod tests {
             overrides_path: dir.join("overrides.toml"),
             overrides: toml::from_str(overrides).unwrap(),
         };
+        save(&layers.overrides_path, &layers.overrides).unwrap();
         (State::new(layers), dir)
     }
 
@@ -661,6 +771,78 @@ mod tests {
             Some(toml::from_str("[font]\nsize = 20.0").unwrap())
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_edit_window_follows_the_cursor() {
+        // Everything fits.
+        assert_eq!(edit_window("abc", 3, 10), (0, 3, 3));
+        // Scrolled so the cursor at the end is in the last column.
+        assert_eq!(edit_window("abcdefgh", 8, 4), (5, 8, 3));
+        // At the start, the rest is cut off.
+        assert_eq!(edit_window("abcdefgh", 0, 4), (0, 4, 0));
+        // Wide characters count twice.
+        assert_eq!(edit_window("日本語", 3, 5), (3, 9, 4));
+        assert_eq!(edit_window("", 0, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn section_reset_needs_a_second_press() {
+        let (mut state, dir) = state("", "[font]\nsize = 20.0");
+        press(&mut state, KeyCode::Char('R'));
+        assert!(!state.layers.overrides.is_empty());
+        // Anything else in between cancels it.
+        press(&mut state, KeyCode::Char('j'));
+        press(&mut state, KeyCode::Char('k'));
+        press(&mut state, KeyCode::Char('R'));
+        press(&mut state, KeyCode::Char('R'));
+        assert!(state.layers.overrides.is_empty());
+        assert_eq!(saved(&dir), None);
+    }
+
+    #[test]
+    fn changes_made_elsewhere_are_kept() {
+        let (mut state, dir) = state("", "");
+        let size = key(&state, "font.size");
+        state.set(&size, Some(toml::Value::Float(14.0))).unwrap();
+        // Another jotty config sets a color meanwhile.
+        std::fs::write(
+            dir.join("overrides.toml"),
+            "[font]\nsize = 14.0\n[colors]\nbackground = \"#000000\"",
+        )
+        .unwrap();
+        state
+            .set(
+                &key(&state, "window.blur"),
+                Some(toml::Value::Boolean(true)),
+            )
+            .unwrap();
+        let saved = saved(&dir).unwrap();
+        assert!(saved.contains_key("colors") && saved.contains_key("window"));
+        // A broken file isn't overwritten.
+        std::fs::write(dir.join("overrides.toml"), "junk =").unwrap();
+        assert!(state.set(&size, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pasting_stays_on_one_line() {
+        let (mut state, _dir) = state("", "");
+        state.mode = Mode::Edit {
+            buffer: "ab".into(),
+            cursor: 1,
+        };
+        state.paste("x\ny");
+        assert_eq!(
+            state.mode,
+            Mode::Edit {
+                buffer: "axyb".into(),
+                cursor: 3
+            }
+        );
+        // Ctrl+C cancels, rather than typing a c.
+        state.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(state.mode, Mode::Normal);
     }
 
     #[test]

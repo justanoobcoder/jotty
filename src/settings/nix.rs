@@ -21,8 +21,15 @@ fn write_value(out: &mut String, value: &toml::Value, depth: usize) -> Result<()
             if !f.is_finite() {
                 return Err(format!("{f} has no Nix equivalent"));
             }
-            // `{:?}` always keeps a decimal point (`13.0`), so Nix reads a float.
-            let _ = write!(out, "{f:?}");
+            // `{:?}` keeps a decimal point (`13.0`) so Nix reads a float,
+            // except in exponents (`1e21`), which Nix needs as `1.0e21`.
+            let text = format!("{f:?}");
+            match text.split_once('e') {
+                Some((mantissa, exp)) if !mantissa.contains('.') => {
+                    let _ = write!(out, "{mantissa}.0e{exp}");
+                }
+                _ => out.push_str(&text),
+            }
         }
         toml::Value::Boolean(b) => {
             let _ = write!(out, "{b}");
@@ -137,6 +144,9 @@ mod tests {
             "{\n  a = 13.0;\n  b = 0.85;\n}\n"
         );
         assert!(to_nix(&toml::Value::Float(f64::NAN)).is_err());
+        let float = |f| to_nix(&toml::Value::Float(f)).unwrap();
+        assert_eq!(float(1e21), "1.0e21\n");
+        assert_eq!(float(1.5e-7), "1.5e-7\n");
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl Layers {
 
 /// A TOML file as a table, `None` when missing. Its values are checked
 /// against the config's schema too, so errors show where they are.
-fn read_table(path: &Path) -> Result<Option<toml::Table>, String> {
+pub fn read_table(path: &Path) -> Result<Option<toml::Table>, String> {
     let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let Some(text) = config::read_optional(path).map_err(|e| error(&e))? else {
         return Ok(None);
@@ -83,13 +83,26 @@ pub fn save(path: &Path, overrides: &toml::Table) -> io::Result<()> {
         };
     }
     let text = toml::to_string(overrides).map_err(io::Error::other)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    // A name of its own per process, so two writers never share one.
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        // Best effort: the error that matters is the one returned.
+        let _ = std::fs::remove_file(&tmp);
     }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    written
 }
 
 /// The value at `path` in nested tables.

@@ -316,8 +316,9 @@ impl Kind {
 
     /// Parses what the user typed. `Ok(None)` means "no value": the key
     /// goes back to the config file's value or the default.
-    pub fn parse(self, input: &str) -> Result<Option<toml::Value>, String> {
-        let input = input.trim();
+    pub fn parse(self, raw: &str) -> Result<Option<toml::Value>, String> {
+        // Text is taken as typed; everything else may have stray spaces.
+        let input = raw.trim();
         let value = match self {
             Bool => match input {
                 "true" => toml::Value::Boolean(true),
@@ -342,9 +343,9 @@ impl Kind {
                 }
                 toml::Value::Integer(v)
             }
-            Str => toml::Value::String(input.into()),
+            Str => toml::Value::String(raw.into()),
             OptStr | OptColor if input.is_empty() => return Ok(None),
-            OptStr => toml::Value::String(input.into()),
+            OptStr => toml::Value::String(raw.into()),
             Enum(values) => {
                 if !values.contains(&input) {
                     return Err(format!("expected one of {}", values.join(", ")));
@@ -399,8 +400,9 @@ pub fn format(value: &toml::Value) -> String {
             let plain: Option<Vec<&str>> = items
                 .iter()
                 .map(|v| {
-                    v.as_str()
-                        .filter(|s| !s.contains(',') && !s.starts_with('['))
+                    v.as_str().filter(|s| {
+                        !s.is_empty() && s.trim() == *s && !s.contains(',') && !s.starts_with('[')
+                    })
                 })
                 .collect();
             match plain {
@@ -513,7 +515,13 @@ mod tests {
 
     #[test]
     fn formatted_lists_read_back() {
-        for list in [r#"["a", "b"]"#, r#"["a,b", "c"]"#, "[]"] {
+        for list in [
+            r#"["a", "b"]"#,
+            r#"["a,b", "c"]"#,
+            "[]",
+            r#"["a", ""]"#,
+            r#"[" a"]"#,
+        ] {
             let value = StrList.parse(list).unwrap().unwrap();
             assert_eq!(StrList.parse(&format(&value)).unwrap(), Some(value));
         }

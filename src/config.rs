@@ -402,12 +402,14 @@ impl Config {
             },
             None => String::new(),
         };
-        let parse_error = |e| ConfigError::Parse(base.map_or_else(PathBuf::new, |b| b.0.into()), e);
-        let config = Self::parse(&text).map_err(parse_error)?;
+        let base_path = base.map_or_else(PathBuf::new, |b| b.0.into());
+        // Parsed from text, not from the table, so errors say where they are.
+        let config = Self::parse(&text).map_err(|e| ConfigError::Parse(base_path.clone(), e))?;
         let Some(overlay) = overlay else {
             return Ok(config);
         };
-        match Self::merge_overlay(&text, overlay) {
+        let base = toml::from_str(&text).map_err(|e| ConfigError::Parse(base_path, e))?;
+        match Self::merge_overlay(base, overlay) {
             Ok(Some(merged)) => Ok(merged),
             Ok(None) => Ok(config),
             Err(e) => {
@@ -417,19 +419,20 @@ impl Config {
         }
     }
 
-    /// The config from `base_text` (already known to be valid) with the
-    /// file `overlay` merged over it, or `None` without an overlay file.
-    fn merge_overlay(base_text: &str, overlay: &Path) -> Result<Option<Self>, ConfigError> {
-        let io_error = |e| ConfigError::Io(overlay.to_path_buf(), e);
+    /// The config from `base` (already known to be valid) with the file
+    /// `overlay` merged over it, or `None` without an overlay file.
+    fn merge_overlay(mut base: toml::Table, overlay: &Path) -> Result<Option<Self>, ConfigError> {
         let parse_error = |e| ConfigError::Parse(overlay.to_path_buf(), e);
-        let Some(text) = read_optional(overlay).map_err(io_error)? else {
+        let text = read_optional(overlay).map_err(|e| ConfigError::Io(overlay.to_path_buf(), e))?;
+        let Some(text) = text else {
             return Ok(None);
         };
-        // Checked on its own first, so errors point into the overlay.
-        Self::parse(&text).map_err(parse_error)?;
-        let mut table: toml::Table = toml::from_str(base_text).map_err(parse_error)?;
-        merge(&mut table, toml::from_str(&text).map_err(parse_error)?);
-        Self::from_table(table).map(Some).map_err(parse_error)
+        merge(&mut base, toml::from_str(&text).map_err(parse_error)?);
+        Self::from_table(base).map(Some).map_err(|e| {
+            // Values in a table have no position; the overlay's own text
+            // does, and is where the mistake almost always is.
+            parse_error(Self::parse(&text).err().unwrap_or(e))
+        })
     }
 
     /// Clamps values that would otherwise break rendering.
