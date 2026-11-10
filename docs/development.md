@@ -29,6 +29,8 @@ sandbox.
 cargo test                                    # unit tests
 cargo clippy --all-targets -- -D warnings     # lints
 cargo fmt --check                             # formatting
+RUSTC_BOOTSTRAP=1 cargo fmt -- --check --config imports_granularity=Module,group_imports=StdExternalCrate,hex_literal_case=Lower,format_macro_matchers=true
+                                              # nightly rustfmt options
 
 nix flake check     # builds the package (with tests), clippy, rustfmt
 nix fmt             # formats flake.nix
@@ -40,7 +42,7 @@ nix fmt             # formats flake.nix
 
 | Job | Runs |
 | --- | --- |
-| Format | `cargo fmt --check` and `nix fmt -- --check flake.nix` |
+| Format | `cargo fmt --check`, the same with the nightly rustfmt options, and `nix fmt -- --check flake.nix` |
 | Clippy | `cargo clippy --all-targets -- -D warnings` |
 | Build and test | `cargo build --release` and `cargo test` on Ubuntu, with fonts installed so the font and emoji tests run |
 | Minimum Rust version | `cargo build` with Rust 1.88, the `rust-version` in `Cargo.toml` |
@@ -178,8 +180,9 @@ See [architecture.md](architecture.md) for the module map. Some conventions:
   with a `SAFETY` comment where the reason isn't obvious.
 - Imports come in three groups: std, other crates, then the crate's own.
   The nightly rustfmt options `imports_granularity = "Module"`,
-  `group_imports = "StdExternalCrate"` and `hex_literal_case = "Lower"`
-  keep them so; stable rustfmt can run them once with
-  `RUSTC_BOOTSTRAP=1 cargo fmt -- --config imports_granularity=Module,group_imports=StdExternalCrate,hex_literal_case=Lower`.
+  `group_imports = "StdExternalCrate"`, `hex_literal_case = "Lower"` and
+  `format_macro_matchers = true` keep them so; stable rustfmt runs them with
+  `RUSTC_BOOTSTRAP=1 cargo fmt -- --config imports_granularity=Module,group_imports=StdExternalCrate,hex_literal_case=Lower,format_macro_matchers=true`
+  (CI checks it with `--check`).
 - Commit one change at a time, and make sure tests, clippy and rustfmt pass
   first.

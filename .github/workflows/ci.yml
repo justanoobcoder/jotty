@@ -41,6 +41,12 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+      # Stable rustfmt ignores these options, so the step above passes code
+      # that breaks them
+      - name: rustfmt nightly options
+        run: >-
+          RUSTC_BOOTSTRAP=1 cargo fmt -- --check
+          --config imports_granularity=Module,group_imports=StdExternalCrate,hex_literal_case=Lower,format_macro_matchers=true
       - uses: cachix/install-nix-action@v31
       - name: nixfmt
         run: nix fmt -- --check flake.nix
