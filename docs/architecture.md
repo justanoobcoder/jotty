@@ -58,7 +58,7 @@ compositor or GPU.
 stream into printable characters and control functions, and calls the
 `vte::Perform` methods that `Screen` implements.
 
-jotty uses its own fork of vte (`justanoobcoder/vte`, branch `print-ascii`),
+jotty uses its own fork of vte (`justanoobcoder/vte`),
 which adds `Perform::print_ascii`: vte passes each run of printable ASCII in
 one call instead of calling `print` per character. `Screen` writes such a run
 to the grid a row at a time, which is most of what output is. Everything else
