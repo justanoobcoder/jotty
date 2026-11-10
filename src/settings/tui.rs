@@ -14,9 +14,10 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
+use super::Layers;
 use super::schema::{self, Key, SECTIONS};
-use super::{Layers, get_path, read_table, remove_path, save, set_path};
 use crate::config::{Config, DEFAULT_PALETTE, Rgb};
+use crate::settings;
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +135,7 @@ impl State {
         let mut merged = self.layers.base.clone();
         crate::config::merge(&mut merged, overrides.clone());
         Config::from_table(merged).map_err(|e| e.message().to_string())?;
-        save(&self.layers.overrides_path, &overrides)
+        settings::save(&self.layers.overrides_path, &overrides)
             .map_err(|e| format!("{}: {e}", self.layers.overrides_path.display()))?;
         self.layers.overrides = overrides;
         self.refresh();
@@ -144,7 +145,7 @@ impl State {
     /// The overrides as saved now: another `jotty config`, a `reset` or a
     /// hand edit may have changed them since this one started.
     fn current_overrides(&self) -> Result<toml::Table, String> {
-        read_table(&self.layers.overrides_path)
+        settings::read_table(&self.layers.overrides_path)
             .map(Option::unwrap_or_default)
             .map_err(|e| format!("not saving over a broken file: {e}"))
     }
@@ -153,13 +154,13 @@ impl State {
     fn effective_of(&self, key: &Key) -> Option<toml::Value> {
         match key.index {
             Some(i) => Some(toml::Value::String(self.palette[i].to_string())),
-            None => get_path(&self.effective, &key.path).cloned(),
+            None => settings::get_path(&self.effective, &key.path).cloned(),
         }
     }
 
     /// The value the overrides give `key`, if they change it.
     fn override_of(&self, key: &Key) -> Option<toml::Value> {
-        let value = get_path(&self.layers.overrides, &key.path)?;
+        let value = settings::get_path(&self.layers.overrides, &key.path)?;
         match key.index {
             // The list replaces the config file's as a whole, so a color
             // counts as overridden when it ends up different, also when a
@@ -172,7 +173,7 @@ impl State {
 
     /// The value the config file gives `key`.
     fn base_of(&self, key: &Key) -> Option<toml::Value> {
-        let value = get_path(&self.layers.base, &key.path)?;
+        let value = settings::get_path(&self.layers.base, &key.path)?;
         match key.index {
             Some(i) => value.as_array()?.get(i).cloned(),
             None => Some(value.clone()),
@@ -198,18 +199,18 @@ impl State {
                     None => self.base_palette[i],
                 };
                 if palette == self.base_palette {
-                    remove_path(&mut overrides, &key.path);
+                    settings::remove_path(&mut overrides, &key.path);
                 } else {
                     let list = palette.iter().map(|c| toml::Value::String(c.to_string()));
-                    set_path(
+                    settings::set_path(
                         &mut overrides,
                         &key.path,
                         toml::Value::Array(list.collect()),
                     );
                 }
             }
-            (None, Some(value)) => set_path(&mut overrides, &key.path, value),
-            (None, None) => remove_path(&mut overrides, &key.path),
+            (None, Some(value)) => settings::set_path(&mut overrides, &key.path, value),
+            (None, None) => settings::remove_path(&mut overrides, &key.path),
         }
         self.commit(overrides)
     }
@@ -899,7 +900,7 @@ mod tests {
             overrides_path: dir.join("overrides.toml"),
             overrides: toml::from_str(overrides).unwrap(),
         };
-        save(&layers.overrides_path, &layers.overrides).unwrap();
+        settings::save(&layers.overrides_path, &layers.overrides).unwrap();
         (State::new(layers), dir)
     }
 
@@ -935,7 +936,7 @@ mod tests {
         let size = key(&state, "font.size");
         state.set(&size, Some(toml::Value::Float(14.0))).unwrap();
         assert_eq!(
-            get_path(&state.effective, &size.path),
+            settings::get_path(&state.effective, &size.path),
             Some(&toml::Value::Float(14.0))
         );
         assert_eq!(
@@ -944,7 +945,7 @@ mod tests {
         );
         state.set(&size, None).unwrap();
         assert_eq!(
-            get_path(&state.effective, &size.path),
+            settings::get_path(&state.effective, &size.path),
             Some(&toml::Value::Float(10.0))
         );
         // Nothing left: the file is gone, and so is the empty [font].
@@ -1022,7 +1023,7 @@ mod tests {
         state.selected = state.visible().iter().position(|k| **k == blur).unwrap();
         press(&mut state, KeyCode::Enter);
         assert_eq!(
-            get_path(&state.layers.overrides, &blur.path),
+            settings::get_path(&state.layers.overrides, &blur.path),
             Some(&toml::Value::Boolean(true))
         );
         state.reset_section("window").unwrap();

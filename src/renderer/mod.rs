@@ -15,7 +15,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::{Config, Rgb};
-use crate::font::{CellMetrics, Style, is_icon};
+use crate::font::{self, CellMetrics, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
@@ -559,7 +559,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 // A Nerd Font icon followed by a space gets both cells, as in
                 // kitty and Ghostty; otherwise it is shrunk to fit its own.
                 let wide = span > 1.0
-                    || is_icon(cell.c)
+                    || font::is_icon(cell.c)
                         && row.cells().get(x + 1).is_some_and(|next| {
                             next.c == ' '
                                 && screen.cluster(next).is_empty()

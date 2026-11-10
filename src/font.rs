@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
 use unicode_width::UnicodeWidthChar;
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont, point};
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont};
 use fontconfig_sys as fc;
 
 use crate::emoji::{self, EmojiFont};
@@ -442,7 +442,7 @@ impl Fonts {
         let id = face.glyph_id(c);
         let scale = px_scale(face, self.px);
         // Place the baseline where the cell's is, so bounds are cell-relative.
-        let origin = point(0.0, m.baseline as f32);
+        let origin = ab_glyph::point(0.0, m.baseline as f32);
         let mut outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
 
         // A narrow glyph in a two-cell slot, as for emoji presentation

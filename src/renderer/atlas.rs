@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use super::{GlyphCache, GlyphInfo};
-use crate::font::{Fonts, Glyph, Style, underline_glyph};
+use crate::font::{self, Fonts, Glyph, Style};
 use crate::terminal::Underline;
 
 /// Packs rectangles left to right into rows ("shelves") as tall as their
@@ -228,7 +228,7 @@ impl<S: FnMut(u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
 
     fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
         self.cached(GlyphKey::Underline(style, cells), |fonts| {
-            underline_glyph(style, fonts.metrics, cells)
+            font::underline_glyph(style, fonts.metrics, cells)
         })
     }
 }

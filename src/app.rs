@@ -65,7 +65,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 };
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
-use wayland_client::globals::registry_queue_init;
+use wayland_client::globals;
 use xkbcommon::xkb;
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::DndAction;
@@ -78,7 +78,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 };
 
 use crate::config::{Config, RendererKind};
-use crate::font::{Fonts, points_to_px};
+use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
@@ -313,7 +313,7 @@ pub fn run(
 ) -> Result<u8, Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
-    let (globals, event_queue) = registry_queue_init::<App>(&conn)?;
+    let (globals, event_queue) = globals::registry_queue_init::<App>(&conn)?;
     let qh = event_queue.handle();
     let mut event_loop: EventLoop<App> = EventLoop::try_new()?;
     let loop_handle = event_loop.handle();
@@ -349,7 +349,7 @@ pub fn run(
         Fonts::new(
             &config.font.family,
             &config.font.fallback,
-            points_to_px(config.font.size, 1.0),
+            font::points_to_px(config.font.size, 1.0),
         )
     };
     let fonts = load_fonts()?;
@@ -615,7 +615,7 @@ impl App {
             self.window.wl_surface().set_buffer_scale(scale as i32);
         }
         self.renderer
-            .set_font_size(points_to_px(self.font_points, scale as f32));
+            .set_font_size(font::points_to_px(self.font_points, scale as f32));
         self.apply_size();
     }
 
@@ -667,7 +667,7 @@ impl App {
     fn set_font_points(&mut self, points: f32) {
         self.font_points = points.clamp(4.0, 200.0);
         self.renderer
-            .set_font_size(points_to_px(self.font_points, self.scale as f32));
+            .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
         self.apply_size();
     }
 
@@ -1436,7 +1436,7 @@ impl App {
 
         let mut relayout = old.window.padding != new.window.padding;
         if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
-            let px = points_to_px(self.font_points, self.scale as f32);
+            let px = font::points_to_px(self.font_points, self.scale as f32);
             match Fonts::new(&new.font.family, &new.font.fallback, px) {
                 Ok(fonts) => {
                     self.renderer.set_fonts(fonts);
@@ -1454,7 +1454,7 @@ impl App {
             // A new configured size replaces any zooming.
             self.font_points = new.font.size;
             self.renderer
-                .set_font_size(points_to_px(self.font_points, self.scale as f32));
+                .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
             relayout = true;
         }
 
