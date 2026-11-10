@@ -101,6 +101,7 @@ pub struct Glyph {
 
 /// Why the configured font could not be used.
 #[derive(Debug)]
+#[must_use]
 pub enum FontError {
     NotFound(String),
     Load(PathBuf, &'static str),

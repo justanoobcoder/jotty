@@ -313,6 +313,7 @@ impl ColorConfig {
 
 /// Why a config file could not be read, with its path.
 #[derive(Debug)]
+#[must_use]
 pub enum ConfigError {
     Io(PathBuf, io::Error),
     Parse(PathBuf, toml::de::Error),
