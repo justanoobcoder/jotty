@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
@@ -180,8 +181,9 @@ struct Notifier {
     connecting: bool,
     /// No connecting before this, after a failure.
     retry_at: Option<Instant>,
-    /// Title and body of notifications waiting for the connection.
-    queued: Vec<(String, String)>,
+    /// The window, title and body of notifications waiting for the
+    /// connection.
+    queued: Vec<(WindowId, String, String)>,
     /// A loop source is waiting for the bus to take queued messages.
     write_queued: bool,
 }
@@ -198,16 +200,47 @@ impl Notifier {
     }
 }
 
-/// The state of one terminal window: its Wayland objects, the terminal and
-/// the child behind it, input, selection and rendering.
+/// Identifies a window, for loop sources and notifications that refer back
+/// to it after it may have closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowId(u32);
+
+/// What a new window runs.
+#[derive(Debug, Default)]
+pub struct Spawn {
+    /// Program and arguments to run instead of the shell.
+    pub command: Option<Vec<OsString>>,
+}
+
+/// Something a window asks of the whole application, done after the event
+/// that asked for it.
+enum Request {
+    ReloadConfig,
+}
+
+/// The application: what all windows share, and the windows.
 pub struct App {
+    shared: Shared,
+    windows: Vec<TermWindow>,
+    /// The exit code of the last window's child, which becomes jotty's.
+    exit_code: u8,
+}
+
+/// The Wayland globals, the seat's devices and the state that goes with
+/// them, the config, and the session bus: what all windows share.
+pub struct Shared {
     qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,
+    conn: Connection,
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
     compositor: CompositorState,
+    xdg_shell: XdgShell,
     shm: Shm,
+    /// Both are needed for fractional scaling.
+    viewporter: Option<WpViewporter>,
+    fractional_manager: Option<WpFractionalScaleManagerV1>,
     data_device_manager: Option<DataDeviceManagerState>,
     primary_selection_manager: Option<PrimarySelectionManagerState>,
     /// xdg-activation, to mark the window urgent when the bell rings.
@@ -216,20 +249,63 @@ pub struct App {
     /// one, with the loop source that reads it.
     bus: Option<(Bus, RegistrationToken)>,
     notifier: Notifier,
-    /// Frames in a row that failed to draw.
-    draw_failures: u32,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     background_effect: BackgroundEffectState,
+
+    config: Rc<Config>,
+    /// The `--config` file, passed on to new windows and reloaded.
+    config_path: Option<PathBuf>,
+    /// A reload is scheduled (changes come in bursts while a file is saved).
+    reload_pending: bool,
+    links: Detector,
+    /// What windows asked for, done once the current event is handled.
+    requests: Vec<Request>,
+    next_window: u32,
+
+    keyboard: Option<WlKeyboard>,
+    /// The window with keyboard focus.
+    keyboard_focus: Option<WindowId>,
+    modifiers: Modifiers,
+    /// Our own copy of the keyboard's keymap, to find what a key produces
+    /// without modifiers (for key bindings), and the active layout.
+    keymap: Option<xkb::Keymap>,
+    layout: u32,
+    /// Serial of the latest input event, for clipboard requests.
+    last_serial: u32,
+    /// Keys whose press went to the program, by key code, so that their
+    /// release goes there too (kitty keyboard protocol).
+    sent_keys: HashSet<u32>,
+    pointer: Option<ThemedPointer>,
+    data_device: Option<DataDevice>,
+    copy_source: Option<(CopyPasteSource, String)>,
+    /// The primary selection: set by selecting text, pasted by middle click.
+    primary_device: Option<PrimarySelectionDevice>,
+    primary_source: Option<(PrimarySelectionSource, String)>,
+    text_input: Option<ZwpTextInputV3>,
+    /// The window the input method is working in.
+    ime_focus: Option<WindowId>,
+}
+
+/// The state of one terminal window: its Wayland objects, the terminal and
+/// the child behind it, input, selection and rendering.
+pub struct TermWindow {
+    id: WindowId,
+    qh: QueueHandle<App>,
+    loop_handle: LoopHandle<'static, App>,
+    config: Rc<Config>,
+    /// Frames in a row that failed to draw.
+    draw_failures: u32,
     /// Present once the compositor agreed to blur behind the window.
     blur: Option<ExtBackgroundEffectSurfaceV1>,
 
-    config: Config,
     // Declared before `window` so the EGL surface is destroyed before the
     // wl_surface it renders to.
     renderer: Renderer,
     window: Window,
     term: Terminal,
     pty: Pty,
+    /// The loop source reading the pty, removed when the window closes.
+    pty_source: Option<RegistrationToken>,
     pty_write_queued: bool,
 
     /// Window size in logical pixels and the scale factor, which is
@@ -239,7 +315,7 @@ pub struct App {
     /// With fractional scaling, the buffer is drawn at the scaled size and
     /// the viewport maps it back to the logical size.
     viewport: Option<WpViewport>,
-    _fractional_scale: Option<WpFractionalScaleV1>,
+    fractional_scale: Option<WpFractionalScaleV1>,
     font_points: f32,
     configured: bool,
     /// The screen changed and needs drawing.
@@ -249,20 +325,12 @@ pub struct App {
     /// When the program started a synchronized update that is still open.
     /// Which one, by its number, and whether it has taken too long.
     sync_hold: Option<(u64, bool)>,
+    /// The window is to close.
     exit: bool,
     /// The child's side of the pty is gone.
     pty_closed: bool,
 
-    keyboard: Option<WlKeyboard>,
-    modifiers: Modifiers,
-    /// Our own copy of the keyboard's keymap, to find what a key produces
-    /// without modifiers (for key bindings), and the active layout.
-    keymap: Option<xkb::Keymap>,
-    layout: u32,
     focused: bool,
-    /// Serial of the latest input event, for clipboard requests.
-    last_serial: u32,
-    pointer: Option<ThemedPointer>,
     pointer_pos: (f64, f64),
     scroll_accum: Accumulated,
     /// Button held down while reporting to the program, if any.
@@ -277,11 +345,6 @@ pub struct App {
     last_search: Option<(String, Direction)>,
     /// Vi mode, when on: a keyboard cursor over the screen and scrollback.
     vi: Option<ViMode>,
-    /// The `--config` file, passed on to new windows and reloaded.
-    config_path: Option<PathBuf>,
-    /// A reload is scheduled (changes come in bursts while a file is saved).
-    reload_pending: bool,
-    links: Detector,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
     /// The cell the pointer was last checked for a link in.
@@ -289,7 +352,6 @@ pub struct App {
     /// When a link was last clicked.
     last_link_click: Option<u32>,
     pointer_inside: bool,
-    conn: Connection,
     /// A cell marked by Shift+click; the next Shift+click selects from it.
     shift_mark: Option<Point>,
     /// The current left press was a Shift+click (it marks a cell unless
@@ -298,27 +360,21 @@ pub struct App {
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
-    /// Keys whose press went to the program, by key code, so that their
-    /// release goes there too (kitty keyboard protocol).
-    sent_keys: HashSet<u32>,
-    data_device: Option<DataDevice>,
-    copy_source: Option<(CopyPasteSource, String)>,
-    /// The primary selection: set by selecting text, pasted by middle click.
-    primary_device: Option<PrimarySelectionDevice>,
-    primary_source: Option<(PrimarySelectionSource, String)>,
 
+    /// The seat's text input, while the input method works in this window.
     text_input: Option<ZwpTextInputV3>,
     ime: ImeState,
     ime_caused_change: bool,
     ime_cursor_rect: (i32, i32, i32, i32),
 }
 
-/// Runs a window. `config_path` is the config file given on the command
-/// line, which new windows also use.
+/// Runs the first window, and the ones opened from it, until all are
+/// closed. `config_path` is the config file given on the command line,
+/// which new windows also use.
 pub fn run(
     config: Config,
     config_path: Option<PathBuf>,
-    command: Option<Vec<OsString>>,
+    spawn: Spawn,
 ) -> Result<u8, Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
@@ -353,32 +409,6 @@ pub fn run(
         .bind::<ZwpTextInputManagerV3, _, _>(&qh, 1..=1, TextInputManagerData)
         .map_err(|e| log::warn!("text-input-v3 unavailable, no input method support: {e}"))
         .ok();
-
-    let load_fonts = || {
-        Fonts::try_new(
-            &config.font.family,
-            &config.font.fallback,
-            font::points_to_px(config.font.size, 1.0),
-        )
-    };
-    let fonts = load_fonts()?;
-    let cell = fonts.metrics;
-    let pad = config.window.padding;
-    let cols = u32::from(config.window.columns);
-    let lines = u32::from(config.window.lines);
-    let size = (cols * cell.width + 2 * pad, lines * cell.height + 2 * pad);
-
-    let surface = compositor.create_surface(&qh);
-    let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
-    window.set_title(config.window.title.clone());
-    window.set_app_id(config.window.app_id.clone());
-    window.set_min_size(Some((cell.width * 2 + 2 * pad, cell.height + 2 * pad)));
-    if config.window.opacity >= 1.0 {
-        // Lets the compositor skip drawing what is behind the window.
-        set_whole_region(&compositor, |region| {
-            window.wl_surface().set_opaque_region(region)
-        });
-    }
     // Fractional scaling needs both protocols; otherwise the scale is the
     // integer buffer scale.
     let viewporter = globals
@@ -387,192 +417,83 @@ pub fn run(
     let fractional_manager = globals
         .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ScaleData)
         .ok();
-    let (viewport, fractional_scale) = match (&viewporter, &fractional_manager) {
-        (Some(viewporter), Some(manager)) => (
-            Some(viewporter.get_viewport(window.wl_surface(), &qh, ScaleData)),
-            Some(manager.get_fractional_scale(window.wl_surface(), &qh, ScaleData)),
-        ),
-        _ => {
-            log::info!("no fractional scaling (wp-fractional-scale or wp-viewporter missing)");
-            (None, None)
-        }
-    };
-    window.commit();
+    if viewporter.is_none() || fractional_manager.is_none() {
+        log::info!("no fractional scaling (wp-fractional-scale or wp-viewporter missing)");
+    }
+    let links = links_detector(&config);
 
+    let mut app = App {
+        shared: Shared {
+            qh: qh.clone(),
+            loop_handle,
+            conn: conn.clone(),
+            registry_state: RegistryState::new(&globals),
+            seat_state: SeatState::new(&globals, &qh),
+            output_state: OutputState::new(&globals, &qh),
+            compositor,
+            xdg_shell,
+            shm,
+            viewporter,
+            fractional_manager,
+            data_device_manager,
+            primary_selection_manager,
+            activation,
+            bus: None,
+            notifier: Notifier::new(),
+            text_input_manager,
+            background_effect,
+            config: Rc::new(config),
+            config_path,
+            reload_pending: false,
+            links,
+            requests: Vec::new(),
+            next_window: 0,
+            keyboard: None,
+            keyboard_focus: None,
+            modifiers: Modifiers::default(),
+            keymap: None,
+            layout: 0,
+            last_serial: 0,
+            sent_keys: HashSet::new(),
+            pointer: None,
+            data_device: None,
+            copy_source: None,
+            primary_device: None,
+            primary_source: None,
+            text_input: None,
+            ime_focus: None,
+        },
+        windows: Vec::new(),
+        exit_code: 0,
+    };
+    app.open_window(spawn)?;
+
+    app.watch_config();
+    // SCTK reports only seats added later through `new_seat`.
+    let seats: Vec<_> = app.shared.seat_state.seats().collect();
+    for seat in seats {
+        app.new_seat(&conn, &qh, seat);
+    }
+
+    while !app.windows.is_empty() {
+        event_loop.dispatch(None, &mut app)?;
+        app.after_dispatch();
+    }
+    Ok(app.exit_code)
+}
+
+/// The link detector for the file kinds and URL patterns in `config`.
+fn links_detector(config: &Config) -> Detector {
     let kinds: Vec<Vec<String>> = config
         .files
         .0
         .values()
         .map(|k| k.extensions.clone())
         .collect();
-    let links = Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
+    Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
         Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
-    });
-    let theme = Theme::from_config(&config);
-    let mut fonts = Some(fonts);
-    let gpu = match config.window.renderer {
-        // SAFETY: the display outlives the renderer (the event loop holds a
-        // connection until after `App` is dropped), and `App` drops the
-        // renderer before the window.
-        RendererKind::Gpu => match unsafe {
-            gl::Renderer::try_new(
-                conn.backend().display_ptr().cast(),
-                window.wl_surface().id(),
-                size,
-                fonts.take().expect("fonts are taken only here"),
-                theme.clone(),
-            )
-        } {
-            Ok(renderer) => Some(Renderer::Gpu(Box::new(renderer))),
-            Err(e) => {
-                log::warn!("cannot render with the GPU, using the CPU instead: {e}");
-                None
-            }
-        },
-        RendererKind::Cpu => None,
-    };
-    let renderer = match gpu {
-        Some(renderer) => renderer,
-        None => Renderer::Cpu(Box::new(software::Renderer::try_new(
-            &shm,
-            window.wl_surface().clone(),
-            size,
-            fonts.map_or_else(load_fonts, Ok)?,
-            theme,
-        )?)),
-    };
-
-    let (program, args) = match command {
-        Some(mut command) => {
-            let program = command.remove(0);
-            (program, command)
-        }
-        None => (
-            config
-                .terminal
-                .shell
-                .clone()
-                .unwrap_or_else(crate::pty::default_shell)
-                .into(),
-            Vec::new(),
-        ),
-    };
-    // The pixel size of the grid, from which programs work out the cell
-    // size for images.
-    let window_size = WindowSize {
-        cols: cols as u16,
-        rows: lines as u16,
-        width: (cols * cell.width).min(u16::MAX.into()) as u16,
-        height: (lines * cell.height).min(u16::MAX.into()) as u16,
-    };
-    let term = crate::terminfo::resolve(&config.terminal.term, &crate::terminfo::search_dirs());
-    log::info!("TERM={} (terminfo: {:?})", term.name, term.terminfo);
-    let pty = Pty::spawn(&program, &args, &term, window_size)
-        .map_err(|e| format!("cannot run {program:?}: {e}"))?;
-    let reader = File::from(pty.fd().try_clone_to_owned()?);
-    loop_handle
-        .insert_source(
-            Generic::new(reader, Interest::READ, Mode::Level),
-            |_, _, app| {
-                app.read_pty();
-                Ok(PostAction::Continue)
-            },
-        )
-        .map_err(|e| format!("cannot watch the pty: {e}"))?;
-
-    let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
-    term.screen_mut()
-        .set_default_colors(Theme::from_config(&config).default_colors());
-    term.screen_mut().set_cell_size(cell.width, cell.height);
-    let font_points = config.font.size;
-    let mut app = App {
-        qh: qh.clone(),
-        loop_handle,
-        registry_state: RegistryState::new(&globals),
-        seat_state: SeatState::new(&globals, &qh),
-        output_state: OutputState::new(&globals, &qh),
-        compositor,
-        shm,
-        data_device_manager,
-        primary_selection_manager,
-        activation,
-        bus: None,
-        notifier: Notifier::new(),
-        draw_failures: 0,
-        text_input_manager,
-        background_effect,
-        blur: None,
-        config,
-        renderer,
-        window,
-        term,
-        pty,
-        pty_write_queued: false,
-        size,
-        scale: 1.0,
-        viewport,
-        _fractional_scale: fractional_scale,
-        font_points,
-        configured: false,
-        dirty: true,
-        frame_pending: false,
-        sync_hold: None,
-        exit: false,
-        pty_closed: false,
-        keyboard: None,
-        modifiers: Modifiers::default(),
-        keymap: None,
-        layout: 0,
-        focused: false,
-        last_serial: 0,
-        pointer: None,
-        pointer_pos: (0.0, 0.0),
-        scroll_accum: Accumulated::default(),
-        held_buttons: Vec::new(),
-        mouse_cell: None,
-        selection: None,
-        selecting: false,
-        search: None,
-        last_search: None,
-        vi: None,
-        config_path,
-        reload_pending: false,
-        links,
-        hovered_link: None,
-        hover_cell: None,
-        last_link_click: None,
-        pointer_inside: false,
-        conn: conn.clone(),
-        last_click: None,
-        sent_keys: HashSet::new(),
-        shift_mark: None,
-        shift_press: false,
-        data_device: None,
-        copy_source: None,
-        primary_device: None,
-        primary_source: None,
-        text_input: None,
-        ime: ImeState::default(),
-        ime_caused_change: false,
-        ime_cursor_rect: (0, 0, 0, 0),
-    };
-
-    app.watch_config();
-    // SCTK reports only seats added later through `new_seat`.
-    let seats: Vec<_> = app.seat_state.seats().collect();
-    for seat in seats {
-        app.new_seat(&conn, &qh, seat);
-    }
-
-    while !app.exit {
-        event_loop.dispatch(None, &mut app)?;
-    }
-    let status = app.child_status();
-    if let Some(status) = status {
-        log::info!("child exited: {status}");
-    }
-    Ok(status.map_or(0, exit_code))
+    })
 }
 
 /// The exit code that reports how the child ended, as a shell would.
@@ -585,7 +506,180 @@ fn exit_code(status: ExitStatus) -> u8 {
     }
 }
 
-impl App {
+impl TermWindow {
+    /// Creates a window and starts its child.
+    fn open(shared: &mut Shared, id: WindowId, spawn: Spawn) -> Result<Self, Box<dyn Error>> {
+        let config = Rc::clone(&shared.config);
+        let qh = &shared.qh;
+        let load_fonts = || {
+            Fonts::try_new(
+                &config.font.family,
+                &config.font.fallback,
+                font::points_to_px(config.font.size, 1.0),
+            )
+        };
+        let fonts = load_fonts()?;
+        let cell = fonts.metrics;
+        let pad = config.window.padding;
+        let cols = u32::from(config.window.columns);
+        let lines = u32::from(config.window.lines);
+        let size = (cols * cell.width + 2 * pad, lines * cell.height + 2 * pad);
+
+        let surface = shared.compositor.create_surface(qh);
+        let window = shared
+            .xdg_shell
+            .create_window(surface, WindowDecorations::RequestServer, qh);
+        window.set_title(config.window.title.clone());
+        window.set_app_id(config.window.app_id.clone());
+        window.set_min_size(Some((cell.width * 2 + 2 * pad, cell.height + 2 * pad)));
+        if config.window.opacity >= 1.0 {
+            // Lets the compositor skip drawing what is behind the window.
+            set_whole_region(&shared.compositor, |region| {
+                window.wl_surface().set_opaque_region(region)
+            });
+        }
+        let (viewport, fractional_scale) = match (&shared.viewporter, &shared.fractional_manager) {
+            (Some(viewporter), Some(manager)) => (
+                Some(viewporter.get_viewport(window.wl_surface(), qh, ScaleData)),
+                Some(manager.get_fractional_scale(
+                    window.wl_surface(),
+                    qh,
+                    FractionalScaleData(id),
+                )),
+            ),
+            _ => (None, None),
+        };
+        window.commit();
+
+        let theme = Theme::from_config(&config);
+        let mut fonts = Some(fonts);
+        let gpu = match config.window.renderer {
+            // SAFETY: the display outlives the renderer (the event loop holds a
+            // connection until after `App` is dropped), and `TermWindow` drops
+            // the renderer before the window.
+            RendererKind::Gpu => match unsafe {
+                gl::Renderer::try_new(
+                    shared.conn.backend().display_ptr().cast(),
+                    window.wl_surface().id(),
+                    size,
+                    fonts.take().expect("fonts are taken only here"),
+                    theme.clone(),
+                )
+            } {
+                Ok(renderer) => Some(Renderer::Gpu(Box::new(renderer))),
+                Err(e) => {
+                    log::warn!("cannot render with the GPU, using the CPU instead: {e}");
+                    None
+                }
+            },
+            RendererKind::Cpu => None,
+        };
+        let renderer = match gpu {
+            Some(renderer) => renderer,
+            None => Renderer::Cpu(Box::new(software::Renderer::try_new(
+                &shared.shm,
+                window.wl_surface().clone(),
+                size,
+                fonts.map_or_else(load_fonts, Ok)?,
+                theme,
+            )?)),
+        };
+
+        let (program, args) = match spawn.command {
+            Some(mut command) => {
+                let program = command.remove(0);
+                (program, command)
+            }
+            None => (
+                config
+                    .terminal
+                    .shell
+                    .clone()
+                    .unwrap_or_else(crate::pty::default_shell)
+                    .into(),
+                Vec::new(),
+            ),
+        };
+        // The pixel size of the grid, from which programs work out the cell
+        // size for images.
+        let window_size = WindowSize {
+            cols: cols as u16,
+            rows: lines as u16,
+            width: (cols * cell.width).min(u16::MAX.into()) as u16,
+            height: (lines * cell.height).min(u16::MAX.into()) as u16,
+        };
+        let term = crate::terminfo::resolve(&config.terminal.term, &crate::terminfo::search_dirs());
+        log::info!("TERM={} (terminfo: {:?})", term.name, term.terminfo);
+        let pty = Pty::spawn(&program, &args, &term, window_size)
+            .map_err(|e| format!("cannot run {program:?}: {e}"))?;
+        let reader = File::from(pty.fd().try_clone_to_owned()?);
+        let pty_source = shared
+            .loop_handle
+            .insert_source(
+                Generic::new(reader, Interest::READ, Mode::Level),
+                move |_, _, app| {
+                    let Some((shared, window)) = app.split(id) else {
+                        return Ok(PostAction::Remove);
+                    };
+                    window.read_pty(shared);
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|e| format!("cannot watch the pty: {e}"))?;
+
+        let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
+        term.screen_mut()
+            .set_default_colors(Theme::from_config(&config).default_colors());
+        term.screen_mut().set_cell_size(cell.width, cell.height);
+        let font_points = config.font.size;
+        Ok(TermWindow {
+            id,
+            qh: qh.clone(),
+            loop_handle: shared.loop_handle.clone(),
+            config,
+            draw_failures: 0,
+            blur: None,
+            renderer,
+            window,
+            term,
+            pty,
+            pty_source: Some(pty_source),
+            pty_write_queued: false,
+            size,
+            scale: 1.0,
+            viewport,
+            fractional_scale,
+            font_points,
+            configured: false,
+            dirty: true,
+            frame_pending: false,
+            sync_hold: None,
+            exit: false,
+            pty_closed: false,
+            focused: false,
+            pointer_pos: (0.0, 0.0),
+            scroll_accum: Accumulated::default(),
+            held_buttons: Vec::new(),
+            mouse_cell: None,
+            selection: None,
+            selecting: false,
+            search: None,
+            last_search: None,
+            vi: None,
+            hovered_link: None,
+            hover_cell: None,
+            last_link_click: None,
+            pointer_inside: false,
+            last_click: None,
+            shift_mark: None,
+            shift_press: false,
+            text_input: None,
+            ime: ImeState::default(),
+            ime_caused_change: false,
+            ime_cursor_rect: (0, 0, 0, 0),
+        })
+    }
+
     /// How the child ended, if it did. When it hung up the pty it is about
     /// to exit, so that gets a moment.
     fn child_status(&mut self) -> Option<ExitStatus> {
@@ -681,7 +775,7 @@ impl App {
         self.apply_size();
     }
 
-    fn read_pty(&mut self) {
+    fn read_pty(&mut self, shared: &mut Shared) {
         // What the selection covers, to keep it while output goes elsewhere.
         let (scrolled_before, alt_before) = {
             let screen = self.term.screen();
@@ -730,14 +824,14 @@ impl App {
             self.window.set_title(title);
         }
         if bell {
-            self.ring_bell();
+            self.ring_bell(shared);
         }
         for notification in notifications {
-            self.show_notification(notification);
+            self.show_notification(shared, notification);
         }
         if dirty {
             if self.hovered_link.is_some() {
-                self.update_hovered_link();
+                self.update_hovered_link(shared);
             }
             let screen = self.term.screen();
             let delta = screen.grid().scrolled.wrapping_sub(scrolled_before) as isize;
@@ -796,17 +890,21 @@ impl App {
             return;
         };
         let source = Generic::new(File::from(fd), Interest::WRITE, Mode::Level);
-        let inserted = self.loop_handle.insert_source(source, |_, _, app| {
-            if let Err(e) = app.pty.flush() {
+        let id = self.id;
+        let inserted = self.loop_handle.insert_source(source, move |_, _, app| {
+            let Some(window) = app.window_mut(id) else {
+                return Ok(PostAction::Remove);
+            };
+            if let Err(e) = window.pty.flush() {
                 // It won't get better, and a level-triggered source would
                 // call back at once, forever.
                 log::warn!("cannot write to pty: {e}");
-                app.pty.discard_pending();
+                window.pty.discard_pending();
             }
-            if app.pty.has_pending() {
+            if window.pty.has_pending() {
                 Ok(PostAction::Continue)
             } else {
-                app.pty_write_queued = false;
+                window.pty_write_queued = false;
                 Ok(PostAction::Remove)
             }
         });
@@ -835,13 +933,15 @@ impl App {
             _ => self.sync_hold = Some((update, false)),
         }
         let timer = Timer::from_duration(SYNC_TIMEOUT);
+        let id = self.id;
         let inserted = self.loop_handle.insert_source(timer, move |_, _, app| {
-            if let Some((held, expired)) = &mut app.sync_hold
+            if let Some(window) = app.window_mut(id)
+                && let Some((held, expired)) = &mut window.sync_hold
                 && *held == update
             {
                 *expired = true;
-                if app.dirty {
-                    app.request_redraw();
+                if window.dirty {
+                    window.request_redraw();
                 }
             }
             TimeoutAction::Drop
@@ -903,25 +1003,17 @@ impl App {
             return;
         }
         let timer = Timer::from_duration(DRAW_RETRY);
-        let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
-            app.request_redraw();
+        let id = self.id;
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, app| {
+            if let Some(window) = app.window_mut(id) {
+                window.request_redraw();
+            }
             TimeoutAction::Drop
         });
         if let Err(e) = inserted {
             log::error!("cannot schedule a redraw: {e}");
             self.exit = true;
         }
-    }
-
-    /// The symbol `raw_code` produces without modifiers, in the active layout.
-    fn base_keysym(&self, raw_code: u32) -> Option<Keysym> {
-        let keymap = self.keymap.as_ref()?;
-        // Wayland key codes are evdev codes; xkb's are offset by 8.
-        let code = xkb::Keycode::new(raw_code + 8);
-        keymap
-            .key_get_syms_by_level(code, self.layout, 0)
-            .first()
-            .copied()
     }
 
     fn key_modes(&self) -> KeyModes {
@@ -933,26 +1025,26 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, event: KeyEvent, action: KeyAction) {
+    fn handle_key(&mut self, shared: &mut Shared, event: KeyEvent, action: KeyAction) {
         if self.search.is_some() {
-            return self.search_key(&event);
+            return self.search_key(shared, &event);
         }
         if self.shift_mark.is_some() && event.keysym == Keysym::Escape {
             self.shift_mark = None;
             return self.request_redraw();
         }
-        let base = self.base_keysym(event.raw_code);
+        let base = shared.base_keysym(event.raw_code);
         if let Some(action) = self
             .config
             .keybinds
-            .lookup(event.keysym, base, self.modifiers)
-            && self.run_action(action)
+            .lookup(event.keysym, base, shared.modifiers)
+            && self.run_action(shared, action)
         {
             return;
         }
         // In vi mode, keys move the vi cursor and never reach the program.
         if self.vi.is_some() {
-            return self.vi_key(&event, base);
+            return self.vi_key(shared, &event, base);
         }
         let key = Key {
             keysym: event.keysym,
@@ -960,8 +1052,8 @@ impl App {
             text: event.utf8.as_deref(),
             action,
         };
-        if let Some(bytes) = input::encode(&key, self.modifiers, self.key_modes()) {
-            self.sent_keys.insert(event.raw_code);
+        if let Some(bytes) = input::encode(&key, shared.modifiers, self.key_modes()) {
+            shared.sent_keys.insert(event.raw_code);
             self.scroll_to_bottom();
             self.send(&bytes);
         }
@@ -969,25 +1061,25 @@ impl App {
 
     /// Reports a key release to the program, if it got the press and asked
     /// for releases.
-    fn release(&mut self, event: KeyEvent) {
-        if !self.sent_keys.remove(&event.raw_code) {
+    fn release(&mut self, shared: &mut Shared, event: KeyEvent) {
+        if !shared.sent_keys.remove(&event.raw_code) {
             return;
         }
         let key = Key {
             keysym: event.keysym,
-            base: self.base_keysym(event.raw_code),
+            base: shared.base_keysym(event.raw_code),
             text: event.utf8.as_deref(),
             action: KeyAction::Release,
         };
-        if let Some(bytes) = input::encode(&key, self.modifiers, self.key_modes()) {
+        if let Some(bytes) = input::encode(&key, shared.modifiers, self.key_modes()) {
             self.send(&bytes);
         }
     }
 
     /// Handles a key while searching: it edits the query or moves between
     /// matches instead of going to the program.
-    fn search_key(&mut self, event: &KeyEvent) {
-        let ctrl = self.modifiers.ctrl;
+    fn search_key(&mut self, shared: &mut Shared, event: &KeyEvent) {
+        let ctrl = shared.modifiers.ctrl;
         match event.keysym {
             Keysym::Escape => {
                 self.search = None;
@@ -1005,7 +1097,7 @@ impl App {
                 match (&mut self.vi, search.found) {
                     (Some(vi), Some((start, _))) => vi.move_to(start, self.term.screen()),
                     (Some(_), None) => {}
-                    (None, _) => self.set_primary(),
+                    (None, _) => self.set_primary(shared),
                 }
                 self.vi_refresh();
             }
@@ -1021,7 +1113,7 @@ impl App {
             Keysym::Down => self.search_step(Direction::Newer, /* inclusive= */ false),
             Keysym::r if ctrl => self.search_step(Direction::Older, /* inclusive= */ false),
             Keysym::s if ctrl => self.search_step(Direction::Newer, /* inclusive= */ false),
-            _ if !ctrl && !self.modifiers.alt => {
+            _ if !ctrl && !shared.modifiers.alt => {
                 if let Some(text) = &event.utf8 {
                     self.search_type(text);
                 }
@@ -1093,8 +1185,8 @@ impl App {
     }
 
     /// Handles a key in vi mode.
-    fn vi_key(&mut self, event: &KeyEvent, base: Option<Keysym>) {
-        if self.modifiers.alt || self.modifiers.logo {
+    fn vi_key(&mut self, shared: &mut Shared, event: &KeyEvent, base: Option<Keysym>) {
+        if shared.modifiers.alt || shared.modifiers.logo {
             return;
         }
         let key = match event.keysym {
@@ -1107,7 +1199,7 @@ impl App {
             Keysym::End => vi::Key::End,
             Keysym::Page_Up => vi::Key::PageUp,
             Keysym::Page_Down => vi::Key::PageDown,
-            _ if self.modifiers.ctrl => match base.and_then(|k| k.key_char()) {
+            _ if shared.modifiers.ctrl => match base.and_then(|k| k.key_char()) {
                 Some(c) if c.is_ascii_alphabetic() || c == '[' => {
                     vi::Key::Ctrl(c.to_ascii_lowercase())
                 }
@@ -1132,7 +1224,7 @@ impl App {
                 self.selection = None;
                 return self.request_redraw();
             }
-            vi::Outcome::Yank(text) => self.copy_text(text),
+            vi::Outcome::Yank(text) => self.copy_text(shared, text),
             vi::Outcome::Search(direction) => return self.start_search(direction),
             vi::Outcome::Next { reverse } => self.search_next(reverse),
         }
@@ -1181,20 +1273,20 @@ impl App {
 
     /// Runs a bound action. Returns false when the action declined the key,
     /// which then goes to the program as usual.
-    fn run_action(&mut self, action: Action) -> bool {
+    fn run_action(&mut self, shared: &mut Shared, action: Action) -> bool {
         let page = self.term.screen().rows() as isize;
         match action {
-            Action::Copy => self.copy(),
+            Action::Copy => self.copy(shared),
             Action::CopyOrInterrupt => {
                 if !self.selection.is_some_and(|s| !s.is_empty()) {
                     return false;
                 }
-                self.copy();
+                self.copy(shared);
                 // Cleared, so pressing the key again interrupts.
                 self.selection = None;
                 self.request_redraw();
             }
-            Action::Paste => self.paste(),
+            Action::Paste => self.paste(shared),
             Action::ScrollLineUp => self.term.screen_mut().scroll_display(1),
             Action::ScrollLineDown => self.term.screen_mut().scroll_display(-1),
             Action::ScrollPageUp => self.term.screen_mut().scroll_display(page),
@@ -1223,8 +1315,8 @@ impl App {
                     self.vi_refresh();
                 }
             }
-            Action::NewWindow => self.new_window(),
-            Action::ReloadConfig => self.reload_config(),
+            Action::NewWindow => self.new_window(shared),
+            Action::ReloadConfig => shared.requests.push(Request::ReloadConfig),
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -1294,8 +1386,9 @@ impl App {
 
     /// Underlines the link under the pointer while Ctrl is held, and shows
     /// a hand pointer over it.
-    fn update_hovered_link(&mut self) {
-        let link = if self.modifiers.ctrl && self.pointer_inside && !self.reporting_mouse() {
+    fn update_hovered_link(&mut self, shared: &mut Shared) {
+        let link = if shared.modifiers.ctrl && self.pointer_inside && !self.reporting_mouse(shared)
+        {
             let cwd = std::cell::OnceCell::new();
             let resolve = |path: &str| {
                 let path = match path.strip_prefix("~/") {
@@ -1309,7 +1402,8 @@ impl App {
                 };
                 path.is_file().then(|| path.to_string_lossy().into_owned())
             };
-            self.links
+            shared
+                .links
                 .link_at(self.term.screen(), self.point_at(self.pointer_pos), resolve)
         } else {
             None
@@ -1322,8 +1416,8 @@ impl App {
         } else {
             CursorIcon::Text
         };
-        if let Some(pointer) = &self.pointer
-            && let Err(e) = pointer.set_cursor(&self.conn, icon)
+        if let Some(pointer) = &shared.pointer
+            && let Err(e) = pointer.set_cursor(&shared.conn, icon)
         {
             log::debug!("cannot set cursor: {e}");
         }
@@ -1331,191 +1425,15 @@ impl App {
         self.request_redraw();
     }
 
-    /// Reloads the config when its file or the overrides change, or on
-    /// SIGUSR1.
-    fn watch_config(&mut self) {
-        let path = self
-            .config_path
-            .clone()
-            .or_else(crate::config::default_path);
-        let overrides = crate::config::overrides_path();
-        // Created up front: inotify can't watch a directory that doesn't
-        // exist yet, and `jotty config` would otherwise go unnoticed until
-        // the next window.
-        if let Some(dir) = overrides.as_deref().and_then(Path::parent)
-            && let Err(e) = std::fs::create_dir_all(dir)
-        {
-            log::info!("cannot create {}: {e}", dir.display());
-        }
-        for path in path.into_iter().chain(overrides) {
-            self.watch_config_file(path);
-        }
-        match watch::sigusr1() {
-            Ok(file) => {
-                let source = Generic::new(file, Interest::READ, Mode::Level);
-                let inserted = self.loop_handle.insert_source(source, |_, file, app| {
-                    // SAFETY: the file is only read, never closed or replaced.
-                    watch::drain(unsafe { file.get_mut() });
-                    app.reload_config();
-                    Ok(PostAction::Continue)
-                });
-                if let Err(e) = inserted {
-                    log::warn!("cannot handle SIGUSR1: {e}");
-                }
-            }
-            Err(e) => log::warn!("cannot handle SIGUSR1: {e}"),
-        }
-    }
-
-    /// Schedules a reload whenever the file at `path` changes.
-    fn watch_config_file(&mut self, path: PathBuf) {
-        if let Some(name) = path.file_name().map(|n| n.to_owned()) {
-            match watch::watch_file(&path) {
-                Ok(file) => {
-                    let source = Generic::new(file, Interest::READ, Mode::Level);
-                    let inserted = self.loop_handle.insert_source(source, move |_, file, app| {
-                        // SAFETY: the file is only read, never closed or replaced.
-                        if watch::changed(unsafe { file.get_mut() }, &name) {
-                            app.schedule_reload();
-                        }
-                        Ok(PostAction::Continue)
-                    });
-                    if let Err(e) = inserted {
-                        log::warn!("cannot watch the config file: {e}");
-                    }
-                }
-                // Typically: no config directory yet.
-                Err(e) => log::info!("not watching {} for changes: {e}", path.display()),
-            }
-        }
-    }
-
-    /// Reloads shortly, once the burst of changes from saving a file is over.
-    fn schedule_reload(&mut self) {
-        if std::mem::replace(&mut self.reload_pending, true) {
-            return;
-        }
-        let timer = Timer::from_duration(Duration::from_millis(100));
-        let inserted = self.loop_handle.insert_source(timer, |_, _, app| {
-            app.reload_pending = false;
-            app.reload_config();
-            TimeoutAction::Drop
-        });
-        if let Err(e) = inserted {
-            log::warn!("cannot schedule a config reload: {e}");
-            self.reload_pending = false;
-        }
-    }
-
-    /// Reads the config file again and applies what can change in a running
-    /// window. An invalid file is reported and the current config kept.
-    fn reload_config(&mut self) {
-        let new = match Config::load(self.config_path.as_deref()) {
-            Ok(config) => config,
-            Err(e) => return log::error!("{e}; keeping the current configuration"),
-        };
-        if new == self.config {
-            return;
-        }
-        log::info!("reloading the configuration");
-        let old = std::mem::replace(&mut self.config, new.clone());
-
-        for (changed, what) in [
-            (old.terminal.shell != new.terminal.shell, "terminal.shell"),
-            (old.terminal.term != new.terminal.term, "terminal.term"),
-            (
-                old.terminal.scrollback != new.terminal.scrollback,
-                "terminal.scrollback",
-            ),
-            (
-                old.window.renderer != new.window.renderer,
-                "window.renderer",
-            ),
-            (
-                (old.window.columns, old.window.lines) != (new.window.columns, new.window.lines),
-                "window.columns and window.lines",
-            ),
-            (
-                (&old.window.title, &old.window.app_id) != (&new.window.title, &new.window.app_id),
-                "window.title and window.app_id",
-            ),
-        ] {
-            if changed {
-                log::info!("{what} applies to new windows");
-            }
-        }
-
-        let mut relayout = old.window.padding != new.window.padding;
-        if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
-            let px = font::points_to_px(self.font_points, self.scale as f32);
-            match Fonts::try_new(&new.font.family, &new.font.fallback, px) {
-                Ok(fonts) => {
-                    self.renderer.set_fonts(fonts);
-                    relayout = true;
-                }
-                Err(e) => {
-                    log::error!("{e}; keeping the current font");
-                    // So that saving the file again tries again.
-                    self.config.font.family = old.font.family.clone();
-                    self.config.font.fallback = old.font.fallback.clone();
-                }
-            }
-        }
-        if old.font.size != new.font.size {
-            // A new configured size replaces any zooming.
-            self.font_points = new.font.size;
-            self.renderer
-                .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
-            relayout = true;
-        }
-
-        let theme = Theme::from_config(&new);
-        self.term
-            .screen_mut()
-            .set_default_colors(theme.default_colors());
-        self.renderer.set_theme(theme);
-
-        if (old.window.opacity >= 1.0) != (new.window.opacity >= 1.0) {
-            let surface = self.window.wl_surface();
-            if new.window.opacity >= 1.0 {
-                set_whole_region(&self.compositor, |region| surface.set_opaque_region(region));
-            } else {
-                surface.set_opaque_region(None);
-            }
-        }
-        if old.window.blur != new.window.blur {
-            if new.window.blur {
-                self.update_capabilities();
-            } else if let Some(blur) = self.blur.take() {
-                blur.destroy();
-            }
-        }
-        if (&old.url, &old.files) != (&new.url, &new.files) {
-            let kinds: Vec<Vec<String>> =
-                new.files.0.values().map(|k| k.extensions.clone()).collect();
-            match Detector::try_new(&kinds, &new.url.regex) {
-                Ok(links) => self.links = links,
-                Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
-            }
-            self.hovered_link = None;
-        }
-
-        if relayout {
-            self.apply_size();
-        } else {
-            self.request_redraw();
-        }
-    }
-
     /// Starts another jotty in the current directory of the program in the
     /// foreground, with the same config file.
-    fn new_window(&self) {
+    fn new_window(&self, shared: &mut Shared) {
         let program = match std::env::current_exe() {
             Ok(program) => program,
             Err(e) => return log::warn!("cannot find jotty's executable: {e}"),
         };
         let mut command = Command::new(program);
-        if let Some(path) = &self.config_path {
+        if let Some(path) = &shared.config_path {
             // The new window starts elsewhere; a relative path would break.
             let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             command.arg("--config").arg(path);
@@ -1581,12 +1499,12 @@ impl App {
 
     /// Whether pointer events go to the program: it asked for them, and
     /// Shift isn't held (Shift keeps selecting and scrolling in jotty).
-    fn reporting_mouse(&self) -> bool {
-        self.term.screen().modes.mouse != MouseMode::Off && !self.modifiers.shift
+    fn reporting_mouse(&self, shared: &Shared) -> bool {
+        self.term.screen().modes.mouse != MouseMode::Off && !shared.modifiers.shift
     }
 
     /// Sends a pointer event to the program, if its mode includes it.
-    fn report_mouse(&mut self, action: MouseAction, pos: (f64, f64)) {
+    fn report_mouse(&mut self, shared: &mut Shared, action: MouseAction, pos: (f64, f64)) {
         let (col, row) = self.cell_at(pos);
         if matches!(action, MouseAction::Motion(_)) && self.mouse_cell == Some((col, row)) {
             return;
@@ -1597,7 +1515,7 @@ impl App {
             action,
             col,
             row,
-            mods: self.modifiers,
+            mods: shared.modifiers,
         };
         if let Some(bytes) = input::encode_mouse(event, modes.mouse, modes.mouse_sgr) {
             self.send(&bytes);
@@ -1630,12 +1548,18 @@ impl App {
 
     /// Runs the actions bound to the wheel with the held modifiers, or else
     /// reports it to the program or scrolls.
-    fn wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
-        if self.run_wheel_bindings(vertical, horizontal) {
+    fn wheel(
+        &mut self,
+        shared: &mut Shared,
+        vertical: &AxisScroll,
+        horizontal: &AxisScroll,
+        pos: (f64, f64),
+    ) {
+        if self.run_wheel_bindings(shared, vertical, horizontal) {
             return;
         }
-        if self.reporting_mouse() {
-            self.report_wheel(vertical, horizontal, pos);
+        if self.reporting_mouse(shared) {
+            self.report_wheel(shared, vertical, horizontal, pos);
         } else {
             self.scroll(vertical);
         }
@@ -1643,7 +1567,12 @@ impl App {
 
     /// Runs the action bound to each direction the wheel turned in, once per
     /// notch. Returns whether any was bound.
-    fn run_wheel_bindings(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll) -> bool {
+    fn run_wheel_bindings(
+        &mut self,
+        shared: &mut Shared,
+        vertical: &AxisScroll,
+        horizontal: &AxisScroll,
+    ) -> bool {
         let mut bound = false;
         for (axis, direction_of_axis, back, forward) in [
             (vertical, Axis::Vertical, Wheel::Up, Wheel::Down),
@@ -1657,7 +1586,7 @@ impl App {
                 (_, a) if a > 0.0 => forward,
                 _ => continue,
             };
-            let Some(action) = self.config.keybinds.lookup_wheel(wheel, self.modifiers) else {
+            let Some(action) = self.config.keybinds.lookup_wheel(wheel, shared.modifiers) else {
                 continue;
             };
             bound = true;
@@ -1665,14 +1594,20 @@ impl App {
                 .scroll_steps(axis, direction_of_axis, 1.0)
                 .unsigned_abs()
             {
-                self.run_action(action);
+                self.run_action(shared, action);
             }
         }
         bound
     }
 
     /// Reports wheel movement as button 64–67 presses, one per notch.
-    fn report_wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
+    fn report_wheel(
+        &mut self,
+        shared: &mut Shared,
+        vertical: &AxisScroll,
+        horizontal: &AxisScroll,
+        pos: (f64, f64),
+    ) {
         for (axis, direction, back, forward) in [
             (
                 vertical,
@@ -1694,7 +1629,7 @@ impl App {
             let button = if steps < 0 { back } else { forward };
             for _ in 0..steps.unsigned_abs() {
                 self.mouse_cell = None;
-                self.report_mouse(MouseAction::Press(button), pos);
+                self.report_mouse(shared, MouseAction::Press(button), pos);
             }
         }
     }
@@ -1722,16 +1657,17 @@ impl App {
         }
     }
 
-    fn copy(&mut self) {
+    fn copy(&mut self, shared: &mut Shared) {
         let Some(selection) = self.selection.filter(|s| !s.is_empty()) else {
             return;
         };
-        self.copy_text(selection.text(self.term.screen()));
+        self.copy_text(shared, selection.text(self.term.screen()));
     }
 
     /// Puts `text` on the clipboard.
-    fn copy_text(&mut self, text: String) {
-        let (Some(manager), Some(device)) = (&self.data_device_manager, &self.data_device) else {
+    fn copy_text(&mut self, shared: &mut Shared, text: String) {
+        let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
+        else {
             log::warn!("no clipboard support (wl_data_device_manager missing)");
             return;
         };
@@ -1739,17 +1675,18 @@ impl App {
             return;
         }
         let source = manager.create_copy_paste_source(&self.qh, PASTE_MIMES);
-        source.set_selection(device, self.last_serial);
-        self.copy_source = Some((source, text));
+        source.set_selection(device, shared.last_serial);
+        shared.copy_source = Some((source, text));
     }
 
     /// Offers the selection as the primary selection, which a middle click
     /// pastes (here or in other applications).
-    fn set_primary(&mut self) {
+    fn set_primary(&mut self, shared: &mut Shared) {
         let Some(selection) = self.selection.filter(|s| !s.is_empty()) else {
             return;
         };
-        let (Some(manager), Some(device)) = (&self.primary_selection_manager, &self.primary_device)
+        let (Some(manager), Some(device)) =
+            (&shared.primary_selection_manager, &shared.primary_device)
         else {
             return;
         };
@@ -1758,21 +1695,21 @@ impl App {
             return;
         }
         let source = manager.create_selection_source(&self.qh, PASTE_MIMES);
-        source.set_selection(device, self.last_serial);
-        self.primary_source = Some((source, text));
+        source.set_selection(device, shared.last_serial);
+        shared.primary_source = Some((source, text));
     }
 
     /// Pastes the primary selection, or the clipboard where the compositor
     /// has no primary selection.
-    fn paste_primary(&mut self) {
-        if self.primary_selection_manager.is_none() {
-            return self.paste();
+    fn paste_primary(&mut self, shared: &mut Shared) {
+        if shared.primary_selection_manager.is_none() {
+            return self.paste(shared);
         }
-        if let Some((_, text)) = &self.primary_source {
+        if let Some((_, text)) = &shared.primary_source {
             let text = text.clone();
             return self.paste_text(&text);
         }
-        let Some(offer) = self
+        let Some(offer) = shared
             .primary_device
             .as_ref()
             .and_then(|d| d.data().selection_offer())
@@ -1788,14 +1725,14 @@ impl App {
         }
     }
 
-    fn paste(&mut self) {
+    fn paste(&mut self, shared: &mut Shared) {
         // Our own selection: skip the round trip through the compositor.
-        if let Some((_, text)) = &self.copy_source {
+        if let Some((_, text)) = &shared.copy_source {
             let text = text.clone();
             self.paste_text(&text);
             return;
         }
-        let Some(offer) = self
+        let Some(offer) = shared
             .data_device
             .as_ref()
             .and_then(|d| d.data().selection_offer())
@@ -1815,13 +1752,18 @@ impl App {
     fn paste_from(&mut self, pipe: ReadPipe) {
         use std::io::Read;
         let mut data = Vec::new();
+        let id = self.id;
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
+            // The window closed before the paste arrived.
+            let Some(window) = app.window_mut(id) else {
+                return PostAction::Remove;
+            };
             // SAFETY: the file is only read, never closed or replaced.
             let file: &mut File = unsafe { file.get_mut() };
             let mut buf = [0u8; 1 << 14];
             match file.read(&mut buf) {
                 Ok(0) => {
-                    app.paste_text(&String::from_utf8_lossy(&data));
+                    window.paste_text(&String::from_utf8_lossy(&data));
                     PostAction::Remove
                 }
                 Ok(n) if data.len() + n > MAX_PASTE => {
@@ -1855,15 +1797,15 @@ impl App {
     /// Asks the compositor to draw attention to the window, if it isn't
     /// focused: an activation request without a valid input serial, which
     /// compositors show as urgency instead of switching focus.
-    fn ring_bell(&mut self) {
+    fn ring_bell(&mut self, shared: &mut Shared) {
         if self.focused || !self.config.window.bell_urgent {
             return;
         }
-        self.request_attention();
+        self.request_attention(shared);
     }
 
-    fn request_attention(&mut self) {
-        if let Some(activation) = &self.activation {
+    fn request_attention(&mut self, shared: &mut Shared) {
+        if let Some(activation) = &shared.activation {
             activation.request_token(
                 &self.qh,
                 RequestData {
@@ -1878,11 +1820,11 @@ impl App {
 
     /// Shows a desktop notification, if the window isn't focused and the
     /// program isn't sending too many. Clicking it focuses the window.
-    fn show_notification(&mut self, notification: Notification) {
+    fn show_notification(&mut self, shared: &mut Shared, notification: Notification) {
         if self.focused || !self.config.window.notifications {
             return;
         }
-        if !self.notifier.limit.allow(Instant::now()) {
+        if !shared.notifier.limit.allow(Instant::now()) {
             log::debug!("too many notifications; dropping one");
             return;
         }
@@ -1892,156 +1834,15 @@ impl App {
             .or(self.term.screen().title())
             .unwrap_or(&self.config.window.title)
             .to_string();
-        if self.bus.is_some() {
-            self.send_notification(&title, &notification.body);
+        if shared.bus.is_some() {
+            shared.send_notification(self.id, &title, &notification.body);
             return;
         }
-        if self.connect_bus() && self.notifier.queued.len() < MAX_QUEUED_NOTIFICATIONS {
-            self.notifier.queued.push((title, notification.body));
-        }
-    }
-
-    fn send_notification(&mut self, title: &str, body: &str) {
-        let Some((bus, _)) = &mut self.bus else {
-            return;
-        };
-        if let Err(e) = bus.notify(&self.config.window.app_id, title, body) {
-            log::warn!("cannot show a notification: {e}");
-            self.disconnect_bus();
-            return;
-        }
-        self.watch_bus_writes();
-    }
-
-    /// Makes sure messages the bus couldn't take yet get written when it can.
-    fn watch_bus_writes(&mut self) {
-        let Some((bus, _)) = &self.bus else {
-            return;
-        };
-        if !bus.has_outgoing() || self.notifier.write_queued {
-            return;
-        }
-        let Ok(socket) = bus.socket() else {
-            return;
-        };
-        let source = Generic::new(socket, Interest::WRITE, Mode::Level);
-        let inserted = self.loop_handle.insert_source(source, |_, _, app| {
-            let Some((bus, _)) = &mut app.bus else {
-                app.notifier.write_queued = false;
-                return Ok(PostAction::Remove);
-            };
-            if let Err(e) = bus.flush() {
-                log::info!("lost the session bus: {e}");
-                app.disconnect_bus();
-                app.notifier.write_queued = false;
-                return Ok(PostAction::Remove);
-            }
-            if bus.has_outgoing() {
-                return Ok(PostAction::Continue);
-            }
-            app.notifier.write_queued = false;
-            Ok(PostAction::Remove)
-        });
-        self.notifier.write_queued = inserted.is_ok();
-    }
-
-    /// Starts connecting to the session bus on another thread, as it may
-    /// take seconds. Returns whether a connection is on its way.
-    fn connect_bus(&mut self) -> bool {
-        if self.notifier.connecting {
-            return true;
-        }
-        if self.notifier.retry_at.is_some_and(|at| Instant::now() < at) {
-            return false;
-        }
-        let (sender, receiver) = channel::channel();
-        // The source goes away by itself once the thread drops the sender.
-        let inserted = self.loop_handle.insert_source(receiver, |event, _, app| {
-            if let channel::Event::Msg(result) = event {
-                app.bus_connected(result);
-            }
-        });
-        if let Err(e) = inserted {
-            log::warn!("cannot watch the session bus connection: {e}");
-            return false;
-        }
-        let spawned = std::thread::Builder::new()
-            .name("session-bus".into())
-            .spawn(move || {
-                // The window may be gone by now, and that's fine.
-                let _ = sender.send(Bus::connect());
-            });
-        if let Err(e) = spawned {
-            log::warn!("cannot connect to the session bus: {e}");
-            self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
-            return false;
-        }
-        self.notifier.connecting = true;
-        true
-    }
-
-    /// The thread from `connect_bus` is done.
-    fn bus_connected(&mut self, result: io::Result<Bus>) {
-        self.notifier.connecting = false;
-        let queued = std::mem::take(&mut self.notifier.queued);
-        let registered = result.and_then(|bus| {
-            let socket = bus.socket()?;
-            let source = Generic::new(socket, Interest::READ, Mode::Level);
-            let token = self
-                .loop_handle
-                .insert_source(source, |_, _, app| {
-                    app.read_bus();
-                    Ok(PostAction::Continue)
-                })
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            Ok((bus, token))
-        });
-        match registered {
-            Ok(bus) => {
-                self.notifier.retry_at = None;
-                self.bus = Some(bus);
-                self.watch_bus_writes();
-                for (title, body) in queued {
-                    self.send_notification(&title, &body);
-                }
-            }
-            Err(e) => {
-                log::warn!("cannot connect to the session bus for notifications: {e}");
-                self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
-            }
-        }
-    }
-
-    fn disconnect_bus(&mut self) {
-        if let Some((_, token)) = self.bus.take() {
-            self.loop_handle.remove(token);
-        }
-    }
-
-    fn read_bus(&mut self) {
-        let Some((bus, _)) = &mut self.bus else {
-            return;
-        };
-        let events = match bus.read() {
-            Ok(events) => events,
-            Err(e) => {
-                // Connected again on the next notification.
-                log::info!("lost the session bus: {e}");
-                self.disconnect_bus();
-                return;
-            }
-        };
-        for event in events {
-            match event {
-                notify::Event::Activate(Some(token)) => {
-                    if let Some(activation) = &self.activation {
-                        activation.activate::<App>(self.window.wl_surface(), token);
-                    }
-                }
-                // A daemon without activation tokens: only urgency is
-                // possible.
-                notify::Event::Activate(None) => self.request_attention(),
-            }
+        if shared.connect_bus() && shared.notifier.queued.len() < MAX_QUEUED_NOTIFICATIONS {
+            shared
+                .notifier
+                .queued
+                .push((self.id, title, notification.body));
         }
     }
 
@@ -2051,10 +1852,65 @@ impl App {
         self.send(&bytes);
     }
 
+    /// Applies a reloaded config, `new`, that replaces `old`. `fonts` are
+    /// the window's new fonts when the family changed.
+    fn apply_config(
+        &mut self,
+        compositor: &CompositorState,
+        old: &Config,
+        new: &Rc<Config>,
+        fonts: Option<Fonts>,
+    ) {
+        self.config = Rc::clone(new);
+        let mut relayout = old.window.padding != new.window.padding;
+        if let Some(fonts) = fonts {
+            self.renderer.set_fonts(fonts);
+            relayout = true;
+        }
+        if old.font.size != new.font.size {
+            // A new configured size replaces any zooming.
+            self.font_points = new.font.size;
+            self.renderer
+                .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
+            relayout = true;
+        }
+
+        let theme = Theme::from_config(new);
+        self.term
+            .screen_mut()
+            .set_default_colors(theme.default_colors());
+        self.renderer.set_theme(theme);
+
+        if (old.window.opacity >= 1.0) != (new.window.opacity >= 1.0) {
+            let surface = self.window.wl_surface();
+            if new.window.opacity >= 1.0 {
+                set_whole_region(compositor, |region| surface.set_opaque_region(region));
+            } else {
+                surface.set_opaque_region(None);
+            }
+        }
+        if !new.window.blur
+            && let Some(blur) = self.blur.take()
+        {
+            blur.destroy();
+        }
+        if (&old.url, &old.files) != (&new.url, &new.files) {
+            self.hovered_link = None;
+        }
+
+        if relayout {
+            self.apply_size();
+        } else {
+            self.request_redraw();
+        }
+    }
+
+    /// An input method event for this window, which has the input method's
+    /// focus (or just lost it).
     fn text_input_event(&mut self, text_input: &ZwpTextInputV3, event: zwp_text_input_v3::Event) {
         use zwp_text_input_v3::Event;
         match event {
-            Event::Enter { surface } if &surface == self.window.wl_surface() => {
+            Event::Enter { .. } => {
                 self.ime.active = true;
                 text_input.enable();
                 self.update_text_input(/* force= */ true);
@@ -2064,6 +1920,7 @@ impl App {
                 text_input.commit();
                 self.ime.serial = self.ime.serial.wrapping_add(1);
                 self.ime.reset();
+                self.text_input = None;
                 self.request_redraw();
             }
             Event::PreeditString {
@@ -2156,17 +2013,457 @@ impl App {
     }
 }
 
+impl Shared {
+    /// The symbol `raw_code` produces without modifiers, in the active layout.
+    fn base_keysym(&self, raw_code: u32) -> Option<Keysym> {
+        let keymap = self.keymap.as_ref()?;
+        // Wayland key codes are evdev codes; xkb's are offset by 8.
+        let code = xkb::Keycode::new(raw_code + 8);
+        keymap
+            .key_get_syms_by_level(code, self.layout, 0)
+            .first()
+            .copied()
+    }
+
+    /// Shows a notification for `window`, which clicking it focuses.
+    fn send_notification(&mut self, window: WindowId, title: &str, body: &str) {
+        let Some((bus, _)) = &mut self.bus else {
+            return;
+        };
+        if let Err(e) = bus.notify(window.0, &self.config.window.app_id, title, body) {
+            log::warn!("cannot show a notification: {e}");
+            self.disconnect_bus();
+            return;
+        }
+        self.watch_bus_writes();
+    }
+
+    /// Makes sure messages the bus couldn't take yet get written when it can.
+    fn watch_bus_writes(&mut self) {
+        let Some((bus, _)) = &self.bus else {
+            return;
+        };
+        if !bus.has_outgoing() || self.notifier.write_queued {
+            return;
+        }
+        let Ok(socket) = bus.socket() else {
+            return;
+        };
+        let source = Generic::new(socket, Interest::WRITE, Mode::Level);
+        let inserted = self.loop_handle.insert_source(source, |_, _, app| {
+            let shared = &mut app.shared;
+            let Some((bus, _)) = &mut shared.bus else {
+                shared.notifier.write_queued = false;
+                return Ok(PostAction::Remove);
+            };
+            if let Err(e) = bus.flush() {
+                log::info!("lost the session bus: {e}");
+                shared.disconnect_bus();
+                shared.notifier.write_queued = false;
+                return Ok(PostAction::Remove);
+            }
+            if bus.has_outgoing() {
+                return Ok(PostAction::Continue);
+            }
+            shared.notifier.write_queued = false;
+            Ok(PostAction::Remove)
+        });
+        self.notifier.write_queued = inserted.is_ok();
+    }
+
+    /// Starts connecting to the session bus on another thread, as it may
+    /// take seconds. Returns whether a connection is on its way.
+    fn connect_bus(&mut self) -> bool {
+        if self.notifier.connecting {
+            return true;
+        }
+        if self.notifier.retry_at.is_some_and(|at| Instant::now() < at) {
+            return false;
+        }
+        let (sender, receiver) = channel::channel();
+        // The source goes away by itself once the thread drops the sender.
+        let inserted = self.loop_handle.insert_source(receiver, |event, _, app| {
+            if let channel::Event::Msg(result) = event {
+                app.shared.bus_connected(result);
+            }
+        });
+        if let Err(e) = inserted {
+            log::warn!("cannot watch the session bus connection: {e}");
+            return false;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("session-bus".into())
+            .spawn(move || {
+                // The window may be gone by now, and that's fine.
+                let _ = sender.send(Bus::connect());
+            });
+        if let Err(e) = spawned {
+            log::warn!("cannot connect to the session bus: {e}");
+            self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
+            return false;
+        }
+        self.notifier.connecting = true;
+        true
+    }
+
+    /// The thread from `connect_bus` is done.
+    fn bus_connected(&mut self, result: io::Result<Bus>) {
+        self.notifier.connecting = false;
+        let queued = std::mem::take(&mut self.notifier.queued);
+        let registered = result.and_then(|bus| {
+            let socket = bus.socket()?;
+            let source = Generic::new(socket, Interest::READ, Mode::Level);
+            let token = self
+                .loop_handle
+                .insert_source(source, |_, _, app| {
+                    app.read_bus();
+                    Ok(PostAction::Continue)
+                })
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            Ok((bus, token))
+        });
+        match registered {
+            Ok(bus) => {
+                self.notifier.retry_at = None;
+                self.bus = Some(bus);
+                self.watch_bus_writes();
+                for (window, title, body) in queued {
+                    self.send_notification(window, &title, &body);
+                }
+            }
+            Err(e) => {
+                log::warn!("cannot connect to the session bus for notifications: {e}");
+                self.notifier.retry_at = Some(Instant::now() + BUS_RETRY);
+            }
+        }
+    }
+
+    fn disconnect_bus(&mut self) {
+        if let Some((_, token)) = self.bus.take() {
+            self.loop_handle.remove(token);
+        }
+    }
+}
+
+impl App {
+    fn window_mut(&mut self, id: WindowId) -> Option<&mut TermWindow> {
+        self.windows.iter_mut().find(|w| w.id == id)
+    }
+
+    /// A window and the shared state, to call the window's methods with.
+    fn split(&mut self, id: WindowId) -> Option<(&mut Shared, &mut TermWindow)> {
+        let window = self.windows.iter_mut().find(|w| w.id == id)?;
+        Some((&mut self.shared, window))
+    }
+
+    /// The window of a surface and the shared state.
+    fn split_by_surface(&mut self, surface: &WlSurface) -> Option<(&mut Shared, &mut TermWindow)> {
+        let window = self
+            .windows
+            .iter_mut()
+            .find(|w| w.window.wl_surface() == surface)?;
+        Some((&mut self.shared, window))
+    }
+
+    /// The window with keyboard focus and the shared state.
+    fn split_focused(&mut self) -> Option<(&mut Shared, &mut TermWindow)> {
+        let id = self.shared.keyboard_focus?;
+        self.split(id)
+    }
+
+    /// Opens a window running `spawn`'s command, or the shell.
+    fn open_window(&mut self, spawn: Spawn) -> Result<WindowId, Box<dyn Error>> {
+        let shared = &mut self.shared;
+        let id = WindowId(shared.next_window);
+        let window = TermWindow::open(shared, id, spawn)?;
+        shared.next_window = shared.next_window.wrapping_add(1);
+        self.windows.push(window);
+        Ok(id)
+    }
+
+    /// Carries out what windows asked for, and closes the windows that are
+    /// done.
+    fn after_dispatch(&mut self) {
+        for request in std::mem::take(&mut self.shared.requests) {
+            match request {
+                Request::ReloadConfig => self.reload_config(),
+            }
+        }
+        while let Some(i) = self.windows.iter().position(|w| w.exit) {
+            let mut window = self.windows.remove(i);
+            if self.windows.is_empty() {
+                let status = window.child_status();
+                if let Some(status) = status {
+                    log::info!("child exited: {status}");
+                }
+                self.exit_code = status.map_or(0, exit_code);
+            }
+            self.close(window);
+        }
+    }
+
+    /// Takes down a window that was removed from the list.
+    fn close(&mut self, mut window: TermWindow) {
+        let shared = &mut self.shared;
+        for focus in [&mut shared.keyboard_focus, &mut shared.ime_focus] {
+            if *focus == Some(window.id) {
+                *focus = None;
+            }
+        }
+        if let Some(token) = window.pty_source.take() {
+            shared.loop_handle.remove(token);
+        }
+        if let Some(blur) = window.blur.take() {
+            blur.destroy();
+        }
+        if let Some(viewport) = window.viewport.take() {
+            viewport.destroy();
+        }
+        if let Some(fractional_scale) = window.fractional_scale.take() {
+            fractional_scale.destroy();
+        }
+    }
+
+    /// Hands a key to the window with keyboard focus.
+    fn key(&mut self, event: KeyEvent, action: KeyAction) {
+        if let Some((shared, window)) = self.split_focused() {
+            window.handle_key(shared, event, action);
+        }
+    }
+
+    /// Reloads the config when its file or the overrides change, or on
+    /// SIGUSR1.
+    fn watch_config(&mut self) {
+        let path = self
+            .shared
+            .config_path
+            .clone()
+            .or_else(crate::config::default_path);
+        let overrides = crate::config::overrides_path();
+        // Created up front: inotify can't watch a directory that doesn't
+        // exist yet, and `jotty config` would otherwise go unnoticed until
+        // the next window.
+        if let Some(dir) = overrides.as_deref().and_then(Path::parent)
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            log::info!("cannot create {}: {e}", dir.display());
+        }
+        for path in path.into_iter().chain(overrides) {
+            self.watch_config_file(path);
+        }
+        match watch::sigusr1() {
+            Ok(file) => {
+                let source = Generic::new(file, Interest::READ, Mode::Level);
+                let inserted = self
+                    .shared
+                    .loop_handle
+                    .insert_source(source, |_, file, app| {
+                        // SAFETY: the file is only read, never closed or replaced.
+                        watch::drain(unsafe { file.get_mut() });
+                        app.reload_config();
+                        Ok(PostAction::Continue)
+                    });
+                if let Err(e) = inserted {
+                    log::warn!("cannot handle SIGUSR1: {e}");
+                }
+            }
+            Err(e) => log::warn!("cannot handle SIGUSR1: {e}"),
+        }
+    }
+
+    /// Schedules a reload whenever the file at `path` changes.
+    fn watch_config_file(&mut self, path: PathBuf) {
+        if let Some(name) = path.file_name().map(|n| n.to_owned()) {
+            match watch::watch_file(&path) {
+                Ok(file) => {
+                    let source = Generic::new(file, Interest::READ, Mode::Level);
+                    let inserted =
+                        self.shared
+                            .loop_handle
+                            .insert_source(source, move |_, file, app| {
+                                // SAFETY: the file is only read, never closed or replaced.
+                                if watch::changed(unsafe { file.get_mut() }, &name) {
+                                    app.schedule_reload();
+                                }
+                                Ok(PostAction::Continue)
+                            });
+                    if let Err(e) = inserted {
+                        log::warn!("cannot watch the config file: {e}");
+                    }
+                }
+                // Typically: no config directory yet.
+                Err(e) => log::info!("not watching {} for changes: {e}", path.display()),
+            }
+        }
+    }
+
+    /// Reloads shortly, once the burst of changes from saving a file is over.
+    fn schedule_reload(&mut self) {
+        if std::mem::replace(&mut self.shared.reload_pending, true) {
+            return;
+        }
+        let timer = Timer::from_duration(Duration::from_millis(100));
+        let inserted = self.shared.loop_handle.insert_source(timer, |_, _, app| {
+            app.shared.reload_pending = false;
+            app.reload_config();
+            TimeoutAction::Drop
+        });
+        if let Err(e) = inserted {
+            log::warn!("cannot schedule a config reload: {e}");
+            self.shared.reload_pending = false;
+        }
+    }
+
+    /// Reads the config file again and applies what can change in running
+    /// windows. An invalid file is reported and the current config kept.
+    fn reload_config(&mut self) {
+        let shared = &mut self.shared;
+        let mut new = match Config::load(shared.config_path.as_deref()) {
+            Ok(config) => config,
+            Err(e) => return log::error!("{e}; keeping the current configuration"),
+        };
+        if new == *shared.config {
+            return;
+        }
+        log::info!("reloading the configuration");
+        let old = Rc::clone(&shared.config);
+
+        for (changed, what) in [
+            (old.terminal.shell != new.terminal.shell, "terminal.shell"),
+            (old.terminal.term != new.terminal.term, "terminal.term"),
+            (
+                old.terminal.scrollback != new.terminal.scrollback,
+                "terminal.scrollback",
+            ),
+            (
+                old.window.renderer != new.window.renderer,
+                "window.renderer",
+            ),
+            (
+                (old.window.columns, old.window.lines) != (new.window.columns, new.window.lines),
+                "window.columns and window.lines",
+            ),
+            (
+                (&old.window.title, &old.window.app_id) != (&new.window.title, &new.window.app_id),
+                "window.title and window.app_id",
+            ),
+        ] {
+            if changed {
+                log::info!("{what} applies to new windows");
+            }
+        }
+
+        // Every window's fonts first: a family that can't be loaded leaves
+        // all of them as they are.
+        let mut fonts: Vec<Option<Fonts>> = Vec::new();
+        if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
+            let loaded: Result<Vec<Fonts>, _> = self
+                .windows
+                .iter()
+                .map(|w| {
+                    let px = font::points_to_px(w.font_points, w.scale as f32);
+                    Fonts::try_new(&new.font.family, &new.font.fallback, px)
+                })
+                .collect();
+            match loaded {
+                Ok(loaded) => fonts = loaded.into_iter().map(Some).collect(),
+                Err(e) => {
+                    log::error!("{e}; keeping the current font");
+                    // So that saving the file again tries again.
+                    new.font.family = old.font.family.clone();
+                    new.font.fallback = old.font.fallback.clone();
+                }
+            }
+        }
+        if (&old.url, &old.files) != (&new.url, &new.files) {
+            let kinds: Vec<Vec<String>> =
+                new.files.0.values().map(|k| k.extensions.clone()).collect();
+            match Detector::try_new(&kinds, &new.url.regex) {
+                Ok(links) => shared.links = links,
+                Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
+            }
+        }
+        let new = Rc::new(new);
+        shared.config = Rc::clone(&new);
+        fonts.resize_with(self.windows.len(), || None);
+        for (window, fonts) in self.windows.iter_mut().zip(fonts) {
+            window.apply_config(&shared.compositor, &old, &new, fonts);
+        }
+        if new.window.blur && !old.window.blur {
+            self.update_capabilities();
+        }
+    }
+
+    fn read_bus(&mut self) {
+        let Some((bus, _)) = &mut self.shared.bus else {
+            return;
+        };
+        let events = match bus.read() {
+            Ok(events) => events,
+            Err(e) => {
+                // Connected again on the next notification.
+                log::info!("lost the session bus: {e}");
+                self.shared.disconnect_bus();
+                return;
+            }
+        };
+        for event in events {
+            let notify::Event::Activate { tag, token } = event;
+            let Some((shared, window)) = self.split(WindowId(tag)) else {
+                continue;
+            };
+            match token {
+                Some(token) => {
+                    if let Some(activation) = &shared.activation {
+                        activation.activate::<App>(window.window.wl_surface(), token);
+                    }
+                }
+                // A daemon without activation tokens: only urgency is
+                // possible.
+                None => window.request_attention(shared),
+            }
+        }
+    }
+
+    fn text_input_event(&mut self, text_input: &ZwpTextInputV3, event: zwp_text_input_v3::Event) {
+        use zwp_text_input_v3::Event;
+        let target = match &event {
+            Event::Enter { surface } => {
+                let Some((shared, window)) = self.split_by_surface(surface) else {
+                    return;
+                };
+                shared.ime_focus = Some(window.id);
+                window.text_input = Some(text_input.clone());
+                window.id
+            }
+            Event::Leave { .. } => match self.shared.ime_focus.take() {
+                Some(id) => id,
+                None => return,
+            },
+            _ => match self.shared.ime_focus {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        if let Some(window) = self.window_mut(target) {
+            window.text_input_event(text_input, event);
+        }
+    }
+}
+
 impl CompositorHandler for App {
     fn scale_factor_changed(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlSurface,
+        surface: &WlSurface,
         factor: i32,
     ) {
         // wp-fractional-scale reports the exact scale instead.
-        if self.viewport.is_none() {
-            self.set_scale(f64::from(factor.max(1)));
+        if let Some((_, window)) = self.split_by_surface(surface)
+            && window.viewport.is_none()
+        {
+            window.set_scale(f64::from(factor.max(1)));
         }
     }
 
@@ -2179,10 +2476,13 @@ impl CompositorHandler for App {
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {
-        self.frame_pending = false;
-        if self.dirty {
-            self.request_redraw();
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
+        let Some((_, window)) = self.split_by_surface(surface) else {
+            return;
+        };
+        window.frame_pending = false;
+        if window.dirty {
+            window.request_redraw();
         }
     }
 
@@ -2207,7 +2507,7 @@ impl CompositorHandler for App {
 
 impl OutputHandler for App {
     fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
+        &mut self.shared.output_state
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
@@ -2218,46 +2518,52 @@ impl OutputHandler for App {
 }
 
 impl WindowHandler for App {
-    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
-        self.exit = true;
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, window: &Window) {
+        if let Some((_, window)) = self.split_by_surface(window.wl_surface()) {
+            window.exit = true;
+        }
     }
 
     fn configure(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &Window,
+        window: &Window,
         configure: WindowConfigure,
         _: u32,
     ) {
-        let size_before = self.size;
+        let Some((_, window)) = self.split_by_surface(window.wl_surface()) else {
+            return;
+        };
+        let size_before = window.size;
         if let Some(w) = configure.new_size.0 {
-            self.size.0 = w.get();
+            window.size.0 = w.get();
         }
         if let Some(h) = configure.new_size.1 {
-            self.size.1 = h.get();
+            window.size.1 = h.get();
         }
-        let unchanged = self.configured && self.size == size_before;
-        self.configured = true;
+        let unchanged = window.configured && window.size == size_before;
+        window.configured = true;
         // Focus and state changes are configures too, with the same size.
         if unchanged {
-            self.request_redraw();
+            window.request_redraw();
         } else {
-            self.apply_size();
+            window.apply_size();
         }
     }
 }
 
 impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seat_state
+        &mut self.shared.seat_state
     }
 
     fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
+        let shared = &mut self.shared;
         // Created before the window gets focus, so the compositor's focus
         // change reaches it as an `enter` event.
-        if let (None, Some(manager)) = (&self.text_input, &self.text_input_manager) {
-            self.text_input = Some(manager.get_text_input(&seat, qh, TextInputData));
+        if let (None, Some(manager)) = (&shared.text_input, &shared.text_input_manager) {
+            shared.text_input = Some(manager.get_text_input(&seat, qh, TextInputData));
         }
     }
 
@@ -2268,39 +2574,40 @@ impl SeatHandler for App {
         seat: WlSeat,
         capability: Capability,
     ) {
+        let shared = &mut self.shared;
         match capability {
-            Capability::Keyboard if self.keyboard.is_none() => {
-                let keyboard = self.seat_state.get_keyboard_with_repeat(
+            Capability::Keyboard if shared.keyboard.is_none() => {
+                let keyboard = shared.seat_state.get_keyboard_with_repeat(
                     qh,
                     &seat,
                     None,
-                    self.loop_handle.clone(),
-                    Box::new(|app, _, event| app.handle_key(event, KeyAction::Repeat)),
+                    shared.loop_handle.clone(),
+                    Box::new(|app, _, event| app.key(event, KeyAction::Repeat)),
                 );
                 match keyboard {
-                    Ok(keyboard) => self.keyboard = Some(keyboard),
+                    Ok(keyboard) => shared.keyboard = Some(keyboard),
                     Err(e) => log::warn!("cannot use keyboard: {e}"),
                 }
-                if let (None, Some(manager)) = (&self.data_device, &self.data_device_manager) {
-                    self.data_device = Some(manager.get_data_device(qh, &seat));
+                if let (None, Some(manager)) = (&shared.data_device, &shared.data_device_manager) {
+                    shared.data_device = Some(manager.get_data_device(qh, &seat));
                 }
                 if let (None, Some(manager)) =
-                    (&self.primary_device, &self.primary_selection_manager)
+                    (&shared.primary_device, &shared.primary_selection_manager)
                 {
-                    self.primary_device = Some(manager.get_selection_device(qh, &seat));
+                    shared.primary_device = Some(manager.get_selection_device(qh, &seat));
                 }
             }
-            Capability::Pointer if self.pointer.is_none() => {
-                let surface = self.compositor.create_surface(qh);
-                let pointer = self.seat_state.get_pointer_with_theme::<_, ()>(
+            Capability::Pointer if shared.pointer.is_none() => {
+                let surface = shared.compositor.create_surface(qh);
+                let pointer = shared.seat_state.get_pointer_with_theme::<_, ()>(
                     qh,
                     &seat,
-                    self.shm.wl_shm(),
+                    shared.shm.wl_shm(),
                     surface,
                     ThemeSpec::default(),
                 );
                 match pointer {
-                    Ok(pointer) => self.pointer = Some(pointer),
+                    Ok(pointer) => shared.pointer = Some(pointer),
                     Err(e) => log::warn!("cannot use pointer: {e}"),
                 }
             }
@@ -2317,16 +2624,20 @@ impl SeatHandler for App {
     ) {
         match capability {
             Capability::Keyboard => {
-                if let Some(keyboard) = self.keyboard.take() {
+                if let Some(keyboard) = self.shared.keyboard.take() {
                     keyboard.release();
                 }
                 // No leave event comes for a keyboard that went away.
-                self.focused = false;
-                self.modifiers = Modifiers::default();
-                self.sent_keys.clear();
+                if let Some((_, window)) = self.split_focused() {
+                    window.focused = false;
+                }
+                let shared = &mut self.shared;
+                shared.keyboard_focus = None;
+                shared.modifiers = Modifiers::default();
+                shared.sent_keys.clear();
             }
             Capability::Pointer => {
-                if let Some(pointer) = self.pointer.take() {
+                if let Some(pointer) = self.shared.pointer.take() {
                     pointer.pointer().release();
                 }
             }
@@ -2348,14 +2659,16 @@ impl KeyboardHandler for App {
         _: &[u32],
         _: &[Keysym],
     ) {
-        if surface == self.window.wl_surface() {
-            self.focused = true;
-            self.last_serial = serial;
-            if self.term.screen().modes.focus_events {
-                self.send(b"\x1b[I");
-            }
-            self.request_redraw();
+        let Some((shared, window)) = self.split_by_surface(surface) else {
+            return;
+        };
+        shared.keyboard_focus = Some(window.id);
+        shared.last_serial = serial;
+        window.focused = true;
+        if window.term.screen().modes.focus_events {
+            window.send(b"\x1b[I");
         }
+        window.request_redraw();
     }
 
     fn leave(
@@ -2366,13 +2679,17 @@ impl KeyboardHandler for App {
         surface: &WlSurface,
         _: u32,
     ) {
-        if surface == self.window.wl_surface() {
-            self.focused = false;
-            if self.term.screen().modes.focus_events {
-                self.send(b"\x1b[O");
-            }
-            self.request_redraw();
+        let Some((shared, window)) = self.split_by_surface(surface) else {
+            return;
+        };
+        if shared.keyboard_focus == Some(window.id) {
+            shared.keyboard_focus = None;
         }
+        window.focused = false;
+        if window.term.screen().modes.focus_events {
+            window.send(b"\x1b[O");
+        }
+        window.request_redraw();
     }
 
     fn press_key(
@@ -2383,8 +2700,8 @@ impl KeyboardHandler for App {
         serial: u32,
         event: KeyEvent,
     ) {
-        self.last_serial = serial;
-        self.handle_key(event, KeyAction::Press);
+        self.shared.last_serial = serial;
+        self.key(event, KeyAction::Press);
     }
 
     fn repeat_key(
@@ -2395,7 +2712,7 @@ impl KeyboardHandler for App {
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event, KeyAction::Repeat);
+        self.key(event, KeyAction::Repeat);
     }
 
     fn release_key(
@@ -2406,7 +2723,9 @@ impl KeyboardHandler for App {
         _: u32,
         event: KeyEvent,
     ) {
-        self.release(event);
+        if let Some((shared, window)) = self.split_focused() {
+            window.release(shared, event);
+        }
     }
 
     fn update_modifiers(
@@ -2419,9 +2738,13 @@ impl KeyboardHandler for App {
         _: RawModifiers,
         layout: u32,
     ) {
-        self.modifiers = modifiers;
-        self.layout = layout;
-        self.update_hovered_link();
+        let shared = &mut self.shared;
+        shared.modifiers = modifiers;
+        shared.layout = layout;
+        // Ctrl shows links in the window under the pointer.
+        for window in &mut self.windows {
+            window.update_hovered_link(shared);
+        }
     }
 
     fn update_keymap(
@@ -2432,13 +2755,13 @@ impl KeyboardHandler for App {
         keymap: Keymap<'_>,
     ) {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        self.keymap = xkb::Keymap::new_from_string(
+        self.shared.keymap = xkb::Keymap::new_from_string(
             &context,
             keymap.as_string(),
             xkb::KEYMAP_FORMAT_TEXT_V1,
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         );
-        if self.keymap.is_none() {
+        if self.shared.keymap.is_none() {
             log::warn!("cannot compile the keymap; key bindings match shifted symbols only");
         }
     }
@@ -2453,167 +2776,173 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if &event.surface != self.window.wl_surface() {
-                continue;
+            if let Some((shared, window)) = self.split_by_surface(&event.surface) {
+                window.pointer_event(shared, conn, event);
             }
-            self.pointer_pos = event.position;
-            if matches!(event.kind, PointerEventKind::Motion { .. })
-                && (self.modifiers.ctrl || self.hovered_link.is_some())
+        }
+    }
+}
+
+impl TermWindow {
+    fn pointer_event(&mut self, shared: &mut Shared, conn: &Connection, event: &PointerEvent) {
+        self.pointer_pos = event.position;
+        if matches!(event.kind, PointerEventKind::Motion { .. })
+            && (shared.modifiers.ctrl || self.hovered_link.is_some())
+        {
+            // Motion within a cell can't change the link under it.
+            let cell = self.point_at(event.position);
+            if self.hover_cell != Some(cell) {
+                self.hover_cell = Some(cell);
+                self.update_hovered_link(shared);
+            }
+        }
+        match &event.kind {
+            PointerEventKind::Enter { .. } => {
+                self.pointer_inside = true;
+                if let Some(pointer) = &shared.pointer
+                    && let Err(e) = pointer.set_cursor(conn, CursorIcon::Text)
+                {
+                    log::debug!("cannot set cursor: {e}");
+                }
+                self.update_hovered_link(shared);
+            }
+            PointerEventKind::Leave { .. } => {
+                self.pointer_inside = false;
+                self.update_hovered_link(shared);
+            }
+            // A drag that started as a selection stays one, even if
+            // Shift goes up on the way.
+            PointerEventKind::Motion { .. } if self.selecting => {
+                let point = self.point_at(event.position);
+                if let Some(selection) = &mut self.selection {
+                    selection.extend(self.term.screen(), point);
+                    self.request_redraw();
+                }
+            }
+            PointerEventKind::Motion { .. } if self.reporting_mouse(shared) => {
+                let held = self.held_buttons.last().copied();
+                self.report_mouse(shared, MouseAction::Motion(held), event.position);
+            }
+            PointerEventKind::Press { button, serial, .. }
+                if self.reporting_mouse(shared) && mouse_button(*button).is_some() =>
             {
-                // Motion within a cell can't change the link under it.
-                let cell = self.point_at(event.position);
-                if self.hover_cell != Some(cell) {
-                    self.hover_cell = Some(cell);
-                    self.update_hovered_link();
+                shared.last_serial = *serial;
+                let button = mouse_button(*button).expect("checked by the match guard");
+                self.held_buttons.retain(|&held| held != button);
+                self.held_buttons.push(button);
+                self.mouse_cell = None;
+                self.report_mouse(shared, MouseAction::Press(button), event.position);
+            }
+            // A release always follows a reported press, even if Shift
+            // went down in between.
+            PointerEventKind::Release { button, .. }
+                if mouse_button(*button).is_some_and(|b| self.held_buttons.contains(&b)) =>
+            {
+                self.held_buttons
+                    .retain(|&held| Some(held) != mouse_button(*button));
+                self.mouse_cell = None;
+                self.report_mouse(
+                    shared,
+                    MouseAction::Release(
+                        mouse_button(*button).expect("checked by the match guard"),
+                    ),
+                    event.position,
+                );
+            }
+            PointerEventKind::Axis {
+                vertical,
+                horizontal,
+                ..
+            } => self.wheel(shared, vertical, horizontal, event.position),
+            PointerEventKind::Press {
+                button: BTN_LEFT,
+                serial,
+                time,
+            } if self.hovered_link.is_some() => {
+                shared.last_serial = *serial;
+                // A double click opens it once.
+                let again = self
+                    .last_link_click
+                    .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
+                self.last_link_click = Some(*time);
+                if !again && let Some(link) = &self.hovered_link {
+                    self.open_link(link);
                 }
             }
-            match &event.kind {
-                PointerEventKind::Enter { .. } => {
-                    self.pointer_inside = true;
-                    if let Some(pointer) = &self.pointer
-                        && let Err(e) = pointer.set_cursor(conn, CursorIcon::Text)
+            // The second Shift+click: select from the marked cell.
+            PointerEventKind::Press {
+                button: BTN_LEFT,
+                serial,
+                ..
+            } if shared.modifiers.shift && self.shift_mark.is_some() => {
+                shared.last_serial = *serial;
+                let mark = self.shift_mark.take().expect("checked by the match guard");
+                let point = self.cell_start(self.point_at(event.position));
+                let (start, end) = (mark.min(point), mark.max(point));
+                self.selection = Some(Selection::span(start, end, Unit::Word));
+                self.selecting = false;
+                self.shift_press = false;
+                self.last_click = None;
+                self.request_redraw();
+            }
+            PointerEventKind::Press {
+                button: BTN_LEFT,
+                serial,
+                time,
+            } => {
+                shared.last_serial = *serial;
+                // A plain click cancels a Shift+click mark; a Shift+click
+                // that isn't dragged sets one (on release).
+                self.shift_press = shared.modifiers.shift;
+                if !shared.modifiers.shift {
+                    self.shift_mark = None;
+                }
+                let point = self.point_at(event.position);
+                // A fourth click starts over as a single click.
+                let clicks = match self.last_click {
+                    Some((last, at, n))
+                        if at == point && time.wrapping_sub(last) <= DOUBLE_CLICK_MS =>
                     {
-                        log::debug!("cannot set cursor: {e}");
+                        n % 3 + 1
                     }
-                    self.update_hovered_link();
-                }
-                PointerEventKind::Leave { .. } => {
-                    self.pointer_inside = false;
-                    self.update_hovered_link();
-                }
-                // A drag that started as a selection stays one, even if
-                // Shift goes up on the way.
-                PointerEventKind::Motion { .. } if self.selecting => {
-                    let point = self.point_at(event.position);
-                    if let Some(selection) = &mut self.selection {
-                        selection.extend(self.term.screen(), point);
-                        self.request_redraw();
-                    }
-                }
-                PointerEventKind::Motion { .. } if self.reporting_mouse() => {
-                    let held = self.held_buttons.last().copied();
-                    self.report_mouse(MouseAction::Motion(held), event.position);
-                }
-                PointerEventKind::Press { button, serial, .. }
-                    if self.reporting_mouse() && mouse_button(*button).is_some() =>
-                {
-                    self.last_serial = *serial;
-                    let button = mouse_button(*button).expect("checked by the match guard");
-                    self.held_buttons.retain(|&held| held != button);
-                    self.held_buttons.push(button);
-                    self.mouse_cell = None;
-                    self.report_mouse(MouseAction::Press(button), event.position);
-                }
-                // A release always follows a reported press, even if Shift
-                // went down in between.
-                PointerEventKind::Release { button, .. }
-                    if mouse_button(*button).is_some_and(|b| self.held_buttons.contains(&b)) =>
-                {
-                    self.held_buttons
-                        .retain(|&held| Some(held) != mouse_button(*button));
-                    self.mouse_cell = None;
-                    self.report_mouse(
-                        MouseAction::Release(
-                            mouse_button(*button).expect("checked by the match guard"),
-                        ),
-                        event.position,
-                    );
-                }
-                PointerEventKind::Axis {
-                    vertical,
-                    horizontal,
-                    ..
-                } => self.wheel(vertical, horizontal, event.position),
-                PointerEventKind::Press {
-                    button: BTN_LEFT,
-                    serial,
-                    time,
-                } if self.hovered_link.is_some() => {
-                    self.last_serial = *serial;
-                    // A double click opens it once.
-                    let again = self
-                        .last_link_click
-                        .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
-                    self.last_link_click = Some(*time);
-                    if !again && let Some(link) = &self.hovered_link {
-                        self.open_link(link);
-                    }
-                }
-                // The second Shift+click: select from the marked cell.
-                PointerEventKind::Press {
-                    button: BTN_LEFT,
-                    serial,
-                    ..
-                } if self.modifiers.shift && self.shift_mark.is_some() => {
-                    self.last_serial = *serial;
-                    let mark = self.shift_mark.take().expect("checked by the match guard");
-                    let point = self.cell_start(self.point_at(event.position));
-                    let (start, end) = (mark.min(point), mark.max(point));
-                    self.selection = Some(Selection::span(start, end, Unit::Word));
-                    self.selecting = false;
-                    self.shift_press = false;
-                    self.last_click = None;
-                    self.request_redraw();
-                }
-                PointerEventKind::Press {
-                    button: BTN_LEFT,
-                    serial,
-                    time,
-                } => {
-                    self.last_serial = *serial;
-                    // A plain click cancels a Shift+click mark; a Shift+click
-                    // that isn't dragged sets one (on release).
-                    self.shift_press = self.modifiers.shift;
-                    if !self.modifiers.shift {
-                        self.shift_mark = None;
-                    }
-                    let point = self.point_at(event.position);
-                    // A fourth click starts over as a single click.
-                    let clicks = match self.last_click {
-                        Some((last, at, n))
-                            if at == point && time.wrapping_sub(last) <= DOUBLE_CLICK_MS =>
-                        {
-                            n % 3 + 1
-                        }
-                        _ => 1,
-                    };
-                    self.last_click = Some((*time, point, clicks));
-                    let screen = self.term.screen();
-                    let selection = match clicks {
-                        2 if self.modifiers.ctrl => self
-                            .output_selection(point)
-                            .or_else(|| Selection::word(screen, point)),
-                        2 => Selection::word(screen, point),
-                        3 => Some(Selection::line(screen, point)),
-                        _ => None,
-                    };
-                    self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
-                    self.selecting = true;
-                    self.request_redraw();
-                }
-                PointerEventKind::Release {
-                    button: BTN_LEFT, ..
-                } => {
-                    self.selecting = false;
-                    if let Some(selection) = self.selection.filter(|s| s.is_empty()) {
-                        self.selection = None;
-                        if std::mem::take(&mut self.shift_press) {
-                            self.shift_mark = Some(self.cell_start(selection.range().0));
-                        }
-                    }
-                    self.set_primary();
-                    self.request_redraw();
-                }
-                PointerEventKind::Press {
-                    button: BTN_MIDDLE,
-                    serial,
-                    ..
-                } => {
-                    self.last_serial = *serial;
-                    self.paste_primary();
-                }
-                _ => {}
+                    _ => 1,
+                };
+                self.last_click = Some((*time, point, clicks));
+                let screen = self.term.screen();
+                let selection = match clicks {
+                    2 if shared.modifiers.ctrl => self
+                        .output_selection(point)
+                        .or_else(|| Selection::word(screen, point)),
+                    2 => Selection::word(screen, point),
+                    3 => Some(Selection::line(screen, point)),
+                    _ => None,
+                };
+                self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
+                self.selecting = true;
+                self.request_redraw();
             }
+            PointerEventKind::Release {
+                button: BTN_LEFT, ..
+            } => {
+                self.selecting = false;
+                if let Some(selection) = self.selection.filter(|s| s.is_empty()) {
+                    self.selection = None;
+                    if std::mem::take(&mut self.shift_press) {
+                        self.shift_mark = Some(self.cell_start(selection.range().0));
+                    }
+                }
+                self.set_primary(shared);
+                self.request_redraw();
+            }
+            PointerEventKind::Press {
+                button: BTN_MIDDLE,
+                serial,
+                ..
+            } => {
+                shared.last_serial = *serial;
+                self.paste_primary(shared);
+            }
+            _ => {}
         }
     }
 }
@@ -2632,14 +2961,15 @@ fn set_whole_region(compositor: &CompositorState, apply: impl FnOnce(Option<&WlR
 
 impl BackgroundEffectHandler for App {
     fn background_effect_state(&mut self) -> &mut BackgroundEffectState {
-        &mut self.background_effect
+        &mut self.shared.background_effect
     }
 
     fn update_capabilities(&mut self) {
-        if !self.config.window.blur || self.blur.is_some() {
+        let shared = &mut self.shared;
+        if !shared.config.window.blur || self.windows.iter().all(|w| w.blur.is_some()) {
             return;
         }
-        let supported = self
+        let supported = shared
             .background_effect
             .capabilities()
             .is_some_and(|c| c.contains(EffectCapability::Blur));
@@ -2647,13 +2977,25 @@ impl BackgroundEffectHandler for App {
             log::warn!("blur requested, but the compositor cannot blur");
             return;
         }
+        for window in &mut self.windows {
+            window.enable_blur(shared);
+        }
+    }
+}
+
+impl TermWindow {
+    /// Asks the compositor to blur behind the window, once it can.
+    fn enable_blur(&mut self, shared: &mut Shared) {
+        if self.blur.is_some() {
+            return;
+        }
         let surface = self.window.wl_surface().clone();
-        match self
+        match shared
             .background_effect
-            .get_background_effect(&surface, &self.qh)
+            .get_background_effect(&surface, &shared.qh)
         {
             Ok(effect) => {
-                set_whole_region(&self.compositor, |region| effect.set_blur_region(region));
+                set_whole_region(&shared.compositor, |region| effect.set_blur_region(region));
                 self.blur = Some(effect);
                 // The blur region applies on the next commit, i.e. frame.
                 self.request_redraw();
@@ -2675,7 +3017,7 @@ fn mouse_button(code: u32) -> Option<MouseButton> {
 
 impl ShmHandler for App {
     fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
+        &mut self.shared.shm
     }
 }
 
@@ -2724,9 +3066,9 @@ impl DataOfferHandler for App {
 impl ActivationHandler for App {
     type RequestUdata = ();
 
-    fn new_token(&mut self, token: String, _: &RequestData<()>) {
-        if let Some(activation) = &self.activation {
-            activation.activate::<App>(self.window.wl_surface(), token);
+    fn new_token(&mut self, token: String, data: &RequestData<()>) {
+        if let (Some(activation), Some(surface)) = (&self.shared.activation, &data.surface) {
+            activation.activate::<App>(surface, token);
         }
     }
 }
@@ -2752,6 +3094,7 @@ impl PrimarySelectionSourceHandler for App {
         pipe: WritePipe,
     ) {
         if let Some((_, text)) = self
+            .shared
             .primary_source
             .as_ref()
             .filter(|(s, _)| s.inner() == source)
@@ -2767,11 +3110,12 @@ impl PrimarySelectionSourceHandler for App {
         source: &ZwpPrimarySelectionSourceV1,
     ) {
         if self
+            .shared
             .primary_source
             .as_ref()
             .is_some_and(|(s, _)| s.inner() == source)
         {
-            self.primary_source = None;
+            self.shared.primary_source = None;
         }
     }
 }
@@ -2852,6 +3196,7 @@ impl DataSourceHandler for App {
         pipe: WritePipe,
     ) {
         if let Some((_, text)) = self
+            .shared
             .copy_source
             .as_ref()
             .filter(|(s, _)| s.inner() == source)
@@ -2862,11 +3207,12 @@ impl DataSourceHandler for App {
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
         if self
+            .shared
             .copy_source
             .as_ref()
             .is_some_and(|(s, _)| s.inner() == source)
         {
-            self.copy_source = None;
+            self.shared.copy_source = None;
         }
     }
 
@@ -2877,8 +3223,12 @@ impl DataSourceHandler for App {
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
 
-/// User data for the viewport and fractional-scale objects.
+/// User data for the viewporter, the viewports and the fractional-scale
+/// manager.
 struct ScaleData;
+
+/// User data for a window's fractional-scale object.
+struct FractionalScaleData(WindowId);
 
 impl Dispatch2<WpViewporter, App> for ScaleData {
     fn event(
@@ -2916,7 +3266,7 @@ impl Dispatch2<WpFractionalScaleManagerV1, App> for ScaleData {
     }
 }
 
-impl Dispatch2<WpFractionalScaleV1, App> for ScaleData {
+impl Dispatch2<WpFractionalScaleV1, App> for FractionalScaleData {
     fn event(
         &self,
         app: &mut App,
@@ -2927,7 +3277,9 @@ impl Dispatch2<WpFractionalScaleV1, App> for ScaleData {
     ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
             // In 120ths.
-            app.set_scale(f64::from(scale) / 120.0);
+            if let Some(window) = app.window_mut(self.0) {
+                window.set_scale(f64::from(scale) / 120.0);
+            }
         }
     }
 }
@@ -2966,7 +3318,7 @@ impl Dispatch2<ZwpTextInputV3, App> for TextInputData {
 
 impl ProvidesRegistryState for App {
     fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
+        &mut self.shared.registry_state
     }
 
     registry_handlers![OutputState, SeatState];

@@ -62,7 +62,10 @@ fn main() -> ExitCode {
         }
     };
 
-    match app::run(config, options.config, options.command) {
+    let spawn = app::Spawn {
+        command: options.command,
+    };
+    match app::run(config, options.config, spawn) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("jotty: {e}");
