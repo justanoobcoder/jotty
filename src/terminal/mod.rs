@@ -1771,9 +1771,12 @@ impl Screen {
             self.report_color(&(10 + which).to_string(), current, bell_terminated);
             return;
         }
-        let Some(rgb) = parse_color(spec) else {
-            log::debug!("bad color {:?}", String::from_utf8_lossy(spec));
-            return;
+        let rgb = match parse_color(spec) {
+            Ok(rgb) => rgb,
+            Err(e) => {
+                log::debug!("bad color {:?}: {e}", String::from_utf8_lossy(spec));
+                return;
+            }
         };
         match which {
             0 => self.colors.foreground = Some(rgb),
@@ -1944,20 +1947,20 @@ impl Screen {
                 29 => t.flags.remove(Flags::STRIKE),
                 n @ 30..=37 => t.fg = Color::Indexed((n - 30) as u8),
                 38 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         t.fg = color;
                     }
                 }
                 39 => t.fg = Color::Default,
                 n @ 40..=47 => t.bg = Color::Indexed((n - 40) as u8),
                 48 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         t.bg = color;
                     }
                 }
                 49 => t.bg = Color::Default,
                 58 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         underline_color = Some(color);
                     }
                 }
@@ -1982,59 +1985,73 @@ impl Screen {
 
 /// Parses an X11 color specification as used by OSC color sequences:
 /// `#rgb`, `#rrggbb`, or `rgb:r/g/b` with 1–4 hex digits per component.
-fn parse_color(spec: &[u8]) -> Option<(u8, u8, u8)> {
-    let spec = std::str::from_utf8(spec).ok()?;
-    let scale = |hex: &str| -> Option<u8> {
+fn parse_color(spec: &[u8]) -> Result<(u8, u8, u8), &'static str> {
+    const BAD_COMPONENT: &str = "a component is not 1-4 hex digits";
+    let spec = std::str::from_utf8(spec).map_err(|_| "not UTF-8")?;
+    let scale = |hex: &str| -> Result<u8, &'static str> {
         if hex.is_empty() || hex.len() > 4 {
-            return None;
+            return Err(BAD_COMPONENT);
         }
-        let value = u32::from_str_radix(hex, 16).ok()?;
+        let value = u32::from_str_radix(hex, 16).map_err(|_| BAD_COMPONENT)?;
         let max = (1u32 << (4 * hex.len())) - 1;
-        Some((value * 255 / max) as u8)
+        Ok((value * 255 / max) as u8)
     };
     if let Some(hex) = spec.strip_prefix('#') {
         if !matches!(hex.len(), 3 | 6) || !hex.is_ascii() {
-            return None;
+            return Err("expected 3 or 6 hex digits after #");
         }
         let n = hex.len() / 3;
-        return Some((
+        return Ok((
             scale(&hex[..n])?,
             scale(&hex[n..2 * n])?,
             scale(&hex[2 * n..])?,
         ));
     }
-    let mut parts = spec.strip_prefix("rgb:")?.split('/');
-    let rgb = (
-        scale(parts.next()?)?,
-        scale(parts.next()?)?,
-        scale(parts.next()?)?,
-    );
-    parts.next().is_none().then_some(rgb)
+    let mut parts = spec
+        .strip_prefix("rgb:")
+        .ok_or("expected #rgb, #rrggbb or rgb:r/g/b")?
+        .split('/');
+    let mut component = || scale(parts.next().ok_or("expected three components")?);
+    let rgb = (component()?, component()?, component()?);
+    match parts.next() {
+        None => Ok(rgb),
+        Some(_) => Err("expected three components"),
+    }
 }
 
 /// Parses the arguments of SGR 38/48/58 in either the colon form
 /// (`38:2::r:g:b`, `38:5:n`) or the semicolon form (`38;2;r;g;b`, `38;5;n`).
-fn extended_color<'a>(param: &[u16], iter: &mut impl Iterator<Item = &'a [u16]>) -> Option<Color> {
+fn extended_color<'a>(
+    param: &[u16],
+    iter: &mut impl Iterator<Item = &'a [u16]>,
+) -> Result<Color, &'static str> {
+    const TRUNCATED: &str = "the color is cut short";
+    const UNKNOWN: &str = "the color space is not 2 (RGB) or 5 (indexed)";
     let byte = |v: u16| v.min(255) as u8;
     if param.len() > 1 {
         return match param[1] {
-            5 => param.get(2).map(|&n| Color::Indexed(byte(n))),
+            5 => param
+                .get(2)
+                .map(|&n| Color::Indexed(byte(n)))
+                .ok_or(TRUNCATED),
             2 if param.len() >= 5 => {
                 let rgb = &param[param.len() - 3..];
-                Some(Color::Rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2])))
+                Ok(Color::Rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2])))
             }
-            _ => None,
+            2 => Err(TRUNCATED),
+            _ => Err(UNKNOWN),
         };
     }
-    match iter.next()?[0] {
-        5 => Some(Color::Indexed(byte(iter.next()?[0]))),
+    let mut next = || iter.next().map(|p| p[0]).ok_or(TRUNCATED);
+    match next()? {
+        5 => Ok(Color::Indexed(byte(next()?))),
         2 => {
-            let r = iter.next()?[0];
-            let g = iter.next()?[0];
-            let b = iter.next()?[0];
-            Some(Color::Rgb(byte(r), byte(g), byte(b)))
+            let r = next()?;
+            let g = next()?;
+            let b = next()?;
+            Ok(Color::Rgb(byte(r), byte(g), byte(b)))
         }
-        _ => None,
+        _ => Err(UNKNOWN),
     }
 }
 
@@ -2370,7 +2387,7 @@ impl Perform for Screen {
                     if *spec == b"?" {
                         let rgb = self.colors.palette[i].unwrap_or(self.default_colors.palette[i]);
                         self.report_color(&format!("4;{index}"), rgb, bell_terminated);
-                    } else if let Some(rgb) = parse_color(spec) {
+                    } else if let Ok(rgb) = parse_color(spec) {
                         self.colors.palette[i] = Some(rgb);
                         self.dirty = true;
                     }
