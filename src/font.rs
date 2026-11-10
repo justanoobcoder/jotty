@@ -669,7 +669,7 @@ pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<G
         }
     };
     match style {
-        Underline::None => unreachable!(),
+        Underline::None => unreachable!("no glyph is made for Underline::None"),
         Underline::Single => fill(0, width, 0, t),
         Underline::Double => {
             fill(0, width, 0, t);
