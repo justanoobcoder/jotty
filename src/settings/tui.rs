@@ -463,10 +463,16 @@ impl State {
         let items = SECTIONS.iter().map(|section| {
             let overridden = self.layers.overrides.contains_key(*section);
             let mark = if overridden { "● " } else { "  " };
-            ListItem::new(Line::from(vec![mark.yellow(), Span::raw(*section)]))
+            // A filter searches every section; none of them is current.
+            let name = if self.filter.is_empty() && self.mode != Mode::Filter {
+                Span::raw(*section)
+            } else {
+                section.dark_gray()
+            };
+            ListItem::new(Line::from(vec![mark.yellow(), name]))
         });
         let mut state = ListState::default();
-        if self.filter.is_empty() {
+        if self.filter.is_empty() && self.mode != Mode::Filter {
             state.select(Some(self.section));
         }
         let list = List::new(items)
@@ -514,18 +520,40 @@ impl State {
             }
             ListItem::new(Line::from(spans))
         });
-        let title = if self.filter.is_empty() {
-            format!(" {} ", SECTIONS[self.section])
+        let filtering = self.mode == Mode::Filter;
+        let matches = format!("  {} found ", visible.len());
+        let title = if filtering {
+            // The filter being typed, as an input field in the title.
+            Line::from(vec![
+                FILTER_BADGE.black().on_yellow().bold(),
+                " ".into(),
+                self.filter.clone().yellow().bold(),
+                matches.dark_gray(),
+            ])
+        } else if self.filter.is_empty() {
+            Line::from(format!(" {} ", SECTIONS[self.section]))
         } else {
-            format!(" /{} ", self.filter)
+            Line::from(vec![
+                " filter: ".yellow(),
+                self.filter.clone().yellow().bold(),
+                matches.dark_gray(),
+                "(/ change, Esc clear) ".dark_gray(),
+            ])
         };
-        let block = Block::bordered().title(title).border_style(Style::new().fg(
-            if self.focus == Focus::Keys {
-                Color::Cyan
-            } else {
-                Color::DarkGray
-            },
-        ));
+        let border = match (filtering, self.focus) {
+            (true, _) => Color::Yellow,
+            (false, Focus::Keys) => Color::Cyan,
+            (false, Focus::Sections) => Color::DarkGray,
+        };
+        let block = Block::bordered()
+            .title(title)
+            .border_style(Style::new().fg(border));
+        let items: Vec<ListItem> = items.collect();
+        let items = if items.is_empty() && !self.filter.is_empty() {
+            vec![ListItem::new("  no key matches".dark_gray())]
+        } else {
+            items
+        };
         let mut state = ListState::default();
         if self.focus == Focus::Keys || !self.filter.is_empty() {
             state.select(Some(self.selected));
@@ -537,6 +565,16 @@ impl State {
         };
         let list = List::new(items).block(block).highlight_style(highlight);
         frame.render_stateful_widget(list, area, &mut state);
+        if filtering {
+            // After the badge and the space, at the end of the filter.
+            let column = text_width(FILTER_BADGE) + 1 + text_width(&self.filter);
+            let x = area
+                .x
+                .saturating_add(1)
+                .saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
+            let last = area.right().saturating_sub(2).max(area.x);
+            frame.set_cursor_position(Position::new(x.min(last), area.y));
+        }
         if let Some((_, _, column)) = window {
             let row = self.selected.saturating_sub(state.offset());
             let x = text_x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
@@ -588,11 +626,19 @@ impl State {
             Mode::Edit { .. } => {
                 "Enter save  Esc cancel  Ctrl+U clear  (empty resets optional keys)"
             }
-            Mode::Filter => "type to filter  Enter keep  Esc clear",
+            Mode::Filter => "type to filter keys in every section  Enter done  Esc clear",
         };
-        frame.render_widget(Paragraph::new(help).dark_gray(), area);
+        let mut spans = Vec::new();
+        if self.mode == Mode::Filter {
+            spans.extend([FILTER_BADGE.black().on_yellow().bold(), " ".into()]);
+        }
+        spans.push(help.dark_gray());
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
+
+/// Marks the filter while it is typed, in the title and the footer.
+const FILTER_BADGE: &str = " FILTER ";
 
 /// A value, with a swatch for colors.
 fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
