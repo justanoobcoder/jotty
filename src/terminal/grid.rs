@@ -3,6 +3,8 @@
 use std::collections::VecDeque;
 use std::ops::{BitOr, Range};
 
+use crate::color::Rgb;
+
 /// A cell's foreground, background or underline color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
@@ -10,7 +12,7 @@ pub enum Color {
     #[default]
     Default,
     Indexed(u8),
-    Rgb(u8, u8, u8),
+    Rgb(Rgb),
 }
 
 /// A cell's attributes (SGR), layout flags and underline style, in one

@@ -11,13 +11,13 @@
 use std::collections::HashSet;
 use std::ffi::{CString, OsString};
 use std::fs::{File, OpenOptions};
-use std::io;
-use std::io::SeekFrom;
+use std::io::{self, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::grid::{Cell, Color};
+use crate::color::Rgb;
 
 /// U+10EEEE: a cell showing part of an image through a virtual placement.
 /// Combining diacritics after it give the image row and column.
@@ -940,7 +940,7 @@ fn color_number(color: Color) -> u32 {
     match color {
         Color::Default => 0,
         Color::Indexed(i) => u32::from(i),
-        Color::Rgb(r, g, b) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
+        Color::Rgb(Rgb { r, g, b }) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
     }
 }
 
@@ -1153,7 +1153,7 @@ mod tests {
     fn placeholder_cells_inherit_from_the_left() {
         let cell = Cell {
             c: PLACEHOLDER,
-            fg: Color::Rgb(0, 0, 42),
+            fg: Color::Rgb(Rgb::new(0, 0, 42)),
             ..Cell::default()
         };
         let first = decode_placeholder(&cell, "\u{0305}\u{030D}\u{030E}", Color::Default, None);

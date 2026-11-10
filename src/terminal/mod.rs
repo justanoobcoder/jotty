@@ -1879,7 +1879,7 @@ impl Screen {
                 Some(format!("{}", bright + u16::from(i) - 8))
             }
             Color::Indexed(i) => Some(format!("{extended}:5:{i}")),
-            Color::Rgb(r, g, b) => Some(format!("{extended}:2::{r}:{g}:{b}")),
+            Color::Rgb(Rgb { r, g, b }) => Some(format!("{extended}:2::{r}:{g}:{b}")),
         };
         parts.extend(color(t.fg, 30, 90, 38));
         parts.extend(color(t.bg, 40, 100, 48));
@@ -2051,7 +2051,11 @@ fn extended_color<'a>(
                 .ok_or(TRUNCATED),
             2 if param.len() >= 5 => {
                 let rgb = &param[param.len() - 3..];
-                Ok(Color::Rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2])))
+                Ok(Color::Rgb(Rgb::new(
+                    byte(rgb[0]),
+                    byte(rgb[1]),
+                    byte(rgb[2]),
+                )))
             }
             2 => Err(TRUNCATED),
             _ => Err(UNKNOWN),
@@ -2064,7 +2068,7 @@ fn extended_color<'a>(
             let r = next()?;
             let g = next()?;
             let b = next()?;
-            Ok(Color::Rgb(byte(r), byte(g), byte(b)))
+            Ok(Color::Rgb(Rgb::new(byte(r), byte(g), byte(b))))
         }
         _ => Err(UNKNOWN),
     }

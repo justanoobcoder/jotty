@@ -404,8 +404,8 @@ fn sgr_extended_colors() {
     t.feed(b"\x1b[38:2::10:20:30;48:5:7mb");
     t.feed(b"\x1b[38:2:40:50:60;91mc");
     assert_eq!(cell(&t, 0, 0).fg, Color::Indexed(200));
-    assert_eq!(cell(&t, 0, 0).bg, Color::Rgb(1, 2, 3));
-    assert_eq!(cell(&t, 0, 1).fg, Color::Rgb(10, 20, 30));
+    assert_eq!(cell(&t, 0, 0).bg, Color::Rgb(Rgb::new(1, 2, 3)));
+    assert_eq!(cell(&t, 0, 1).fg, Color::Rgb(Rgb::new(10, 20, 30)));
     assert_eq!(cell(&t, 0, 1).bg, Color::Indexed(7));
     assert_eq!(cell(&t, 0, 2).fg, Color::Indexed(9));
 }
@@ -1060,7 +1060,10 @@ fn underline_color() {
     let mut t = term(10, 1);
     // Neovim's colon form, the semicolon form, then reset.
     t.feed(b"\x1b[4:3;58:2::255:0:0ma\x1b[58;5;4mb\x1b[59mc\x1b[0md");
-    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(255, 0, 0));
+    assert_eq!(
+        extra(&t, 0, 0).underline_color,
+        Color::Rgb(Rgb::new(255, 0, 0))
+    );
     assert_eq!(extra(&t, 0, 1).underline_color, Color::Indexed(4));
     assert_eq!(extra(&t, 0, 2).underline_color, Color::Default);
     assert_eq!(cell(&t, 0, 3).flags.underline(), Underline::None);
@@ -1430,9 +1433,12 @@ fn unused_extras_are_dropped_when_the_table_fills() {
     t.feed("a".as_bytes());
     let e = extra(&t, 1, 0);
     assert_eq!(t.screen().link(e.link), Some("https://kept"));
-    assert_eq!(e.underline_color, Color::Rgb(1, 17, 111));
+    assert_eq!(e.underline_color, Color::Rgb(Rgb::new(1, 17, 111)));
     assert_eq!(text_at(&t, 0, 0), "e\u{301}");
-    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(1, 17, 111));
+    assert_eq!(
+        extra(&t, 0, 0).underline_color,
+        Color::Rgb(Rgb::new(1, 17, 111))
+    );
 }
 
 #[test]

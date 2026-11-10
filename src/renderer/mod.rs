@@ -174,12 +174,12 @@ impl Theme {
                 self.indexed(i + 8)
             }
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb::new(r, g, b),
+            Color::Rgb(rgb) => rgb,
         };
         let mut bg = match cell.bg {
             Color::Default => self.background,
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb::new(r, g, b),
+            Color::Rgb(rgb) => rgb,
         };
         if cell.flags.contains(Flags::DIM) {
             fg = blend(fg, bg, 0.66);
@@ -587,7 +587,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 let color = match extra.underline_color {
                     Color::Default => fg,
                     Color::Indexed(i) => theme.indexed(i),
-                    Color::Rgb(r, g, b) => Rgb::new(r, g, b),
+                    Color::Rgb(rgb) => rgb,
                 };
                 front.glyph(px, py, &glyph, color);
             }
