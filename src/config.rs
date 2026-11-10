@@ -116,9 +116,11 @@ pub struct FontConfig {
     /// Font family name, resolved through the system font configuration.
     pub family: String,
     /// Font size in points (at 96 DPI and a scale factor of 1).
+    #[serde(serialize_with = "short_f32")]
     pub size: f32,
     /// Points added or removed by `font_larger` and `font_smaller`, per
     /// key press or wheel notch.
+    #[serde(serialize_with = "short_f32")]
     pub size_step: f32,
     /// Families tried, in order, for characters the primary font lacks.
     pub fallback: Vec<String>,
@@ -143,6 +145,7 @@ pub struct WindowConfig {
     /// Padding around the cell grid, in logical pixels.
     pub padding: u32,
     /// Background opacity, from 0.0 (transparent) to 1.0 (opaque).
+    #[serde(serialize_with = "short_f32")]
     pub opacity: f32,
     /// Also apply `opacity` to cells with an explicit background color.
     pub transparent_cell_backgrounds: bool,
@@ -450,6 +453,14 @@ impl Config {
     }
 }
 
+/// Writes an `f32` as the shortest decimal that reads back as it, so 12.4
+/// stays 12.4 rather than widening to 12.399999618530273 (TOML floats
+/// are 64-bit).
+fn short_f32<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    let shortest = value.to_string().parse().unwrap_or(f64::from(*value));
+    serializer.serialize_f64(shortest)
+}
+
 pub fn default_path() -> Option<PathBuf> {
     xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
 }
@@ -714,6 +725,16 @@ mod tests {
         let config = Config::load_layers(Some((&missing, false)), Some(&overlay)).unwrap();
         assert_eq!(config.window.padding, 9);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn floats_serialize_as_written() {
+        let config =
+            Config::parse("[font]\nsize = 12.4\nsize_step = 0.1\n[window]\nopacity = 0.8").unwrap();
+        let table = toml::Table::try_from(&config).unwrap();
+        assert_eq!(table["font"]["size"].as_float(), Some(12.4));
+        assert_eq!(table["font"]["size_step"].as_float(), Some(0.1));
+        assert_eq!(table["window"]["opacity"].as_float(), Some(0.8));
     }
 
     #[test]
