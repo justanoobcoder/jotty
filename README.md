@@ -174,6 +174,7 @@ ends (OSC 133). See [Shell integration](docs/configuration.md#shell-integration)
 - [Architecture](docs/architecture.md): how the pieces fit together
 - [Development](docs/development.md): building, testing, debugging
 - [Known issues](docs/known-issues.md): limitations and missing features
+- [Changelog](CHANGELOG.md): what changed in each release
 
 ## License
 
