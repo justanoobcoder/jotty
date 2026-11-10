@@ -26,6 +26,9 @@
   per frame), at the cost of the 130+ MiB a GPU driver takes.
 - **Vi mode:** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
+- **Live config reload:** Saving the config file reloads every running
+  window, with no restart.
+- **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
 
 ## Keybinds
 
