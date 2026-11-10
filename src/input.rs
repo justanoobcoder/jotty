@@ -329,7 +329,7 @@ fn own_modifier(keysym: Keysym) -> u32 {
 /// Encodes a key with the kitty keyboard protocol, following the flags in
 /// `modes.keyboard`.
 fn encode_kitty(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
-    use kitty::*;
+    use kitty::{ALL_KEYS, ALTERNATES, DISAMBIGUATE, EVENTS, TEXT};
     let flags = modes.keyboard;
     let all_keys = flags & ALL_KEYS != 0;
     let disambiguate = flags & DISAMBIGUATE != 0 || all_keys;

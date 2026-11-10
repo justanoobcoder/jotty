@@ -15,7 +15,10 @@ use fontconfig_sys as fc;
 
 use crate::emoji::{self, EmojiFont};
 use crate::terminal::Underline;
-use fontconfig_sys::constants::*;
+use fontconfig_sys::constants::{
+    FC_CHARSET, FC_COLOR, FC_FAMILY, FC_FILE, FC_INDEX, FC_SLANT, FC_SLANT_ITALIC, FC_SLANT_ROMAN,
+    FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Style {
