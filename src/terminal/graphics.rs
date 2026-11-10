@@ -11,14 +11,13 @@
 use std::collections::HashSet;
 use std::ffi::{CString, OsString};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::FromRawFd;
+use std::io::{self, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::grid::{Cell, Color};
+use crate::color::Rgb;
 
 /// U+10EEEE: a cell showing part of an image through a virtual placement.
 /// Combining diacritics after it give the image row and column.
@@ -83,6 +82,7 @@ const MAX_PLACEMENTS: usize = 4096;
 /// renderer can cache it.
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
+/// An image a program transmitted with the kitty graphics protocol.
 pub struct Image {
     pub uid: u64,
     /// The id the program refers to it by; 0 for an anonymous image.
@@ -95,6 +95,8 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
+/// Where an image is shown: a real placement on the grid, or a virtual
+/// one that placeholder cells refer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
     /// The image's uid.
@@ -120,6 +122,7 @@ impl Placement {
     /// The size the image is drawn at, in pixels, with cells of `cell`
     /// pixels: scaled to the columns and rows given, keeping the aspect
     /// ratio when only one of them is.
+    #[must_use]
     pub fn pixel_size(&self, (cw, ch): (u32, u32)) -> (f32, f32) {
         let [_, _, sw, sh] = self.source.map(|v| v as f32);
         let (dx, dy) = (self.offset.0 as f32, self.offset.1 as f32);
@@ -135,6 +138,7 @@ impl Placement {
 
     /// The columns and rows the placement covers with cells of `cell`
     /// pixels.
+    #[must_use]
     pub fn size_in_cells(&self, cell: (u32, u32)) -> (u32, u32) {
         let (w, h) = self.pixel_size(cell);
         let span = |given: u32, pixels: f32, offset: u32, size: u32| match given {
@@ -153,7 +157,7 @@ impl Placement {
             && (self.col..self.col + cols as usize).contains(&col)
     }
 
-    fn lines(&self, cell: (u32, u32)) -> std::ops::Range<i64> {
+    fn lines(&self, cell: (u32, u32)) -> Range<i64> {
         self.line..self.line + i64::from(self.size_in_cells(cell).1)
     }
 }
@@ -215,18 +219,19 @@ impl Default for Command {
 impl Command {
     /// Parses `key=value` pairs separated by commas. Unknown keys are
     /// ignored; a malformed value rejects the command.
-    fn parse(control: &[u8]) -> Option<Command> {
+    fn parse(control: &[u8]) -> Result<Command, &'static str> {
         let mut cmd = Command::default();
-        for pair in control.split(|&b| b == b',').filter(|p| !p.is_empty()) {
+        let pairs = control.split(|&b| b == b',').filter(|p| !p.is_empty());
+        for pair in pairs {
             let [key, b'=', value @ ..] = pair else {
-                return None;
+                return Err("expected key=value");
             };
-            let value = std::str::from_utf8(value).ok()?;
+            let value = std::str::from_utf8(value).map_err(|_| "a value is not UTF-8")?;
             let char = || match value.as_bytes() {
-                [c] => Some(*c),
-                _ => None,
+                [c] => Ok(*c),
+                _ => Err("expected a single character"),
             };
-            let num = || value.parse::<u32>().ok();
+            let num = || value.parse::<u32>().map_err(|_| "expected a number");
             match key {
                 b'a' => cmd.action = char()?,
                 b'q' => cmd.quiet = num()?.min(2) as u8,
@@ -251,12 +256,12 @@ impl Command {
                 b'r' => cmd.rows = num()?,
                 b'C' => cmd.no_move = num()? == 1,
                 b'U' => cmd.is_virtual = num()? == 1,
-                b'z' => cmd.z = value.parse().ok()?,
+                b'z' => cmd.z = value.parse().map_err(|_| "expected a number")?,
                 b'd' => cmd.delete = char()?,
                 _ => {}
             }
         }
-        Some(cmd)
+        Ok(cmd)
     }
 }
 
@@ -312,10 +317,13 @@ impl Default for Graphics {
 }
 
 impl Graphics {
+    #[must_use]
     pub fn placements(&self) -> &[Placement] {
         &self.placements
     }
 
+    /// The image with `uid`, if it is still stored.
+    #[must_use]
     pub fn image(&self, uid: u64) -> Option<&Image> {
         let i = self.images.binary_search_by_key(&uid, |i| i.uid).ok()?;
         Some(&self.images[i])
@@ -326,18 +334,22 @@ impl Graphics {
         self.placements.iter().map(|p| p.image).collect()
     }
 
+    /// The latest image the program gave the id `id`; never an anonymous one.
+    #[must_use]
     pub fn image_by_id(&self, id: u32) -> Option<&Image> {
         self.images.iter().rfind(|i| i.id == id && id != 0)
     }
 
     /// The virtual placement of an image with id `placement`, or its latest
     /// one when `placement` is 0.
+    #[must_use]
     pub fn virtual_placement(&self, image: u64, placement: u32) -> Option<&Placement> {
         self.placements
             .iter()
             .rfind(|p| p.is_virtual && p.image == image && (placement == 0 || p.id == placement))
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }
@@ -348,12 +360,15 @@ impl Graphics {
             Some(i) => (&data[..i], &data[i + 1..]),
             None => (data, &[][..]),
         };
-        let Some(cmd) = Command::parse(control) else {
-            log::debug!(
-                "bad graphics command {:?}",
-                String::from_utf8_lossy(control)
-            );
-            return Outcome::default();
+        let cmd = match Command::parse(control) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                log::debug!(
+                    "bad graphics command {:?}: {e}",
+                    String::from_utf8_lossy(control)
+                );
+                return Outcome::default();
+            }
         };
         // Later chunks of a transmission carry only `m` (and maybe `q`).
         if let Some(mut loading) = self.loading.take()
@@ -424,9 +439,13 @@ impl Graphics {
 
     /// Finishes a transmission (`a=t`, `T` or `q`) with its whole payload,
     /// decoded from base64.
-    fn finish(&mut self, mut cmd: Command, data: Option<Vec<u8>>, ctx: &Context) -> Outcome {
+    fn finish(
+        &mut self,
+        mut cmd: Command,
+        data: Result<Vec<u8>, String>,
+        ctx: &Context,
+    ) -> Outcome {
         let image = data
-            .ok_or_else(|| "EINVAL: bad base64 payload".to_string())
             .and_then(|data| read_medium(&cmd, data))
             .and_then(|data| decompress(&cmd, data))
             .and_then(|data| decode(&cmd, data));
@@ -731,7 +750,7 @@ fn reply(cmd: &Command, result: Result<(), String>) -> Option<String> {
 }
 
 /// Decodes standard base64, ignoring padding and whitespace.
-fn base64(text: &[u8]) -> Option<Vec<u8>> {
+fn base64(text: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut acc = 0u32;
     let mut bits = 0;
@@ -743,7 +762,7 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
             b'+' => 62,
             b'/' => 63,
             b'=' | b'\n' | b'\r' | b' ' => continue,
-            _ => return None,
+            _ => return Err("EINVAL: bad base64 payload".into()),
         };
         acc = (acc << 6) | u32::from(value);
         bits += 6;
@@ -752,11 +771,12 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
             out.push((acc >> bits) as u8);
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Gets the image data from where the transmission medium (`t`) says.
 fn read_medium(cmd: &Command, data: Vec<u8>) -> Result<Vec<u8>, String> {
+    use std::os::unix::ffi::OsStringExt;
     let (offset, size) = (u64::from(cmd.offset), cmd.size as usize);
     match cmd.medium {
         b'd' => Ok(data),
@@ -794,7 +814,8 @@ fn is_temp_file(path: &Path) -> bool {
 
 /// Reads `size` bytes (all when 0) at `offset` from a regular file.
 fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String> {
-    let error = |e: std::io::Error| format!("EBADF: {e}");
+    use std::io::{Read, Seek};
+    let error = |e: io::Error| format!("EBADF: {e}");
     if !file.metadata().map_err(error)?.is_file() {
         return Err("EBADF: not a regular file".into());
     }
@@ -812,6 +833,7 @@ fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String
 }
 
 fn read_file(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
     // Without O_NONBLOCK, opening a FIFO waits for a writer, forever if
     // there is none, and the whole terminal hangs. Regular files ignore it.
     let file = OpenOptions::new()
@@ -824,11 +846,12 @@ fn read_file(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, String> {
 
 /// Reads and unlinks the POSIX shared memory object named by `name`.
 fn read_shm(name: &[u8], offset: u64, size: usize) -> Result<Vec<u8>, String> {
+    use std::os::unix::io::FromRawFd;
     let name = CString::new(name).map_err(|_| "EINVAL: bad shared memory name")?;
     // SAFETY: `name` is a valid C string; the result is checked.
     let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
     if fd < 0 {
-        return Err(format!("EBADF: {}", std::io::Error::last_os_error()));
+        return Err(format!("EBADF: {}", io::Error::last_os_error()));
     }
     // SAFETY: `fd` was just opened and is owned by nothing else.
     let file = unsafe { File::from_raw_fd(fd) };
@@ -924,7 +947,7 @@ fn color_number(color: Color) -> u32 {
     match color {
         Color::Default => 0,
         Color::Indexed(i) => u32::from(i),
-        Color::Rgb(r, g, b) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
+        Color::Rgb(Rgb { r, g, b }) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
     }
 }
 
@@ -932,6 +955,7 @@ fn color_number(color: Color) -> u32 {
 /// (with the third diacritic as its high byte), its `underline_color` the
 /// placement id, and the first two diacritics in `marks` the row and
 /// column. Omitted diacritics continue the cell to the left, `left`.
+#[must_use]
 pub fn decode_placeholder(
     cell: &Cell,
     marks: &str,
@@ -966,6 +990,8 @@ pub fn decode_placeholder(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn ctx() -> Context {
@@ -989,9 +1015,9 @@ mod tests {
         // SAFETY: `c` is a valid C string.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let (done, wait) = std::sync::mpsc::channel();
-        let path = fifo.clone();
+        let path = fifo;
         std::thread::spawn(move || done.send(read_file(&path, 0, 0)).unwrap());
-        let result = wait.recv_timeout(std::time::Duration::from_secs(5));
+        let result = wait.recv_timeout(Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(result.expect("read_file blocked on a FIFO").is_err());
     }
@@ -1026,7 +1052,7 @@ mod tests {
     fn decodes_base64() {
         assert_eq!(base64(b"AAAA").unwrap(), [0, 0, 0]);
         assert_eq!(base64(b"aGk=").unwrap(), b"hi");
-        assert!(base64(b"a*").is_none());
+        assert!(base64(b"a*").is_err());
     }
 
     #[test]
@@ -1135,7 +1161,7 @@ mod tests {
     fn placeholder_cells_inherit_from_the_left() {
         let cell = Cell {
             c: PLACEHOLDER,
-            fg: Color::Rgb(0, 0, 42),
+            fg: Color::Rgb(Rgb::new(0, 0, 42)),
             ..Cell::default()
         };
         let first = decode_placeholder(&cell, "\u{0305}\u{030D}\u{030E}", Color::Default, None);

@@ -4,13 +4,14 @@
 
 use std::borrow::Cow;
 
-use crate::config::Rgb;
+use crate::color::Rgb;
 
 /// The config's sections, in the order the TUI lists them.
 pub const SECTIONS: [&str; 7] = [
     "font", "window", "terminal", "colors", "keybinds", "url", "files",
 ];
 
+/// The type of a config key's value, which says how the TUI edits it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     Bool,
@@ -64,6 +65,7 @@ pub const PALETTE_NAMES: [&str; 16] = [
 ];
 
 impl Key {
+    /// The table the key is in, such as `font`.
     pub fn section(&self) -> &str {
         &self.path[0]
     }
@@ -90,178 +92,180 @@ impl Key {
         }
     }
 
+    /// The key's path, such as `font.size`.
     pub fn dotted(&self) -> String {
         format!("{}.{}", self.section(), self.name())
     }
 }
 
-use Kind::*;
-
 /// The keys of the fixed sections. Limits are those `Config::sanitize`
 /// clamps to.
-const STATIC: &[(&str, &str, Kind, &str)] = &[
-    (
-        "font",
-        "family",
-        Str,
-        "A fontconfig family name or a generic name such as monospace.",
-    ),
-    (
-        "font",
-        "size",
-        Float {
-            min: 4.0,
-            max: 200.0,
-        },
-        "Size in points at 96 DPI, multiplied by the output scale.",
-    ),
-    (
-        "font",
-        "size_step",
-        Float {
-            min: 0.1,
-            max: 10.0,
-        },
-        "Points that font_larger and font_smaller add or remove.",
-    ),
-    (
-        "font",
-        "fallback",
-        StrList,
-        "Families tried, in order, for characters the main font lacks.",
-    ),
-    (
-        "window",
-        "title",
-        Str,
-        "Initial title; programs can change it. Applies to new windows.",
-    ),
-    (
-        "window",
-        "app_id",
-        Str,
-        "Wayland application ID, for compositor window rules. Applies to new windows.",
-    ),
-    (
-        "window",
-        "padding",
-        Int { min: 0, max: 1000 },
-        "Space around the grid, in logical pixels.",
-    ),
-    (
-        "window",
-        "opacity",
-        Float { min: 0.0, max: 1.0 },
-        "Background opacity. Text, the cursor and the selection stay opaque.",
-    ),
-    (
-        "window",
-        "transparent_cell_backgrounds",
-        Bool,
-        "Also apply opacity to cells with an explicit background color.",
-    ),
-    (
-        "window",
-        "blur",
-        Bool,
-        "Blur what is behind the window (ext-background-effect-v1).",
-    ),
-    (
-        "window",
-        "renderer",
-        Enum(&["cpu", "gpu"]),
-        "cpu draws in software; gpu draws with OpenGL ES. Applies to new windows.",
-    ),
-    (
-        "window",
-        "bell_urgent",
-        Bool,
-        "Mark the window urgent when the bell rings while it isn't focused.",
-    ),
-    (
-        "window",
-        "notifications",
-        Bool,
-        "Show the notifications programs ask for (OSC 9, OSC 777) while unfocused.",
-    ),
-    (
-        "window",
-        "columns",
-        Int { min: 2, max: 2000 },
-        "Initial width in cells. Applies to new windows.",
-    ),
-    (
-        "window",
-        "lines",
-        Int { min: 1, max: 2000 },
-        "Initial height in cells. Applies to new windows.",
-    ),
-    (
-        "terminal",
-        "shell",
-        OptStr,
-        "Program to run; empty means $SHELL, then /bin/sh. Applies to new windows.",
-    ),
-    (
-        "terminal",
-        "term",
-        Str,
-        "$TERM for the program; auto uses jotty's terminfo entry when installed.",
-    ),
-    (
-        "terminal",
-        "scrollback",
-        Int {
-            min: 0,
-            max: 10_000_000,
-        },
-        "Lines kept in the scrollback history. Applies to new windows.",
-    ),
-    (
-        "terminal",
-        "bold_is_bright",
-        Bool,
-        "Draw bold text in the bright variant of the first eight colors.",
-    ),
-    ("colors", "foreground", Color, "Default text color."),
-    ("colors", "background", Color, "Default background color."),
-    (
-        "colors",
-        "cursor",
-        OptColor,
-        "Cursor color; empty means the foreground color.",
-    ),
-    (
-        "colors",
-        "cursor_text",
-        OptColor,
-        "Character under a block cursor; empty means the cell's background.",
-    ),
-    (
-        "colors",
-        "selection_foreground",
-        OptColor,
-        "Text of selected cells; empty means the cell's background.",
-    ),
-    (
-        "colors",
-        "selection_background",
-        OptColor,
-        "Background of selected cells; empty means the cell's foreground.",
-    ),
-    (
-        "url",
-        "launcher",
-        StrList,
-        "Command that opens a link; the link is its last argument.",
-    ),
-    (
-        "url",
-        "regex",
-        StrList,
-        "Regular expressions for more kinds of links, besides URLs.",
-    ),
-];
+const STATIC: &[(&str, &str, Kind, &str)] = {
+    use Kind::*;
+    &[
+        (
+            "font",
+            "family",
+            Str,
+            "A fontconfig family name or a generic name such as monospace.",
+        ),
+        (
+            "font",
+            "size",
+            Float {
+                min: 4.0,
+                max: 200.0,
+            },
+            "Size in points at 96 DPI, multiplied by the output scale.",
+        ),
+        (
+            "font",
+            "size_step",
+            Float {
+                min: 0.1,
+                max: 10.0,
+            },
+            "Points that font_larger and font_smaller add or remove.",
+        ),
+        (
+            "font",
+            "fallback",
+            StrList,
+            "Families tried, in order, for characters the main font lacks.",
+        ),
+        (
+            "window",
+            "title",
+            Str,
+            "Initial title; programs can change it. Applies to new windows.",
+        ),
+        (
+            "window",
+            "app_id",
+            Str,
+            "Wayland application ID, for compositor window rules. Applies to new windows.",
+        ),
+        (
+            "window",
+            "padding",
+            Int { min: 0, max: 1000 },
+            "Space around the grid, in logical pixels.",
+        ),
+        (
+            "window",
+            "opacity",
+            Float { min: 0.0, max: 1.0 },
+            "Background opacity. Text, the cursor and the selection stay opaque.",
+        ),
+        (
+            "window",
+            "transparent_cell_backgrounds",
+            Bool,
+            "Also apply opacity to cells with an explicit background color.",
+        ),
+        (
+            "window",
+            "blur",
+            Bool,
+            "Blur what is behind the window (ext-background-effect-v1).",
+        ),
+        (
+            "window",
+            "renderer",
+            Enum(&["cpu", "gpu"]),
+            "cpu draws in software; gpu draws with OpenGL ES. Applies to new windows.",
+        ),
+        (
+            "window",
+            "bell_urgent",
+            Bool,
+            "Mark the window urgent when the bell rings while it isn't focused.",
+        ),
+        (
+            "window",
+            "notifications",
+            Bool,
+            "Show the notifications programs ask for (OSC 9, OSC 777) while unfocused.",
+        ),
+        (
+            "window",
+            "columns",
+            Int { min: 2, max: 2000 },
+            "Initial width in cells. Applies to new windows.",
+        ),
+        (
+            "window",
+            "lines",
+            Int { min: 1, max: 2000 },
+            "Initial height in cells. Applies to new windows.",
+        ),
+        (
+            "terminal",
+            "shell",
+            OptStr,
+            "Program to run; empty means $SHELL, then /bin/sh. Applies to new windows.",
+        ),
+        (
+            "terminal",
+            "term",
+            Str,
+            "$TERM for the program; auto uses jotty's terminfo entry when installed.",
+        ),
+        (
+            "terminal",
+            "scrollback",
+            Int {
+                min: 0,
+                max: 10_000_000,
+            },
+            "Lines kept in the scrollback history. Applies to new windows.",
+        ),
+        (
+            "terminal",
+            "bold_is_bright",
+            Bool,
+            "Draw bold text in the bright variant of the first eight colors.",
+        ),
+        ("colors", "foreground", Color, "Default text color."),
+        ("colors", "background", Color, "Default background color."),
+        (
+            "colors",
+            "cursor",
+            OptColor,
+            "Cursor color; empty means the foreground color.",
+        ),
+        (
+            "colors",
+            "cursor_text",
+            OptColor,
+            "Character under a block cursor; empty means the cell's background.",
+        ),
+        (
+            "colors",
+            "selection_foreground",
+            OptColor,
+            "Text of selected cells; empty means the cell's background.",
+        ),
+        (
+            "colors",
+            "selection_background",
+            OptColor,
+            "Background of selected cells; empty means the cell's foreground.",
+        ),
+        (
+            "url",
+            "launcher",
+            StrList,
+            "Command that opens a link; the link is its last argument.",
+        ),
+        (
+            "url",
+            "regex",
+            StrList,
+            "Regular expressions for more kinds of links, besides URLs.",
+        ),
+    ]
+};
 
 /// Every key, in section order. `effective` is the serialized effective
 /// config, which names the actions and the file kinds.
@@ -278,7 +282,7 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
     for (i, name) in PALETTE_NAMES.iter().enumerate() {
         keys.push(Key {
             path: vec!["colors".into(), "palette".into()],
-            kind: Color,
+            kind: Kind::Color,
             doc: format!("ANSI color {i}, {name}. Changing any of them saves all 16.").into(),
             index: Some(i),
         });
@@ -295,7 +299,7 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
             format!("Combos that run {action}, such as ctrl+shift+c; an empty list unbinds it.");
         keys.push(Key {
             path: vec!["keybinds".into(), action],
-            kind: StrList,
+            kind: Kind::StrList,
             doc: doc.into(),
             index: None,
         });
@@ -303,13 +307,13 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
     for kind in names("files") {
         keys.push(Key {
             path: vec!["files".into(), kind.clone(), "extensions".into()],
-            kind: StrList,
+            kind: Kind::StrList,
             doc: format!("File name extensions of {kind} files, without the dot.").into(),
             index: None,
         });
         keys.push(Key {
             path: vec!["files".into(), kind.clone(), "launcher".into()],
-            kind: StrList,
+            kind: Kind::StrList,
             doc: format!("Command that opens {kind} files; empty means url.launcher.").into(),
             index: None,
         });
@@ -322,6 +326,7 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
 impl Kind {
     /// What values the kind takes, for the help line.
     pub fn describe(self) -> String {
+        use Kind::*;
         match self {
             Bool => "true or false (Enter toggles)".into(),
             Float { min, max } => format!("number, {min}–{max}"),
@@ -337,11 +342,13 @@ impl Kind {
 
     /// Whether Enter changes the value directly instead of editing text.
     pub fn toggles(self) -> bool {
+        use Kind::*;
         matches!(self, Bool | Enum(_))
     }
 
     /// The value after `current` for kinds that toggle.
     pub fn next(self, current: Option<&toml::Value>) -> Option<toml::Value> {
+        use Kind::*;
         match self {
             Bool => Some(toml::Value::Boolean(
                 !current.and_then(toml::Value::as_bool).unwrap_or(false),
@@ -360,6 +367,7 @@ impl Kind {
     /// Parses what the user typed. `Ok(None)` means "no value": the key
     /// goes back to the config file's value or the default.
     pub fn parse(self, raw: &str) -> Result<Option<toml::Value>, String> {
+        use Kind::*;
         // Text is taken as typed; everything else may have stray spaces.
         let input = raw.trim();
         let value = match self {
@@ -470,6 +478,7 @@ mod tests {
 
     #[test]
     fn every_config_key_has_an_entry_and_back() {
+        use Kind::*;
         let defaults = toml::Table::try_from(Config::default()).unwrap();
         let keys = keys(&defaults);
         let mut paths = Vec::new();
@@ -495,9 +504,11 @@ mod tests {
     /// Each kind's parsed values are accepted by the config itself.
     #[test]
     fn parsed_values_are_valid_config() {
+        use Kind::*;
         let defaults = toml::Table::try_from(Config::default()).unwrap();
         // Palette entries are set through the TUI, which writes the list.
-        for key in keys(&defaults).into_iter().filter(|k| k.index.is_none()) {
+        let scalar_keys = keys(&defaults).into_iter().filter(|k| k.index.is_none());
+        for key in scalar_keys {
             let input: String = match key.kind {
                 Bool => "true".into(),
                 Float { min, .. } => min.to_string(),
@@ -518,6 +529,7 @@ mod tests {
 
     #[test]
     fn parses_input() {
+        use Kind::*;
         let float = Float {
             min: 4.0,
             max: 200.0,
@@ -551,6 +563,7 @@ mod tests {
 
     #[test]
     fn formatted_lists_read_back() {
+        use Kind::*;
         for list in [
             r#"["a", "b"]"#,
             r#"["a,b", "c"]"#,
@@ -565,6 +578,7 @@ mod tests {
 
     #[test]
     fn toggles() {
+        use Kind::*;
         let renderer = Enum(&["cpu", "gpu"]);
         let gpu = toml::Value::String("gpu".into());
         assert_eq!(

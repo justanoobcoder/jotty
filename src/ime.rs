@@ -11,6 +11,7 @@ use crate::terminal::{Flags, Row};
 /// The protocol limits a request to 4096 bytes; stay well below it.
 const MAX_SURROUNDING_BYTES: usize = 4000;
 
+/// The text around the cursor, as the input method is told it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Surrounding {
     pub text: String,
@@ -21,6 +22,7 @@ pub struct Surrounding {
 impl Surrounding {
     /// Builds the surrounding text from columns `start..` of `row`, with the
     /// cursor at column `cursor_col`.
+    #[must_use]
     pub fn from_row(row: &Row, start: usize, cursor_col: usize) -> Surrounding {
         let start = start.min(cursor_col);
         let mut text = String::new();
@@ -73,6 +75,7 @@ impl Surrounding {
 
     /// Key presses that delete `before` bytes before and `after` bytes after
     /// the cursor, as requested by the input method.
+    #[must_use]
     pub fn delete_keys(&self, before: usize, after: usize) -> Vec<u8> {
         let floor = |mut i: usize| {
             while !self.text.is_char_boundary(i) {
@@ -92,6 +95,8 @@ impl Surrounding {
     }
 }
 
+/// Text the input method is composing, shown at the cursor until it is
+/// committed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Preedit {
     pub text: String,
@@ -113,6 +118,7 @@ impl Content {
     /// `password_prompt` is the pty's state; `own_input` is set while
     /// jotty itself takes the keys (search bar, vi mode), which is never a
     /// password field whatever the program behind it is doing.
+    #[must_use]
     pub fn new(password_prompt: bool, own_input: bool) -> Content {
         if password_prompt && !own_input {
             Content::Password
@@ -140,6 +146,8 @@ pub struct ImeState {
 }
 
 impl ImeState {
+    /// Queues the preedit string for the next `done`. `begin` and `end` are
+    /// byte offsets of the cursor in `text`; negative hides the cursor.
     pub fn set_preedit(&mut self, text: Option<String>, begin: i32, end: i32) {
         self.pending_preedit = text.filter(|t| !t.is_empty()).map(|text| {
             let cursor = (begin >= 0 && end >= 0).then_some((begin as usize, end as usize));
@@ -147,10 +155,13 @@ impl ImeState {
         });
     }
 
+    /// Queues text to send to the child on the next `done`.
     pub fn set_commit(&mut self, text: Option<String>) {
         self.pending_commit = text;
     }
 
+    /// Queues the deletion of `before` and `after` bytes around the cursor
+    /// for the next `done`.
     pub fn set_delete(&mut self, before: u32, after: u32) {
         self.pending_delete = Some((before as usize, after as usize));
     }
@@ -169,6 +180,8 @@ impl ImeState {
         out
     }
 
+    /// Forgets the preedit and every pending event, when the input method
+    /// leaves the window.
     pub fn reset(&mut self) {
         self.active = false;
         self.preedit = None;
@@ -229,7 +242,7 @@ mod tests {
     #[test]
     fn limit_keeps_cursor_region() {
         let mut s = Surrounding {
-            text: "a".repeat(5000) + "é" + &"b".repeat(5000),
+            text: format!("{}é{}", "a".repeat(5000), "b".repeat(5000)),
             cursor: 5000,
         };
         s.limit(100);

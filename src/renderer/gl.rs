@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 
-use glow::HasContext;
+use glow::{HasContext, PixelUnpackData, Texture};
 use khronos_egl as egl;
 use wayland_client::backend::ObjectId;
 use wayland_egl::WlEglSurface;
@@ -11,8 +11,9 @@ use wayland_egl::WlEglSurface;
 use super::atlas::Atlas;
 use super::{Batch, Frame, Theme, VERTEX_FLOATS};
 use crate::font::{CellMetrics, Fonts, Glyph};
+use crate::terminal::graphics::Image;
 
-const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31D8;
+const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31d8;
 const ATLAS_SIZE: u32 = 2048;
 /// The color emoji atlas (RGBA).
 const COLOR_ATLAS_SIZE: u32 = 1024;
@@ -78,7 +79,7 @@ impl Egl {
     /// # Safety
     /// `display_ptr` must be a live `wl_display` and `surface` a live
     /// `wl_surface` on it, both outliving the returned value.
-    unsafe fn new(
+    unsafe fn try_new(
         display_ptr: *mut c_void,
         surface: ObjectId,
         width: i32,
@@ -105,7 +106,7 @@ impl Egl {
     }
 
     /// # Safety
-    /// As for `new`; `display` is initialized.
+    /// As for `try_new`; `display` is initialized.
     unsafe fn on_display(
         api: &'static egl::Instance<egl::Static>,
         display: egl::Display,
@@ -176,6 +177,7 @@ impl Drop for Egl {
     }
 }
 
+/// Draws batches with OpenGL ES 3 on an EGL window surface.
 pub struct Renderer {
     // Field order matters: GL objects must go before the EGL context.
     gl: glow::Context,
@@ -183,10 +185,10 @@ pub struct Renderer {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     viewport_uniform: Option<glow::UniformLocation>,
-    texture: glow::Texture,
-    color_texture: glow::Texture,
+    texture: Texture,
+    color_texture: Texture,
     /// Textures of the images drawn so far, by uid.
-    images: HashMap<u64, glow::Texture>,
+    images: HashMap<u64, Texture>,
     max_texture_size: u32,
     /// Images too big for a texture, already reported.
     oversized_images: HashSet<u64>,
@@ -197,6 +199,10 @@ pub struct Renderer {
     size: (u32, u32),
 }
 
+/// Compiles a shader of `kind` from `source`.
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
 unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader, String> {
     // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
@@ -213,13 +219,16 @@ unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::S
 /// Creates an empty `size`×`size` texture on texture unit `unit`.
 /// Glyphs are drawn at integer pixel positions, 1:1, so it is sampled with
 /// `NEAREST`.
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
 unsafe fn create_texture(
     gl: &glow::Context,
     unit: u32,
     internal_format: u32,
     format: u32,
     size: u32,
-) -> Result<glow::Texture, String> {
+) -> Result<Texture, String> {
     // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
         let texture = gl.create_texture()?;
@@ -234,7 +243,7 @@ unsafe fn create_texture(
             0,
             format,
             glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(None),
+            PixelUnpackData::Slice(None),
         );
         for (param, value) in [
             (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
@@ -250,10 +259,10 @@ unsafe fn create_texture(
 
 /// Uploads an image as a texture on texture unit 2. Images are scaled, so
 /// they are sampled with `LINEAR`.
-unsafe fn upload_image(
-    gl: &glow::Context,
-    image: &crate::terminal::graphics::Image,
-) -> Result<glow::Texture, String> {
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
+unsafe fn upload_image(gl: &glow::Context, image: &Image) -> Result<Texture, String> {
     // SAFETY: the caller's GL context is current; `image.pixels` holds width × height RGBA
     // pixels, which `decode` checked.
     unsafe {
@@ -269,7 +278,7 @@ unsafe fn upload_image(
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&image.pixels)),
+            PixelUnpackData::Slice(Some(&image.pixels)),
         );
         for (param, value) in [
             (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
@@ -287,15 +296,15 @@ impl Renderer {
     /// # Safety
     /// `display_ptr` must be the connection's live `wl_display` and
     /// `surface` a live `wl_surface`, both outliving the renderer.
-    pub unsafe fn new(
+    pub unsafe fn try_new(
         display_ptr: *mut c_void,
         surface: ObjectId,
         size: (u32, u32),
         fonts: Fonts,
         theme: Theme,
     ) -> Result<Renderer, String> {
-        // SAFETY: this function's caller promises what `Egl::new` requires.
-        let egl = unsafe { Egl::new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
+        // SAFETY: this function's caller promises what `Egl::try_new` requires.
+        let egl = unsafe { Egl::try_new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
         // SAFETY: the context `egl` made is current, so its loader returns its functions.
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
@@ -336,7 +345,14 @@ impl Renderer {
             let stride = (VERTEX_FLOATS * 4) as i32;
             for (index, size, offset) in [(0, 2, 0), (1, 2, 2), (2, 4, 4), (3, 1, 8)] {
                 gl.enable_vertex_attrib_array(index);
-                gl.vertex_attrib_pointer_f32(index, size, glow::FLOAT, false, stride, offset * 4);
+                gl.vertex_attrib_pointer_f32(
+                    index,
+                    size,
+                    glow::FLOAT,
+                    /* normalized= */ false,
+                    stride,
+                    offset * 4,
+                );
             }
 
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
@@ -392,6 +408,7 @@ impl Renderer {
         self.atlas.clear();
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
         self.atlas.clear();
@@ -422,7 +439,7 @@ impl Renderer {
                 glyph.height as i32,
                 format,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&glyph.data)),
+                PixelUnpackData::Slice(Some(&glyph.data)),
             );
         };
         let batch: Batch = super::build(
@@ -473,7 +490,7 @@ impl Renderer {
         let (w, h) = self.size;
         let [r, g, b] = theme.background.to_f32();
         let a = theme.opacity;
-        // SAFETY: the context is current; every object used was made by `new` and lives as long as
+        // SAFETY: the context is current; every object used was made by `try_new` and lives as long as
         // the renderer, and the vertex slice outlives the upload.
         unsafe {
             gl.viewport(0, 0, w as i32, h as i32);

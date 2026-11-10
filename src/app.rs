@@ -5,9 +5,8 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
@@ -65,12 +64,12 @@ use smithay_client_toolkit::shell::xdg::window::{
 };
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
-use wayland_client::globals::registry_queue_init;
+use wayland_client::globals;
 use xkbcommon::xkb;
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::wl_data_source::WlDataSource;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface};
+use wayland_client::protocol::wl_output;
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -78,7 +77,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 };
 
 use crate::config::{Config, RendererKind};
-use crate::font::{Fonts, points_to_px};
+use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::keybinds::{Action, Wheel};
@@ -88,9 +87,17 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{MouseMode, Notification, Terminal};
+use crate::terminal::{Flags, MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
+use smithay_client_toolkit::seat::pointer::AxisScroll;
+use std::process::{Command, Stdio};
+use wayland_client::protocol::wl_keyboard::WlKeyboard;
+use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_client::protocol::wl_region::WlRegion;
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_surface::WlSurface;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -191,6 +198,8 @@ impl Notifier {
     }
 }
 
+/// The state of one terminal window: its Wayland objects, the terminal and
+/// the child behind it, input, selection and rendering.
 pub struct App {
     qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,
@@ -244,7 +253,7 @@ pub struct App {
     /// The child's side of the pty is gone.
     pty_closed: bool,
 
-    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard: Option<WlKeyboard>,
     modifiers: Modifiers,
     /// Our own copy of the keyboard's keymap, to find what a key produces
     /// without modifiers (for key bindings), and the active layout.
@@ -313,7 +322,7 @@ pub fn run(
 ) -> Result<u8, Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
-    let (globals, event_queue) = registry_queue_init::<App>(&conn)?;
+    let (globals, event_queue) = globals::registry_queue_init::<App>(&conn)?;
     let qh = event_queue.handle();
     let mut event_loop: EventLoop<App> = EventLoop::try_new()?;
     let loop_handle = event_loop.handle();
@@ -346,10 +355,10 @@ pub fn run(
         .ok();
 
     let load_fonts = || {
-        Fonts::new(
+        Fonts::try_new(
             &config.font.family,
             &config.font.fallback,
-            points_to_px(config.font.size, 1.0),
+            font::points_to_px(config.font.size, 1.0),
         )
     };
     let fonts = load_fonts()?;
@@ -396,9 +405,9 @@ pub fn run(
         .values()
         .map(|k| k.extensions.clone())
         .collect();
-    let links = Detector::new(&kinds, &config.url.regex).unwrap_or_else(|e| {
+    let links = Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
-        Detector::new(&kinds, &[]).expect("the built-in patterns are valid")
+        Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
     });
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
@@ -407,11 +416,11 @@ pub fn run(
         // connection until after `App` is dropped), and `App` drops the
         // renderer before the window.
         RendererKind::Gpu => match unsafe {
-            gl::Renderer::new(
+            gl::Renderer::try_new(
                 conn.backend().display_ptr().cast(),
                 window.wl_surface().id(),
                 size,
-                fonts.take().unwrap(),
+                fonts.take().expect("fonts are taken only here"),
                 theme.clone(),
             )
         } {
@@ -425,7 +434,7 @@ pub fn run(
     };
     let renderer = match gpu {
         Some(renderer) => renderer,
-        None => Renderer::Cpu(Box::new(software::Renderer::new(
+        None => Renderer::Cpu(Box::new(software::Renderer::try_new(
             &shm,
             window.wl_surface().clone(),
             size,
@@ -568,6 +577,7 @@ pub fn run(
 
 /// The exit code that reports how the child ended, as a shell would.
 fn exit_code(status: ExitStatus) -> u8 {
+    use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
         (Some(code), _) => code as u8,
         (None, Some(signal)) => 128u8.wrapping_add(signal as u8),
@@ -615,7 +625,7 @@ impl App {
             self.window.wl_surface().set_buffer_scale(scale as i32);
         }
         self.renderer
-            .set_font_size(points_to_px(self.font_points, scale as f32));
+            .set_font_size(font::points_to_px(self.font_points, scale as f32));
         self.apply_size();
     }
 
@@ -667,7 +677,7 @@ impl App {
     fn set_font_points(&mut self, points: f32) {
         self.font_points = points.clamp(4.0, 200.0);
         self.renderer
-            .set_font_size(points_to_px(self.font_points, self.scale as f32));
+            .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
         self.apply_size();
     }
 
@@ -876,7 +886,7 @@ impl App {
             }
             Err(e) => self.draw_failed(&e),
         }
-        self.update_text_input(false);
+        self.update_text_input(/* force= */ false);
     }
 
     /// A frame couldn't be drawn. That may pass (a failed allocation under
@@ -1005,12 +1015,12 @@ impl App {
                 };
                 search.query.pop();
                 let direction = search.direction;
-                self.search_step(direction, true);
+                self.search_step(direction, /* inclusive= */ true);
             }
-            Keysym::Up => self.search_step(Direction::Older, false),
-            Keysym::Down => self.search_step(Direction::Newer, false),
-            Keysym::r if ctrl => self.search_step(Direction::Older, false),
-            Keysym::s if ctrl => self.search_step(Direction::Newer, false),
+            Keysym::Up => self.search_step(Direction::Older, /* inclusive= */ false),
+            Keysym::Down => self.search_step(Direction::Newer, /* inclusive= */ false),
+            Keysym::r if ctrl => self.search_step(Direction::Older, /* inclusive= */ false),
+            Keysym::s if ctrl => self.search_step(Direction::Newer, /* inclusive= */ false),
             _ if !ctrl && !self.modifiers.alt => {
                 if let Some(text) = &event.utf8 {
                     self.search_type(text);
@@ -1030,7 +1040,7 @@ impl App {
             .query
             .extend(text.chars().filter(|c| !c.is_control()));
         let direction = search.direction;
-        self.search_step(direction, true);
+        self.search_step(direction, /* inclusive= */ true);
     }
 
     /// Opens the search bar, searching in `direction` from the vi cursor,
@@ -1141,8 +1151,9 @@ impl App {
             *direction
         };
         let screen = self.term.screen();
-        if let Some((start, _)) = search::find_wrapping(screen, query, vi.cursor, direction, false)
-        {
+        if let Some((start, _)) = search::find_wrapping(
+            screen, query, vi.cursor, direction, /* inclusive= */ false,
+        ) {
             vi.move_to(start, screen);
         }
     }
@@ -1242,7 +1253,7 @@ impl App {
             .screen()
             .row_at(p.line)
             .and_then(|r| r.cells().get(p.col))
-            .is_some_and(|c| c.flags.contains(crate::terminal::Flags::WIDE_SPACER));
+            .is_some_and(|c| c.flags.contains(Flags::WIDE_SPACER));
         Point {
             col: if spacer {
                 p.col.saturating_sub(1)
@@ -1290,7 +1301,7 @@ impl App {
                 let path = match path.strip_prefix("~/") {
                     Some(rest) => std::env::home_dir()?.join(rest),
                     None => {
-                        let path = std::path::Path::new(path);
+                        let path = Path::new(path);
                         cwd.get_or_init(|| self.pty.foreground_cwd())
                             .as_ref()
                             .map_or(path.to_path_buf(), |dir| dir.join(path))
@@ -1436,8 +1447,8 @@ impl App {
 
         let mut relayout = old.window.padding != new.window.padding;
         if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
-            let px = points_to_px(self.font_points, self.scale as f32);
-            match Fonts::new(&new.font.family, &new.font.fallback, px) {
+            let px = font::points_to_px(self.font_points, self.scale as f32);
+            match Fonts::try_new(&new.font.family, &new.font.fallback, px) {
                 Ok(fonts) => {
                     self.renderer.set_fonts(fonts);
                     relayout = true;
@@ -1454,7 +1465,7 @@ impl App {
             // A new configured size replaces any zooming.
             self.font_points = new.font.size;
             self.renderer
-                .set_font_size(points_to_px(self.font_points, self.scale as f32));
+                .set_font_size(font::points_to_px(self.font_points, self.scale as f32));
             relayout = true;
         }
 
@@ -1482,7 +1493,7 @@ impl App {
         if (&old.url, &old.files) != (&new.url, &new.files) {
             let kinds: Vec<Vec<String>> =
                 new.files.0.values().map(|k| k.extensions.clone()).collect();
-            match Detector::new(&kinds, &new.url.regex) {
+            match Detector::try_new(&kinds, &new.url.regex) {
                 Ok(links) => self.links = links,
                 Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
             }
@@ -1503,7 +1514,7 @@ impl App {
             Ok(program) => program,
             Err(e) => return log::warn!("cannot find jotty's executable: {e}"),
         };
-        let mut command = std::process::Command::new(program);
+        let mut command = Command::new(program);
         if let Some(path) = &self.config_path {
             // The new window starts elsewhere; a relative path would break.
             let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
@@ -1516,7 +1527,7 @@ impl App {
         // Its own process group: a hangup sent to ours (when the terminal
         // that started this jotty closes) must not take it down.
         use std::os::unix::process::CommandExt;
-        command.process_group(0).stdin(std::process::Stdio::null());
+        command.process_group(0).stdin(Stdio::null());
         match command.spawn() {
             // Reap it when it exits so it doesn't linger as a zombie.
             Ok(mut child) => {
@@ -1546,12 +1557,12 @@ impl App {
         log::info!("opening {target}");
         // Browsers print noise on startup (Chromium's "zygote" errors when
         // an instance is already running); only the exit status matters.
-        let child = std::process::Command::new(program)
+        let child = Command::new(program)
             .args(args)
             .arg(target)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn();
         match child {
             // Reap it in the background so it doesn't linger as a zombie.
@@ -1595,12 +1606,7 @@ impl App {
 
     /// Converts a scroll event into whole steps, `per_notch` per wheel notch
     /// (touchpads scroll by pixels: one step per cell height).
-    fn scroll_steps(
-        &mut self,
-        axis: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        direction: Axis,
-        per_notch: f64,
-    ) -> isize {
+    fn scroll_steps(&mut self, axis: &AxisScroll, direction: Axis, per_notch: f64) -> isize {
         let cell_height = f64::from(self.renderer.cell().height) / self.scale;
         let accum = match direction {
             Axis::Vertical => &mut self.scroll_accum.vertical,
@@ -1624,12 +1630,7 @@ impl App {
 
     /// Runs the actions bound to the wheel with the held modifiers, or else
     /// reports it to the program or scrolls.
-    fn wheel(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        pos: (f64, f64),
-    ) {
+    fn wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
         if self.run_wheel_bindings(vertical, horizontal) {
             return;
         }
@@ -1642,11 +1643,7 @@ impl App {
 
     /// Runs the action bound to each direction the wheel turned in, once per
     /// notch. Returns whether any was bound.
-    fn run_wheel_bindings(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-    ) -> bool {
+    fn run_wheel_bindings(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll) -> bool {
         let mut bound = false;
         for (axis, direction_of_axis, back, forward) in [
             (vertical, Axis::Vertical, Wheel::Up, Wheel::Down),
@@ -1675,12 +1672,7 @@ impl App {
     }
 
     /// Reports wheel movement as button 64–67 presses, one per notch.
-    fn report_wheel(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        pos: (f64, f64),
-    ) {
+    fn report_wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
         for (axis, direction, back, forward) in [
             (
                 vertical,
@@ -1707,7 +1699,7 @@ impl App {
         }
     }
 
-    fn scroll(&mut self, axis: &smithay_client_toolkit::seat::pointer::AxisScroll) {
+    fn scroll(&mut self, axis: &AxisScroll) {
         let lines = self.scroll_steps(axis, Axis::Vertical, 3.0);
         if lines == 0 {
             return;
@@ -1821,6 +1813,7 @@ impl App {
 
     /// Reads pasted text from another client without blocking, then sends it.
     fn paste_from(&mut self, pipe: ReadPipe) {
+        use std::io::Read;
         let mut data = Vec::new();
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
             // SAFETY: the file is only read, never closed or replaced.
@@ -2064,7 +2057,7 @@ impl App {
             Event::Enter { surface } if &surface == self.window.wl_surface() => {
                 self.ime.active = true;
                 text_input.enable();
-                self.update_text_input(true);
+                self.update_text_input(/* force= */ true);
             }
             Event::Leave { .. } => {
                 text_input.disable();
@@ -2168,7 +2161,7 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
         factor: i32,
     ) {
         // wp-fractional-scale reports the exact scale instead.
@@ -2181,12 +2174,12 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
         _: wl_output::Transform,
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {
         self.frame_pending = false;
         if self.dirty {
             self.request_redraw();
@@ -2197,8 +2190,8 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        _: &WlSurface,
+        _: &WlOutput,
     ) {
     }
 
@@ -2206,8 +2199,8 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        _: &WlSurface,
+        _: &WlOutput,
     ) {
     }
 }
@@ -2217,11 +2210,11 @@ impl OutputHandler for App {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 }
 
 impl WindowHandler for App {
@@ -2260,7 +2253,7 @@ impl SeatHandler for App {
         &mut self.seat_state
     }
 
-    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
         // Created before the window gets focus, so the compositor's focus
         // change reaches it as an `enter` event.
         if let (None, Some(manager)) = (&self.text_input, &self.text_input_manager) {
@@ -2272,7 +2265,7 @@ impl SeatHandler for App {
         &mut self,
         _: &Connection,
         qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
+        seat: WlSeat,
         capability: Capability,
     ) {
         match capability {
@@ -2319,7 +2312,7 @@ impl SeatHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
+        _: WlSeat,
         capability: Capability,
     ) {
         match capability {
@@ -2341,7 +2334,7 @@ impl SeatHandler for App {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 }
 
 impl KeyboardHandler for App {
@@ -2349,8 +2342,8 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        surface: &wl_surface::WlSurface,
+        _: &WlKeyboard,
+        surface: &WlSurface,
         serial: u32,
         _: &[u32],
         _: &[Keysym],
@@ -2369,8 +2362,8 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        surface: &wl_surface::WlSurface,
+        _: &WlKeyboard,
+        surface: &WlSurface,
         _: u32,
     ) {
         if surface == self.window.wl_surface() {
@@ -2386,7 +2379,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         serial: u32,
         event: KeyEvent,
     ) {
@@ -2398,7 +2391,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
@@ -2409,7 +2402,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
@@ -2420,7 +2413,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
@@ -2435,7 +2428,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         keymap: Keymap<'_>,
     ) {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
@@ -2456,7 +2449,7 @@ impl PointerHandler for App {
         &mut self,
         conn: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_pointer::WlPointer,
+        _: &WlPointer,
         events: &[PointerEvent],
     ) {
         for event in events {
@@ -2505,7 +2498,7 @@ impl PointerHandler for App {
                     if self.reporting_mouse() && mouse_button(*button).is_some() =>
                 {
                     self.last_serial = *serial;
-                    let button = mouse_button(*button).unwrap();
+                    let button = mouse_button(*button).expect("checked by the match guard");
                     self.held_buttons.retain(|&held| held != button);
                     self.held_buttons.push(button);
                     self.mouse_cell = None;
@@ -2520,7 +2513,9 @@ impl PointerHandler for App {
                         .retain(|&held| Some(held) != mouse_button(*button));
                     self.mouse_cell = None;
                     self.report_mouse(
-                        MouseAction::Release(mouse_button(*button).unwrap()),
+                        MouseAction::Release(
+                            mouse_button(*button).expect("checked by the match guard"),
+                        ),
                         event.position,
                     );
                 }
@@ -2551,7 +2546,7 @@ impl PointerHandler for App {
                     ..
                 } if self.modifiers.shift && self.shift_mark.is_some() => {
                     self.last_serial = *serial;
-                    let mark = self.shift_mark.take().unwrap();
+                    let mark = self.shift_mark.take().expect("checked by the match guard");
                     let point = self.cell_start(self.point_at(event.position));
                     let (start, end) = (mark.min(point), mark.max(point));
                     self.selection = Some(Selection::span(start, end, Unit::Word));
@@ -2625,10 +2620,7 @@ impl PointerHandler for App {
 
 /// Calls `apply` with a region covering any surface size; compositors clip
 /// it to the surface, so it never needs updating on resize.
-fn set_whole_region(
-    compositor: &CompositorState,
-    apply: impl FnOnce(Option<&wl_region::WlRegion>),
-) {
+fn set_whole_region(compositor: &CompositorState, apply: impl FnOnce(Option<&WlRegion>)) {
     match Region::new(compositor) {
         Ok(region) => {
             region.add(0, 0, i32::MAX, i32::MAX);
@@ -2695,7 +2687,7 @@ impl DataDeviceHandler for App {
         _: &WlDataDevice,
         _: f64,
         _: f64,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
     ) {
     }
 
@@ -2997,6 +2989,7 @@ mod tests {
 
     #[test]
     fn a_reader_that_keeps_reading_gets_everything() {
+        use std::io::Read;
         let (mut reader, mut writer) = io::pipe().unwrap();
         let data = vec![7; 1 << 20];
         let thread = std::thread::spawn(move || {
@@ -3011,6 +3004,7 @@ mod tests {
 
     #[test]
     fn exit_codes_follow_the_shell() {
+        use std::os::unix::process::ExitStatusExt;
         assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
         // Killed by SIGTERM.
         assert_eq!(exit_code(ExitStatus::from_raw(15)), 143);

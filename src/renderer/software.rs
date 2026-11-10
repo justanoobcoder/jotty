@@ -24,6 +24,8 @@ const ATLAS_SIZE: u32 = 1024;
 /// The color emoji atlas: room for a few hundred emoji at common sizes.
 const COLOR_ATLAS_SIZE: u32 = 512;
 
+/// Draws batches on the CPU into shared-memory buffers. Only the bands of
+/// rows that changed since a buffer was last drawn are redrawn.
 pub struct Renderer {
     surface: WlSurface,
     pool: SlotPool,
@@ -45,7 +47,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(
+    pub fn try_new(
         shm: &Shm,
         surface: WlSurface,
         size: (u32, u32),
@@ -69,6 +71,7 @@ impl Renderer {
         })
     }
 
+    #[must_use]
     pub fn cell(&self) -> CellMetrics {
         self.fonts.metrics
     }
@@ -88,6 +91,7 @@ impl Renderer {
         self.atlas.clear();
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
         self.atlas.clear();
@@ -207,7 +211,7 @@ fn bands(top: u32, cell_height: u32, rows: usize, height: u32) -> Vec<(u32, u32)
         let y = (top + row * cell_height).min(height);
         bands.push((y, (y + cell_height).min(height)));
     }
-    let bottom = bands.last().unwrap().1;
+    let bottom = bands.last().expect("bands starts with the top margin").1;
     bands.push((bottom, height));
     bands
 }
@@ -275,10 +279,10 @@ fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
 /// The atlas images: coverage (`ATLAS_SIZE`²) and color emoji
 /// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed), and the image of each
 /// image quad of the batch.
-struct Atlases<'a> {
-    coverage: &'a [u8],
-    color: &'a [u8],
-    images: &'a [Option<&'a Image>],
+struct Atlases<'pixels> {
+    coverage: &'pixels [u8],
+    color: &'pixels [u8],
+    images: &'pixels [Option<&'pixels Image>],
 }
 
 /// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
@@ -293,11 +297,11 @@ fn paint(
     rows: &[bool],
 ) {
     let width = size.0 as usize;
-    for (pixels, _) in canvas
+    let dirty_rows = canvas
         .chunks_exact_mut(width * 4)
         .zip(rows)
-        .filter(|(_, dirty)| **dirty)
-    {
+        .filter(|(_, dirty)| **dirty);
+    for (pixels, _) in dirty_rows {
         for pixel in pixels.as_chunks_mut::<4>().0 {
             *pixel = clear;
         }
@@ -426,7 +430,7 @@ fn blend(pixel: &mut [u8], color: [u8; 4], a: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Rgb;
+    use crate::color::Rgb;
     use crate::renderer::GlyphInfo;
 
     const CLEAR: [u8; 4] = [0x18, 0x18, 0x18, 0xff];
@@ -461,7 +465,7 @@ mod tests {
     #[test]
     fn fills_clipped_rectangles() {
         let mut batch = Batch::default();
-        batch.rect(2.0, 1.0, 10.0, 1.0, Rgb(255, 0, 0));
+        batch.rect(2.0, 1.0, 10.0, 1.0, Rgb::new(255, 0, 0));
         let mut canvas = vec![0; 4 * 4 * 3];
         paint(
             &batch,
@@ -480,7 +484,7 @@ mod tests {
     #[test]
     fn translucent_fill_blends() {
         let mut batch = Batch::default();
-        batch.fill(0.0, 0.0, 1.0, 1.0, Rgb(255, 255, 255), 0.5);
+        batch.fill(0.0, 0.0, 1.0, 1.0, Rgb::new(255, 255, 255), 0.5);
         let mut canvas = vec![0; 4];
         paint(
             &batch,
@@ -507,7 +511,7 @@ mod tests {
             color: false,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(255, 255, 255));
         let mut canvas = vec![0; 4 * 3];
         paint(
             &batch,
@@ -525,7 +529,7 @@ mod tests {
     #[test]
     fn repaints_only_marked_rows() {
         let mut batch = Batch::default();
-        batch.rect(0.0, 0.0, 1.0, 3.0, Rgb(255, 0, 0));
+        batch.rect(0.0, 0.0, 1.0, 3.0, Rgb::new(255, 0, 0));
         let mut canvas = vec![7; 4 * 3];
         paint(
             &batch,
@@ -554,13 +558,13 @@ mod tests {
     fn only_changed_bands_are_reported() {
         let bands = bands(0, 10, 3, 30);
         let mut batch = Batch::default();
-        batch.rect(0.0, 10.0, 5.0, 10.0, Rgb(1, 2, 3));
+        batch.rect(0.0, 10.0, 5.0, 10.0, Rgb::new(1, 2, 3));
         let before = fingerprint(&batch, &bands, CLEAR, 0);
         // Unknown contents: everything.
         assert_eq!(changed(&bands, &before, &[]), [(0, 30)]);
         assert!(changed(&bands, &before, &before).is_empty());
         // A glyph overhanging from the second row into the third.
-        batch.rect(0.0, 18.0, 1.0, 4.0, Rgb(9, 9, 9));
+        batch.rect(0.0, 18.0, 1.0, 4.0, Rgb::new(9, 9, 9));
         let after = fingerprint(&batch, &bands, CLEAR, 0);
         assert_eq!(changed(&bands, &after, &before), [(10, 30)]);
         // A new background color changes every band.
@@ -586,7 +590,7 @@ mod tests {
             color: true,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(0, 255, 0));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(0, 255, 0));
         let mut canvas = vec![0; 8];
         let atlases = Atlases {
             coverage: &[],
@@ -650,7 +654,7 @@ mod tests {
             color: false,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(255, 255, 255));
         let mut canvas = vec![0; 4];
         paint(
             &batch,

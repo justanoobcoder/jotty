@@ -29,6 +29,7 @@ pub mod kitty {
     pub const TEXT: u8 = 16;
 }
 
+/// Whether a key went down, auto-repeated or came up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
     Press,
@@ -38,17 +39,18 @@ pub enum KeyAction {
 
 /// A key event to encode.
 #[derive(Debug, Clone, Copy)]
-pub struct Key<'a> {
+pub struct Key<'text> {
     pub keysym: Keysym,
     /// The key's symbol without modifiers, in the active layout.
     pub base: Option<Keysym>,
     /// The UTF-8 text xkb produced.
-    pub text: Option<&'a str>,
+    pub text: Option<&'text str>,
     pub action: KeyAction,
 }
 
 /// Encodes a key event with the kitty keyboard protocol when the program
 /// turned it on, otherwise as xterm does (only presses and repeats).
+#[must_use]
 pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
     if modes.keyboard != 0 {
         return encode_kitty(key, mods, modes);
@@ -98,6 +100,7 @@ fn with_alt(mods: Modifiers, bytes: &[u8]) -> Vec<u8> {
 
 /// Encodes a key press. `text` is the key's UTF-8 text as produced by xkb,
 /// which already accounts for Shift, Caps Lock and Ctrl on letters.
+#[must_use]
 pub fn encode_key(
     keysym: Keysym,
     text: Option<&str>,
@@ -115,10 +118,10 @@ pub fn encode_key(
         Keysym::Delete | Keysym::KP_Delete => tilde_key(3, mods),
         Keysym::Page_Up | Keysym::KP_Page_Up => tilde_key(5, mods),
         Keysym::Page_Down | Keysym::KP_Page_Down => tilde_key(6, mods),
-        Keysym::F1 => cursor_key('P', mods, true),
-        Keysym::F2 => cursor_key('Q', mods, true),
-        Keysym::F3 => cursor_key('R', mods, true),
-        Keysym::F4 => cursor_key('S', mods, true),
+        Keysym::F1 => cursor_key('P', mods, /* app= */ true),
+        Keysym::F2 => cursor_key('Q', mods, /* app= */ true),
+        Keysym::F3 => cursor_key('R', mods, /* app= */ true),
+        Keysym::F4 => cursor_key('S', mods, /* app= */ true),
         Keysym::F5 => tilde_key(15, mods),
         Keysym::F6 => tilde_key(17, mods),
         Keysym::F7 => tilde_key(18, mods),
@@ -329,7 +332,7 @@ fn own_modifier(keysym: Keysym) -> u32 {
 /// Encodes a key with the kitty keyboard protocol, following the flags in
 /// `modes.keyboard`.
 fn encode_kitty(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
-    use kitty::*;
+    use kitty::{ALL_KEYS, ALTERNATES, DISAMBIGUATE, EVENTS, TEXT};
     let flags = modes.keyboard;
     let all_keys = flags & ALL_KEYS != 0;
     let disambiguate = flags & DISAMBIGUATE != 0 || all_keys;
@@ -448,6 +451,7 @@ fn key_number(key: &Key) -> Option<u32> {
 
 /// Wraps pasted text for the child: strips control characters that could
 /// end bracketed paste early, and normalizes newlines to carriage returns.
+#[must_use]
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let cleaned: String = text
         .replace("\r\n", "\r")
@@ -465,6 +469,8 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// A button as the mouse protocols number them; the wheel counts as four
+/// buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -495,6 +501,7 @@ impl MouseButton {
     }
 }
 
+/// What happened to the mouse, for reporting it to the program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Press(MouseButton),
@@ -515,6 +522,7 @@ pub struct MouseEvent {
 
 /// Encodes a pointer event for a program that enabled mouse reporting, or
 /// returns `None` if `mode` doesn't report this kind of event.
+#[must_use]
 pub fn encode_mouse(event: MouseEvent, mode: MouseMode, sgr: bool) -> Option<Vec<u8>> {
     use MouseAction::*;
     let reported = match (mode, event.action) {
@@ -935,7 +943,7 @@ mod tests {
 
     #[test]
     fn sgr_mouse_encoding() {
-        let enc = |e| encode_mouse(e, MouseMode::Normal, true);
+        let enc = |e| encode_mouse(e, MouseMode::Normal, /* sgr= */ true);
         assert_eq!(
             enc(mouse(Press(Left), 0, 0, NONE)).unwrap(),
             b"\x1b[<0;1;1M"
@@ -965,7 +973,7 @@ mod tests {
 
     #[test]
     fn legacy_mouse_encoding() {
-        let enc = |e| encode_mouse(e, MouseMode::Normal, false);
+        let enc = |e| encode_mouse(e, MouseMode::Normal, /* sgr= */ false);
         assert_eq!(enc(mouse(Press(Left), 0, 0, NONE)).unwrap(), b"\x1b[M !!");
         // Releases don't say which button.
         assert_eq!(
@@ -986,7 +994,7 @@ mod tests {
         ];
         let reported = |mode| {
             all.iter()
-                .map(|&e| encode_mouse(e, mode, true).is_some())
+                .map(|&e| encode_mouse(e, mode, /* sgr= */ true).is_some())
                 .collect::<Vec<_>>()
         };
         assert_eq!(reported(MouseMode::Off), [false, false, false, false]);
@@ -996,19 +1004,22 @@ mod tests {
         assert_eq!(reported(MouseMode::AnyMotion), [true, true, true, true]);
         // Wheel "releases" are never reported.
         let wheel = mouse(Release(WheelUp), 0, 0, NONE);
-        assert_eq!(encode_mouse(wheel, MouseMode::AnyMotion, true), None);
+        assert_eq!(
+            encode_mouse(wheel, MouseMode::AnyMotion, /* sgr= */ true),
+            None
+        );
     }
 
     #[test]
     fn motion_codes() {
         let drag = mouse(Motion(Some(Left)), 3, 4, NONE);
         assert_eq!(
-            encode_mouse(drag, MouseMode::ButtonMotion, true).unwrap(),
+            encode_mouse(drag, MouseMode::ButtonMotion, /* sgr= */ true).unwrap(),
             b"\x1b[<32;4;5M"
         );
         let hover = mouse(Motion(None), 3, 4, SHIFT);
         assert_eq!(
-            encode_mouse(hover, MouseMode::AnyMotion, true).unwrap(),
+            encode_mouse(hover, MouseMode::AnyMotion, /* sgr= */ true).unwrap(),
             b"\x1b[<39;4;5M"
         );
     }
@@ -1017,16 +1028,19 @@ mod tests {
     fn x10_ignores_modifiers() {
         let press = mouse(Press(Left), 0, 0, CTRL);
         assert_eq!(
-            encode_mouse(press, MouseMode::X10, true).unwrap(),
+            encode_mouse(press, MouseMode::X10, /* sgr= */ true).unwrap(),
             b"\x1b[<0;1;1M"
         );
     }
 
     #[test]
     fn paste_encoding() {
-        assert_eq!(encode_paste("a\nb\r\nc", false), b"a\rb\rc");
         assert_eq!(
-            encode_paste("x\x1b[201~y", true),
+            encode_paste("a\nb\r\nc", /* bracketed= */ false),
+            b"a\rb\rc"
+        );
+        assert_eq!(
+            encode_paste("x\x1b[201~y", /* bracketed= */ true),
             b"\x1b[200~x[201~y\x1b[201~"
         );
     }

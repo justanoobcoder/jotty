@@ -57,6 +57,7 @@ impl Layers {
     }
 
     /// The config file with the overrides merged over it.
+    #[must_use]
     pub fn merged(&self) -> toml::Table {
         let mut merged = self.base.clone();
         config::merge(&mut merged, self.overrides.clone());
@@ -108,6 +109,7 @@ pub fn save(path: &Path, overrides: &toml::Table) -> io::Result<()> {
 }
 
 /// The value at `path` in nested tables.
+#[must_use]
 pub fn get_path<'a>(table: &'a toml::Table, path: &[String]) -> Option<&'a toml::Value> {
     let (last, tables) = path.split_last()?;
     let mut table = table;
@@ -154,6 +156,7 @@ pub fn remove_path(table: &mut toml::Table, path: &[String]) {
 }
 
 /// Runs a `jotty config` subcommand.
+#[must_use]
 pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
     match run_command(command, config_path) {
         Ok(()) => ExitCode::SUCCESS,
@@ -165,6 +168,7 @@ pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
 }
 
 fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(), String> {
+    use std::io::IsTerminal;
     // Before reading anything: reset is how a broken file is recovered from.
     if command == ConfigCommand::Reset {
         let path = config::overrides_path().ok_or("neither $XDG_STATE_HOME nor $HOME is set")?;
@@ -173,7 +177,7 @@ fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(),
     let layers = Layers::load(config_path)?;
     match command {
         ConfigCommand::Edit => {
-            if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            if !io::stdout().is_terminal() {
                 return Err("jotty config needs a terminal; see jotty config export".into());
             }
             tui::run(layers).map_err(|e| e.to_string())

@@ -8,13 +8,13 @@ pub mod graphics;
 pub mod grid;
 mod strings;
 
-use unicode_segmentation::GraphemeCursor;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use vte::{Params, Perform};
-
 use graphics::Graphics;
 pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
 use strings::{StringTable, Table};
+use unicode_segmentation::GraphemeCursor;
+use vte::{Params, Perform};
+
+use crate::color::Rgb;
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
@@ -23,6 +23,7 @@ const MAX_APC: usize = 64 << 20;
 /// without bound.
 const MAX_OSC_BYTES: usize = 16 << 10;
 
+/// A terminal: the parser and the screen it drives.
 pub struct Terminal {
     parser: vte::Parser<MAX_OSC_BYTES>,
     screen: Screen,
@@ -51,6 +52,7 @@ enum Strings {
 }
 
 impl Terminal {
+    #[must_use]
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         Terminal {
             parser: vte::Parser::new_with_size(),
@@ -135,6 +137,7 @@ impl Terminal {
         self.apc = Apc::Body(Some(Vec::new()));
     }
 
+    #[must_use]
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -144,6 +147,7 @@ impl Terminal {
     }
 }
 
+/// How the cursor is drawn (DECSCUSR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CursorShape {
     #[default]
@@ -238,6 +242,7 @@ pub enum MouseMode {
     AnyMotion,
 }
 
+/// The modes a program sets with SM and DECSET.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Modes {
     pub app_cursor: bool,
@@ -276,6 +281,8 @@ impl Default for Modes {
     }
 }
 
+/// All the state of a terminal: both screen buffers, the cursor, modes,
+/// colors, and the replies and events waiting for the application.
 pub struct Screen {
     cols: usize,
     rows: usize,
@@ -294,9 +301,9 @@ pub struct Screen {
     /// Scratch text for `continues_cluster`.
     cluster_scratch: String,
     /// Cursor color set by the program (OSC 12), overriding the configured one.
-    cursor_color: Option<(u8, u8, u8)>,
+    cursor_color: Option<Rgb>,
     /// The configured cursor color, reported by OSC 12 queries.
-    default_cursor_color: (u8, u8, u8),
+    default_cursor_color: Rgb,
     /// Colors set by the program with OSC 4, 10 and 11.
     colors: ColorOverrides,
     /// Hyperlink targets (OSC 8), by `Extra::link`.
@@ -349,8 +356,6 @@ struct KeyboardFlags {
 /// How many pushed keyboard flags a screen keeps.
 const KEYBOARD_STACK: usize = 16;
 
-pub type Rgb = (u8, u8, u8);
-
 /// Colors a program changed with OSC 4 (palette), 10 (foreground) and 11
 /// (background), until it resets them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,6 +376,7 @@ impl Default for ColorOverrides {
 }
 
 impl ColorOverrides {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == ColorOverrides::default()
     }
@@ -389,10 +395,10 @@ pub struct DefaultColors {
 impl Default for DefaultColors {
     fn default() -> Self {
         DefaultColors {
-            foreground: (255, 255, 255),
-            background: (0, 0, 0),
-            cursor: (255, 255, 255),
-            palette: [(0, 0, 0); 256],
+            foreground: Rgb::new(255, 255, 255),
+            background: Rgb::new(0, 0, 0),
+            cursor: Rgb::new(255, 255, 255),
+            palette: [Rgb::new(0, 0, 0); 256],
         }
     }
 }
@@ -433,6 +439,7 @@ fn default_tabs(cols: usize) -> Vec<bool> {
 }
 
 impl Screen {
+    #[must_use]
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -452,7 +459,7 @@ impl Screen {
             last_char: None,
             cluster_scratch: String::new(),
             cursor_color: None,
-            default_cursor_color: (255, 255, 255),
+            default_cursor_color: Rgb::new(255, 255, 255),
             colors: ColorOverrides::default(),
             links: StringTable::default(),
             clusters: StringTable::default(),
@@ -478,14 +485,18 @@ impl Screen {
 
     // ---- Public queries -------------------------------------------------
 
+    #[must_use]
     pub fn cols(&self) -> usize {
         self.cols
     }
 
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.rows
     }
 
+    /// The grid on display: the alternate screen's while it is active.
+    #[must_use]
     pub fn grid(&self) -> &Grid {
         if self.alt_active {
             &self.alternate
@@ -502,16 +513,19 @@ impl Screen {
         }
     }
 
+    #[must_use]
     pub fn is_alt_screen(&self) -> bool {
         self.alt_active
     }
 
     /// The cursor position as (row, column), always within the screen.
+    #[must_use]
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor.row, self.cursor.col.min(self.cols - 1))
     }
 
     /// Whether the cursor should be drawn: shown and not scrolled out of view.
+    #[must_use]
     pub fn cursor_visible(&self) -> bool {
         self.modes.show_cursor && self.display_offset == 0
     }
@@ -519,6 +533,7 @@ impl Screen {
     /// The row displayed at screen line `line`, taking the scrollback view
     /// into account. Rows from history may be narrower or wider than the
     /// screen.
+    #[must_use]
     pub fn visible_row(&self, line: usize) -> &Row {
         let grid = self.grid();
         let history = grid.history.len();
@@ -532,6 +547,7 @@ impl Screen {
 
     /// The row at screen line `line`: 0 is the top of the live screen,
     /// negative lines are in the history.
+    #[must_use]
     pub fn row_at(&self, line: isize) -> Option<&Row> {
         let grid = self.grid();
         if line < 0 {
@@ -549,6 +565,7 @@ impl Screen {
     /// found through the shell's OSC 133 marks. Trailing blank lines are
     /// left out. Without a `C` mark, the output is taken to start after the
     /// command line (`B`).
+    #[must_use]
     pub fn command_output(&self, line: isize) -> Option<(isize, isize)> {
         let top = -(self.grid().history.len() as isize);
         let mark_at = |l: isize| self.row_at(l).and_then(|r| r.mark);
@@ -582,6 +599,8 @@ impl Screen {
         (first <= line && line <= last).then_some((first, last))
     }
 
+    /// How many rows the view is scrolled back into the history.
+    #[must_use]
     pub fn display_offset(&self) -> usize {
         self.display_offset
     }
@@ -608,6 +627,7 @@ impl Screen {
         self.scroll_display(offset - self.display_offset as isize);
     }
 
+    /// Scrolls the view back to the bottom.
     pub fn reset_display(&mut self) {
         self.scroll_display(-(self.display_offset as isize));
     }
@@ -627,15 +647,18 @@ impl Screen {
     }
 
     /// How many synchronized updates have begun, to tell them apart.
+    #[must_use]
     pub fn synchronized_updates(&self) -> u64 {
         self.synchronized_updates
     }
 
     /// The title a program set (OSC 0/2), if any.
+    #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
 
+    /// Whether the bell rang since the last call.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)
     }
@@ -669,11 +692,13 @@ impl Screen {
     }
 
     /// The cursor color requested by the program with OSC 12, if any.
-    pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
+    #[must_use]
+    pub fn cursor_color(&self) -> Option<Rgb> {
         self.cursor_color
     }
 
     /// What `cell` carries besides its character, colors and flags.
+    #[must_use]
     pub fn extra(&self, cell: &Cell) -> Extra {
         self.extra_by_id(cell.extra)
     }
@@ -711,7 +736,8 @@ impl Screen {
         self.cell_text(start, &mut text);
         let before = text.len();
         text.push(c);
-        let boundary = GraphemeCursor::new(before, text.len(), true).is_boundary(&text, 0);
+        let boundary =
+            GraphemeCursor::new(before, text.len(), /* is_extended= */ true).is_boundary(&text, 0);
         self.cluster_scratch = text;
         // With the whole text given, no more context is ever asked for.
         boundary == Ok(false)
@@ -820,7 +846,8 @@ impl Screen {
         }
         let mut links = self.links.unused();
         let mut clusters = self.clusters.unused();
-        for (id, _) in extras.iter().enumerate().filter(|(_, used)| **used) {
+        let used_ids = extras.iter().enumerate().filter(|(_, used)| **used);
+        for (id, _) in used_ids {
             if let Some(extra) = self.extras.get(id as u16) {
                 links[usize::from(extra.link)] = true;
                 clusters[usize::from(extra.cluster)] = true;
@@ -925,6 +952,7 @@ impl Screen {
         true
     }
 
+    /// The target of the hyperlink with `id`, as cells refer to it.
     pub fn link(&self, id: u16) -> Option<&str> {
         self.links.get(id).map(String::as_str)
     }
@@ -956,6 +984,7 @@ impl Screen {
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
+    #[must_use]
     pub fn color_overrides(&self) -> &ColorOverrides {
         &self.colors
     }
@@ -969,6 +998,7 @@ impl Screen {
 
     /// The column where user input starts on the cursor row: after the
     /// prompt if the shell marked it with OSC 133, otherwise 0.
+    #[must_use]
     pub fn input_start(&self) -> usize {
         match self.prompt_end {
             Some((row, col)) if row == self.cursor.row && !self.alt_active => col,
@@ -990,6 +1020,7 @@ impl Screen {
 
     /// The kitty keyboard protocol flags in effect (progressive
     /// enhancements; 0 for legacy key encoding).
+    #[must_use]
     pub fn keyboard_flags(&self) -> u8 {
         self.keyboard[self.alt_active as usize].current
     }
@@ -1028,6 +1059,7 @@ impl Screen {
     }
 
     /// The images of the screen being shown.
+    #[must_use]
     pub fn graphics(&self) -> &Graphics {
         &self.graphics[self.alt_active as usize]
     }
@@ -1037,6 +1069,7 @@ impl Screen {
     }
 
     /// An image of either screen by its uid.
+    #[must_use]
     pub fn image(&self, uid: u64) -> Option<&graphics::Image> {
         self.graphics.iter().find_map(|g| g.image(uid))
     }
@@ -1087,6 +1120,8 @@ impl Screen {
 
     // ---- Resizing -------------------------------------------------------
 
+    /// Resizes both screens. The primary screen and its history reflow to the
+    /// new width; the alternate screen is cut or padded.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -1169,12 +1204,16 @@ impl Screen {
 
         let mut points = points.into_iter();
         if !self.alt_active {
-            let (row, col) = points.next().unwrap();
+            let (row, col) = points
+                .next()
+                .expect("reflow returns every point it is given");
             self.cursor.row = row;
             self.cursor.col = col;
         }
         if let Some(saved) = &mut self.saved[0] {
-            let (row, col) = points.next().unwrap();
+            let (row, col) = points
+                .next()
+                .expect("reflow returns every point it is given");
             saved.cursor.row = row;
             saved.cursor.col = col;
         }
@@ -1433,7 +1472,8 @@ impl Screen {
         }
         let template = self.cursor.template;
         let bottom = self.scroll_bottom;
-        self.grid_mut().scroll_up(row, bottom, n, &template, false);
+        self.grid_mut()
+            .scroll_up(row, bottom, n, &template, /* keep= */ false);
         self.scroll_graphics(row, bottom, n as i64);
         self.move_prompt_end(row, bottom, -(n as isize));
         self.carriage_return();
@@ -1441,6 +1481,7 @@ impl Screen {
     }
 
     fn print_char(&mut self, c: char) {
+        use unicode_width::UnicodeWidthChar;
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
         let width = c.width().unwrap_or(0).min(2);
         if self.join_cluster(c, width) || width == 0 {
@@ -1579,6 +1620,7 @@ impl Screen {
     /// `☀`): the pair is two cells wide, as in other terminals and in the
     /// width calculations of programs such as starship.
     fn apply_emoji_presentation(&mut self) {
+        use unicode_width::UnicodeWidthStr;
         let Some((row, col)) = self.last_printed else {
             return;
         };
@@ -1667,13 +1709,13 @@ impl Screen {
             }
             7 => self.modes.autowrap = on,
             25 => self.modes.show_cursor = on,
-            47 => self.set_alt_screen(on, false),
+            47 => self.set_alt_screen(on, /* clear= */ false),
             1047 => {
                 if self.alt_active && !on {
                     self.erase_rows(0, self.rows);
                     self.graphics[1].clear_all();
                 }
-                self.set_alt_screen(on, false);
+                self.set_alt_screen(on, /* clear= */ false);
             }
             1048 => {
                 if on {
@@ -1685,11 +1727,11 @@ impl Screen {
             1049 => {
                 if on {
                     self.save_cursor();
-                    self.set_alt_screen(true, true);
+                    self.set_alt_screen(/* on= */ true, /* clear= */ true);
                     // The alternate screen starts with the same cursor.
                     self.saved[1] = self.saved[0];
                 } else {
-                    self.set_alt_screen(false, false);
+                    self.set_alt_screen(/* on= */ false, /* clear= */ false);
                     self.restore_cursor();
                 }
             }
@@ -1743,7 +1785,7 @@ impl Screen {
 
     /// Replies to a color query with the request's terminator, as xterm
     /// does. `code` is the OSC number with any index, such as `"4;1"`.
-    fn report_color(&mut self, code: &str, (r, g, b): Rgb, bell_terminated: bool) {
+    fn report_color(&mut self, code: &str, Rgb { r, g, b }: Rgb, bell_terminated: bool) {
         let end = if bell_terminated { "\x07" } else { "\x1b\\" };
         let reply = format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}");
         self.responses.extend_from_slice(reply.as_bytes());
@@ -1767,9 +1809,12 @@ impl Screen {
             self.report_color(&(10 + which).to_string(), current, bell_terminated);
             return;
         }
-        let Some(rgb) = parse_color(spec) else {
-            log::debug!("bad color {:?}", String::from_utf8_lossy(spec));
-            return;
+        let rgb = match parse_color(spec) {
+            Ok(rgb) => rgb,
+            Err(e) => {
+                log::debug!("bad color {:?}: {e}", String::from_utf8_lossy(spec));
+                return;
+            }
         };
         match which {
             0 => self.colors.foreground = Some(rgb),
@@ -1857,7 +1902,7 @@ impl Screen {
                 Some(format!("{}", bright + u16::from(i) - 8))
             }
             Color::Indexed(i) => Some(format!("{extended}:5:{i}")),
-            Color::Rgb(r, g, b) => Some(format!("{extended}:2::{r}:{g}:{b}")),
+            Color::Rgb(Rgb { r, g, b }) => Some(format!("{extended}:2::{r}:{g}:{b}")),
         };
         parts.extend(color(t.fg, 30, 90, 38));
         parts.extend(color(t.bg, 40, 100, 48));
@@ -1940,20 +1985,20 @@ impl Screen {
                 29 => t.flags.remove(Flags::STRIKE),
                 n @ 30..=37 => t.fg = Color::Indexed((n - 30) as u8),
                 38 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         t.fg = color;
                     }
                 }
                 39 => t.fg = Color::Default,
                 n @ 40..=47 => t.bg = Color::Indexed((n - 40) as u8),
                 48 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         t.bg = color;
                     }
                 }
                 49 => t.bg = Color::Default,
                 58 => {
-                    if let Some(color) = extended_color(param, &mut iter) {
+                    if let Ok(color) = extended_color(param, &mut iter) {
                         underline_color = Some(color);
                     }
                 }
@@ -1978,59 +2023,77 @@ impl Screen {
 
 /// Parses an X11 color specification as used by OSC color sequences:
 /// `#rgb`, `#rrggbb`, or `rgb:r/g/b` with 1–4 hex digits per component.
-fn parse_color(spec: &[u8]) -> Option<(u8, u8, u8)> {
-    let spec = std::str::from_utf8(spec).ok()?;
-    let scale = |hex: &str| -> Option<u8> {
+fn parse_color(spec: &[u8]) -> Result<Rgb, &'static str> {
+    const BAD_COMPONENT: &str = "a component is not 1-4 hex digits";
+    let spec = std::str::from_utf8(spec).map_err(|_| "not UTF-8")?;
+    let scale = |hex: &str| -> Result<u8, &'static str> {
         if hex.is_empty() || hex.len() > 4 {
-            return None;
+            return Err(BAD_COMPONENT);
         }
-        let value = u32::from_str_radix(hex, 16).ok()?;
+        let value = u32::from_str_radix(hex, 16).map_err(|_| BAD_COMPONENT)?;
         let max = (1u32 << (4 * hex.len())) - 1;
-        Some((value * 255 / max) as u8)
+        Ok((value * 255 / max) as u8)
     };
     if let Some(hex) = spec.strip_prefix('#') {
         if !matches!(hex.len(), 3 | 6) || !hex.is_ascii() {
-            return None;
+            return Err("expected 3 or 6 hex digits after #");
         }
         let n = hex.len() / 3;
-        return Some((
+        return Ok(Rgb::new(
             scale(&hex[..n])?,
             scale(&hex[n..2 * n])?,
             scale(&hex[2 * n..])?,
         ));
     }
-    let mut parts = spec.strip_prefix("rgb:")?.split('/');
-    let rgb = (
-        scale(parts.next()?)?,
-        scale(parts.next()?)?,
-        scale(parts.next()?)?,
-    );
-    parts.next().is_none().then_some(rgb)
+    let mut parts = spec
+        .strip_prefix("rgb:")
+        .ok_or("expected #rgb, #rrggbb or rgb:r/g/b")?
+        .split('/');
+    let mut component = || scale(parts.next().ok_or("expected three components")?);
+    let rgb = Rgb::new(component()?, component()?, component()?);
+    match parts.next() {
+        None => Ok(rgb),
+        Some(_) => Err("expected three components"),
+    }
 }
 
 /// Parses the arguments of SGR 38/48/58 in either the colon form
 /// (`38:2::r:g:b`, `38:5:n`) or the semicolon form (`38;2;r;g;b`, `38;5;n`).
-fn extended_color<'a>(param: &[u16], iter: &mut impl Iterator<Item = &'a [u16]>) -> Option<Color> {
+fn extended_color<'a>(
+    param: &[u16],
+    iter: &mut impl Iterator<Item = &'a [u16]>,
+) -> Result<Color, &'static str> {
+    const TRUNCATED: &str = "the color is cut short";
+    const UNKNOWN: &str = "the color space is not 2 (RGB) or 5 (indexed)";
     let byte = |v: u16| v.min(255) as u8;
     if param.len() > 1 {
         return match param[1] {
-            5 => param.get(2).map(|&n| Color::Indexed(byte(n))),
+            5 => param
+                .get(2)
+                .map(|&n| Color::Indexed(byte(n)))
+                .ok_or(TRUNCATED),
             2 if param.len() >= 5 => {
                 let rgb = &param[param.len() - 3..];
-                Some(Color::Rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2])))
+                Ok(Color::Rgb(Rgb::new(
+                    byte(rgb[0]),
+                    byte(rgb[1]),
+                    byte(rgb[2]),
+                )))
             }
-            _ => None,
+            2 => Err(TRUNCATED),
+            _ => Err(UNKNOWN),
         };
     }
-    match iter.next()?[0] {
-        5 => Some(Color::Indexed(byte(iter.next()?[0]))),
+    let mut next = || iter.next().map(|p| p[0]).ok_or(TRUNCATED);
+    match next()? {
+        5 => Ok(Color::Indexed(byte(next()?))),
         2 => {
-            let r = iter.next()?[0];
-            let g = iter.next()?[0];
-            let b = iter.next()?[0];
-            Some(Color::Rgb(byte(r), byte(g), byte(b)))
+            let r = next()?;
+            let g = next()?;
+            let b = next()?;
+            Ok(Color::Rgb(Rgb::new(byte(r), byte(g), byte(b))))
         }
-        _ => None,
+        _ => Err(UNKNOWN),
     }
 }
 
@@ -2194,12 +2257,16 @@ impl Perform for Screen {
                 3 => self.tabs.fill(false),
                 _ => {}
             },
-            ([], 'h') => args.iter().for_each(|&m| self.set_mode(m, true)),
-            ([], 'l') => args.iter().for_each(|&m| self.set_mode(m, false)),
-            ([b'?'], 'h') => args.iter().for_each(|&m| self.set_private_mode(m, true)),
-            ([b'?'], 'l') => args.iter().for_each(|&m| self.set_private_mode(m, false)),
-            ([b'?', b'$'], 'p') => self.report_mode(raw(0), true),
-            ([b'$'], 'p') => self.report_mode(raw(0), false),
+            ([], 'h') => args.iter().for_each(|&m| self.set_mode(m, /* on= */ true)),
+            ([], 'l') => args.iter().for_each(|&m| self.set_mode(m, /* on= */ false)),
+            ([b'?'], 'h') => args
+                .iter()
+                .for_each(|&m| self.set_private_mode(m, /* on= */ true)),
+            ([b'?'], 'l') => args
+                .iter()
+                .for_each(|&m| self.set_private_mode(m, /* on= */ false)),
+            ([b'?', b'$'], 'p') => self.report_mode(raw(0), /* private= */ true),
+            ([b'$'], 'p') => self.report_mode(raw(0), /* private= */ false),
             ([], 'm') => self.sgr(params),
             ([], 'r') => {
                 let top = arg(0, 1) - 1;
@@ -2366,7 +2433,7 @@ impl Perform for Screen {
                     if *spec == b"?" {
                         let rgb = self.colors.palette[i].unwrap_or(self.default_colors.palette[i]);
                         self.report_color(&format!("4;{index}"), rgb, bell_terminated);
-                    } else if let Some(rgb) = parse_color(spec) {
+                    } else if let Ok(rgb) = parse_color(spec) {
                         self.colors.palette[i] = Some(rgb);
                         self.dirty = true;
                     }

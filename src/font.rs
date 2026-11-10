@@ -2,21 +2,23 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::fmt;
-use std::os::unix::fs::MetadataExt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::{fmt, io};
 
-use unicode_normalization::UnicodeNormalization;
-use unicode_width::UnicodeWidthChar;
-
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont, point};
+use ab_glyph::{Font, FontRef, PxScale};
 use fontconfig_sys as fc;
+use fontconfig_sys::constants::{
+    FC_CHARSET, FC_COLOR, FC_FAMILY, FC_FILE, FC_INDEX, FC_SLANT, FC_SLANT_ITALIC, FC_SLANT_ROMAN,
+    FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
+};
 
 use crate::emoji::{self, EmojiFont};
 use crate::terminal::Underline;
-use fontconfig_sys::constants::*;
 
+/// The four faces of a font family. The discriminants index
+/// `Fonts::styles`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Style {
     Regular,
@@ -26,6 +28,7 @@ pub enum Style {
 }
 
 impl Style {
+    #[must_use]
     pub fn new(bold: bool, italic: bool) -> Style {
         match (bold, italic) {
             (false, false) => Style::Regular,
@@ -96,7 +99,9 @@ pub struct Glyph {
     pub color: bool,
 }
 
+/// Why the configured font could not be used.
 #[derive(Debug)]
+#[must_use]
 pub enum FontError {
     NotFound(String),
     Load(PathBuf, &'static str),
@@ -124,10 +129,14 @@ struct FontFile {
 struct Fontconfig(*mut fc::FcConfig);
 
 impl Fontconfig {
-    fn new() -> Option<Fontconfig> {
+    fn try_new() -> Result<Fontconfig, &'static str> {
         // SAFETY: returns an owned config or null.
         let config = unsafe { fc::FcInitLoadConfigAndFonts() };
-        (!config.is_null()).then_some(Fontconfig(config))
+        if config.is_null() {
+            Err("fontconfig cannot load its configuration")
+        } else {
+            Ok(Fontconfig(config))
+        }
     }
 
     /// Finds the best font file for `family` in `style`, optionally
@@ -221,17 +230,19 @@ impl Fontconfig {
 }
 
 /// Finds and loads the system's color emoji font.
+#[must_use]
 pub fn load_emoji_font() -> Option<EmojiFont> {
-    let file = Fontconfig::new()?.find_color_emoji()?;
-    let font = EmojiFont::new(map_file(&file.path).ok()?, file.index & 0xffff);
-    match &font {
-        Some(_) => log::info!("loading emoji font {}", file.path.display()),
-        None => log::info!(
-            "{}: no color bitmaps, emoji stay monochrome",
-            file.path.display()
-        ),
+    let file = Fontconfig::try_new().ok()?.find_color_emoji()?;
+    match EmojiFont::try_new(map_file(&file.path).ok()?, file.index & 0xffff) {
+        Ok(font) => {
+            log::info!("loading emoji font {}", file.path.display());
+            Some(font)
+        }
+        Err(e) => {
+            log::info!("{}: {e}, emoji stay monochrome", file.path.display());
+            None
+        }
     }
-    font
 }
 
 impl Drop for Fontconfig {
@@ -241,6 +252,8 @@ impl Drop for Fontconfig {
     }
 }
 
+/// The configured font in its four styles, the fallback fonts loaded so
+/// far and the emoji font, at one size.
 pub struct Fonts {
     fontconfig: Fontconfig,
     faces: Vec<FontRef<'static>>,
@@ -266,8 +279,8 @@ pub struct Fonts {
 
 impl Fonts {
     /// Loads `family` in all four styles at `px` pixels per em.
-    pub fn new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
-        let fontconfig = Fontconfig::new().ok_or_else(|| FontError::NotFound(family.into()))?;
+    pub fn try_new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
+        let fontconfig = Fontconfig::try_new().map_err(|_| FontError::NotFound(family.into()))?;
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),
@@ -309,6 +322,7 @@ impl Fonts {
     }
 
     fn load(&mut self, file: FontFile, style: Style) -> Result<usize, FontError> {
+        use ab_glyph::VariableFont;
         if let Some(&face) = self.loaded.get(&(file.clone(), style)) {
             return Ok(face);
         }
@@ -344,7 +358,10 @@ impl Fonts {
         Ok(index)
     }
 
+    /// Changes the size to `px` pixels per em and recomputes the cell
+    /// metrics. Glyphs rasterized before are the wrong size afterwards.
     pub fn set_size(&mut self, px: f32) {
+        use ab_glyph::ScaleFont;
         self.px = px;
         let face = &self.faces[self.styles[0]];
         let scaled = face.as_scaled(px_scale(face, px));
@@ -427,6 +444,7 @@ impl Fonts {
     /// Like `rasterize`, always in the text font: a coverage bitmap, never
     /// a color emoji.
     fn rasterize_text(&mut self, c: char, style: Style, wide: bool) -> Option<Glyph> {
+        use unicode_width::UnicodeWidthChar;
         if c == ' ' {
             return None;
         }
@@ -439,7 +457,7 @@ impl Fonts {
         let id = face.glyph_id(c);
         let scale = px_scale(face, self.px);
         // Place the baseline where the cell's is, so bounds are cell-relative.
-        let origin = point(0.0, m.baseline as f32);
+        let origin = ab_glyph::point(0.0, m.baseline as f32);
         let mut outline = face.outline_glyph(id.with_scale_and_position(scale, origin))?;
 
         // A narrow glyph in a two-cell slot, as for emoji presentation
@@ -543,6 +561,8 @@ impl Fonts {
     /// the marks are drawn centered over the character they follow, and
     /// spacing characters in their own cells.
     pub fn rasterize_cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<Glyph> {
+        use unicode_normalization::UnicodeNormalization;
+        use unicode_width::UnicodeWidthChar;
         if let Some(glyph) = self.rasterize_color(text, wide) {
             return Some(glyph);
         }
@@ -572,7 +592,7 @@ impl Fonts {
             if glyph.as_ref().is_some_and(|g| g.color) {
                 break;
             }
-            let Some(mut part) = self.rasterize_text(c, style, false) else {
+            let Some(mut part) = self.rasterize_text(c, style, /* wide= */ false) else {
                 continue;
             };
             if width > 0 {
@@ -627,6 +647,7 @@ fn overlay(a: &Glyph, b: &Glyph) -> Glyph {
 /// Draws an underline of `style` spanning `cells` cells. The bitmap is as
 /// wide as the cells and positioned relative to the cell top; patterns
 /// repeat per cell so neighboring cells join seamlessly.
+#[must_use]
 pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<Glyph> {
     let (cw, ch) = (m.width, m.height);
     let width = cw * cells;
@@ -652,7 +673,7 @@ pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<G
         }
     };
     match style {
-        Underline::None => unreachable!(),
+        Underline::None => unreachable!("no glyph is made for Underline::None"),
         Underline::Single => fill(0, width, 0, t),
         Underline::Double => {
             fill(0, width, 0, t);
@@ -1048,7 +1069,7 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
             // down: the outer cells hold twelfths of the large one, the
             // inner cells quarters of the small one.
             '\u{1CC30}'..='\u{1CC3F}' => {
-                let i = c as u32 - 0x1CC30;
+                let i = c as u32 - 0x1cc30;
                 let (col, row) = ((i % 4) as f32, (i / 4) as f32);
                 let inner = (1.0..=2.0).contains(&col) && (1.0..=2.0).contains(&row);
                 let (wf, hf, t) = (w as f32, h as f32, s as f32);
@@ -1072,14 +1093,20 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                 } else {
                     [(wf / 2.0, 0.0), (wf / 2.0, hf)]
                 };
-                draw_circles(&mut canvas, s, &centers, wf / 2.0, false);
+                draw_circles(&mut canvas, s, &centers, wf / 2.0, /* filled= */ false);
             }
             // Half discs with their flat side on the cell edge, so ◗ and ◖
             // round off whatever is next to them and pairs make a circle a
             // cell wide.
             '◖' | '◗' => {
                 let x = if c == '◖' { w as f32 } else { 0.0 };
-                draw_circles(&mut canvas, s, &[(x, h as f32 / 2.0)], w as f32 / 2.0, true);
+                draw_circles(
+                    &mut canvas,
+                    s,
+                    &[(x, h as f32 / 2.0)],
+                    w as f32 / 2.0,
+                    /* filled= */ true,
+                );
             }
             // The upper and lower halves of a disc a cell wide.
             '⯊' | '⯋' => {
@@ -1224,11 +1251,11 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
     let (w, h) = (canvas.width, canvas.height);
     let eighth_h = |n: u32| (h * n + 4) / 8;
     let eighth_w = |n: u32| (w * n + 4) / 8;
-    let i = (c as u32).wrapping_sub(0x1FB00);
+    let i = (c as u32).wrapping_sub(0x1fb00);
     match i {
         // Sextants: a 2×3 grid, numbered across then down, without the
         // left and right halves, which are ▌ and ▐.
-        0x00..=0x3B => {
+        0x00..=0x3b => {
             let mut bits = i + 1;
             if bits >= 21 {
                 bits += 1;
@@ -1248,27 +1275,27 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 }
             }
         }
-        0x3C..=0x67 => {
-            let [x1, y1, x2, y2, cx, cy] = MOSAICS[(i - 0x3C) as usize].map(f32::from);
+        0x3c..=0x67 => {
+            let [x1, y1, x2, y2, cx, cy] = MOSAICS[(i - 0x3c) as usize].map(f32::from);
             let side = |x: f32, y: f32| (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
             let corner = side(cx, cy) > 0.0;
             canvas.shape(255, |u, v| (side(u * 2.0, v * 3.0) > 0.0) == corner);
         }
         // Triangles from the center to an edge: all but one, then one.
-        0x68..=0x6F => canvas.shape(255, |u, v| in_quarter(i % 4, u, v) != (i < 0x6C)),
+        0x68..=0x6f => canvas.shape(255, |u, v| in_quarter(i % 4, u, v) != (i < 0x6c)),
         // One-eighth columns and rows 2 to 7.
         0x70..=0x75 => canvas.fill(eighth_w(i - 0x70 + 1), 0, eighth_w(i - 0x70 + 2), h, 255),
-        0x76..=0x7B => canvas.fill(0, eighth_h(i - 0x76 + 1), w, eighth_h(i - 0x76 + 2), 255),
+        0x76..=0x7b => canvas.fill(0, eighth_h(i - 0x76 + 1), w, eighth_h(i - 0x76 + 2), 255),
         // Pairs of one-eighth edges: left and lower, left and upper, right
         // and upper, right and lower, upper and lower.
-        0x7C..=0x80 => {
+        0x7c..=0x80 => {
             let (left, right, upper, lower) = [
                 (true, false, false, true),
                 (true, false, true, false),
                 (false, true, true, false),
                 (false, true, false, true),
                 (false, false, true, true),
-            ][(i - 0x7C) as usize];
+            ][(i - 0x7c) as usize];
             if left {
                 canvas.fill(0, 0, eighth_w(1), h, 255);
             }
@@ -1289,7 +1316,7 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             }
         }
         // Upper and right blocks of 2, 3, 5, 6 and 7 eighths.
-        0x82..=0x8B => {
+        0x82..=0x8b => {
             let n = [2, 3, 5, 6, 7][((i - 0x82) % 5) as usize];
             if i < 0x87 {
                 canvas.fill(0, 0, w, eighth_h(n), 255);
@@ -1298,10 +1325,10 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             }
         }
         // Half shades, and halves of a shade and a block.
-        0x8C => canvas.fill(0, 0, eighth_w(4), h, SHADE),
-        0x8D => canvas.fill(w - eighth_w(4), 0, w, h, SHADE),
-        0x8E => canvas.fill(0, 0, w, eighth_h(4), SHADE),
-        0x8F => canvas.fill(0, h - eighth_h(4), w, h, SHADE),
+        0x8c => canvas.fill(0, 0, eighth_w(4), h, SHADE),
+        0x8d => canvas.fill(w - eighth_w(4), 0, w, h, SHADE),
+        0x8e => canvas.fill(0, 0, w, eighth_h(4), SHADE),
+        0x8f => canvas.fill(0, h - eighth_h(4), w, h, SHADE),
         0x90 => canvas.fill(0, 0, w, h, SHADE),
         0x91 => {
             canvas.fill(0, 0, w, eighth_h(4), 255);
@@ -1340,18 +1367,18 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
         // continue across cells.
         0x98 => canvas.shape(255, |u, v| (u - v).rem_euclid(0.25) < 0.125),
         0x99 => canvas.shape(255, |u, v| (u + v).rem_euclid(0.25) < 0.125),
-        0x9A => canvas.shape(255, |u, v| in_quarter(1, u, v) || in_quarter(3, u, v)),
-        0x9B => canvas.shape(255, |u, v| in_quarter(0, u, v) || in_quarter(2, u, v)),
+        0x9a => canvas.shape(255, |u, v| in_quarter(1, u, v) || in_quarter(3, u, v)),
+        0x9b => canvas.shape(255, |u, v| in_quarter(0, u, v) || in_quarter(2, u, v)),
         // Shaded triangles: upper left, upper right, lower right, lower left.
-        0x9C => canvas.shape(SHADE, |u, v| u + v < 1.0),
-        0x9D => canvas.shape(SHADE, |u, v| v < u),
-        0x9E => canvas.shape(SHADE, |u, v| u + v > 1.0),
-        0x9F => canvas.shape(SHADE, |u, v| v > u),
+        0x9c => canvas.shape(SHADE, |u, v| u + v < 1.0),
+        0x9d => canvas.shape(SHADE, |u, v| v < u),
+        0x9e => canvas.shape(SHADE, |u, v| u + v > 1.0),
+        0x9f => canvas.shape(SHADE, |u, v| v > u),
         // Lines between the middles of the edges, meeting the lines of
         // box-drawing characters next to them. Bits: upper to left 1, upper
         // to right 2, left to lower 4, right to lower 8.
-        0xA0..=0xAE => {
-            let bits = [1, 2, 4, 8, 5, 10, 12, 3, 9, 6, 14, 13, 11, 7, 15][(i - 0xA0) as usize];
+        0xa0..=0xae => {
+            let bits = [1, 2, 4, 8, 5, 10, 12, 3, 9, 6, 14, 13, 11, 7, 15][(i - 0xa0) as usize];
             let s = stroke as f32;
             let mx = band_start(stroke, w) as f32 + s / 2.0;
             let my = band_start(stroke, h) as f32 + s / 2.0;
@@ -1368,14 +1395,14 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             });
         }
         // A horizontal line crossed by a short vertical stroke.
-        0xAF => {
+        0xaf => {
             draw_arms(canvas, stroke, [0, 0, 1, 1]);
             let x = band_start(stroke, w);
             canvas.fill(x, h / 3, x + stroke, h - h / 3, 255);
         }
         // Light diagonals between corners, edge middles and the center,
         // as points numbered across then down a 3×3 grid.
-        0xD0..=0xDF => {
+        0xd0..=0xdf => {
             let points: &[usize] = [
                 &[5, 6][..],
                 &[2, 3],
@@ -1393,12 +1420,12 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 &[2, 3, 8],
                 &[6, 1, 8],
                 &[0, 5, 6],
-            ][(i - 0xD0) as usize];
+            ][(i - 0xd0) as usize];
             draw_polyline(canvas, stroke, points, (0.0, 0.0));
         }
         // Half circles centered on the top, right, bottom or left edge, so
         // two cells make a circle a cell wide: white, then black.
-        0xE0..=0xE3 | 0xE8..=0xEB => {
+        0xe0..=0xe3 | 0xe8..=0xeb => {
             let (w, h) = (w as f32, h as f32);
             let center = [(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)];
             draw_circles(
@@ -1406,18 +1433,18 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 stroke,
                 &[center[(i % 4) as usize]],
                 w / 2.0,
-                i >= 0xE8,
+                i >= 0xe8,
             );
         }
         // Black quarter circles centered on the top right, bottom left,
         // bottom right or top left corner: four make a circle a cell wide.
-        0xEC..=0xEF => {
+        0xec..=0xef => {
             let (w, h) = (w as f32, h as f32);
             let center = [(w, 0.0), (0.0, h), (w, h), (0.0, 0.0)];
             draw_circles(
                 canvas,
                 stroke,
-                &[center[(i - 0xEC) as usize]],
+                &[center[(i - 0xec) as usize]],
                 w / 2.0,
                 true,
             );
@@ -1449,6 +1476,7 @@ fn is_private_use(c: char) -> bool {
 /// Icons in the Private Use Areas, as used by Nerd Fonts, except powerline
 /// separators (U+E0A0–U+E0D7), which must keep their position to line up
 /// with the cell backgrounds next to them.
+#[must_use]
 pub fn is_icon(c: char) -> bool {
     matches!(c,
         '\u{E000}'..='\u{E09F}'
@@ -1462,15 +1490,19 @@ pub fn is_icon(c: char) -> bool {
 /// and reclaim them; that matters for fallback fonts such as Noto CJK,
 /// which are tens of megabytes. Mappings are never unmapped, as faces keep
 /// them, so a file gets one mapping however often the config is reloaded.
-fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
+fn map_file(path: &Path) -> io::Result<&'static [u8]> {
+    use std::os::unix::fs::MetadataExt;
     // By device and inode.
     type Mappings = HashMap<(u64, u64), &'static [u8]>;
     static MAPPINGS: Mutex<Option<Mappings>> = Mutex::new(None);
-    let file = std::fs::File::open(path)?;
+    let file = File::open(path)?;
     let metadata = file.metadata()?;
     // By file, not by name: an update replaces the file under the same name.
     let key = (metadata.dev(), metadata.ino());
-    let mut mappings = MAPPINGS.lock().unwrap_or_else(|e| e.into_inner());
+    // A panic while the lock was held may have left the map half updated.
+    let mut mappings = MAPPINGS
+        .lock()
+        .map_err(|_| io::Error::other("the font mappings lock is poisoned"))?;
     let mappings = mappings.get_or_insert_default();
     if let Some(&data) = mappings.get(&key) {
         return Ok(data);
@@ -1480,10 +1512,11 @@ fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
     Ok(data)
 }
 
-fn map_new_file(file: &std::fs::File, len: u64) -> std::io::Result<&'static [u8]> {
-    let len = usize::try_from(len).map_err(std::io::Error::other)?;
+fn map_new_file(file: &File, len: u64) -> io::Result<&'static [u8]> {
+    use std::os::fd::AsRawFd;
+    let len = usize::try_from(len).map_err(io::Error::other)?;
     if len == 0 {
-        return Err(std::io::Error::other("empty file"));
+        return Err(io::Error::other("empty file"));
     }
     // SAFETY: a private read-only mapping of an open file, which stays valid
     // after the descriptor is closed. Font files are not modified in place
@@ -1495,12 +1528,12 @@ fn map_new_file(file: &std::fs::File, len: u64) -> std::io::Result<&'static [u8]
             len,
             libc::PROT_READ,
             libc::MAP_PRIVATE,
-            std::os::fd::AsRawFd::as_raw_fd(file),
+            file.as_raw_fd(),
             0,
         )
     };
     if ptr == libc::MAP_FAILED {
-        return Err(std::io::Error::last_os_error());
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: the mapping is `len` readable bytes and is never unmapped.
     Ok(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
@@ -1520,6 +1553,7 @@ fn px_scale(face: &FontRef, px: f32) -> PxScale {
 }
 
 /// Converts a size in points to pixels at the given scale (96 DPI).
+#[must_use]
 pub fn points_to_px(points: f32, scale: f32) -> f32 {
     points * 96.0 / 72.0 * scale
 }
@@ -1530,20 +1564,23 @@ mod tests {
 
     #[test]
     fn vs15_asks_for_the_text_form_in_a_cluster() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             return;
         };
-        let glyph = fonts.rasterize_cluster("\u{231a}\u{fe0e}", Style::Regular, true);
+        let glyph =
+            fonts.rasterize_cluster("\u{231a}\u{fe0e}", Style::Regular, /* wide= */ true);
         assert!(glyph.is_none_or(|g| !g.color));
     }
 
     #[test]
     fn marks_are_not_combined_with_a_color_glyph() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             return;
         };
         // A color bitmap has four bytes per pixel, which must stay intact.
-        if let Some(glyph) = fonts.rasterize_cluster("\u{1f600}\u{301}", Style::Regular, true) {
+        if let Some(glyph) =
+            fonts.rasterize_cluster("\u{1f600}\u{301}", Style::Regular, /* wide= */ true)
+        {
             let bytes = if glyph.color { 4 } else { 1 };
             assert_eq!(
                 glyph.data.len(),
@@ -1632,19 +1669,22 @@ mod tests {
         let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
         let (w, h) = (m.width, m.height);
         // ═ is two lines across the cell; ║ two lines down it.
-        let horizontal = ink(&box_glyph('═', m).unwrap(), 0, false);
+        let horizontal = ink(&box_glyph('═', m).unwrap(), 0, /* row= */ false);
         assert_eq!(horizontal.len(), 2);
-        assert_eq!(horizontal, ink(&box_glyph('═', m).unwrap(), w - 1, false));
-        let vertical = ink(&box_glyph('║', m).unwrap(), 0, true);
+        assert_eq!(
+            horizontal,
+            ink(&box_glyph('═', m).unwrap(), w - 1, /* row= */ false)
+        );
+        let vertical = ink(&box_glyph('║', m).unwrap(), 0, /* row= */ true);
         assert_eq!(vertical.len(), 2);
         // Each corner and tee continues them at its edges.
         for c in ['╔', '╦', '╬', '╠', '╚'] {
             let glyph = box_glyph(c, m).unwrap();
-            assert_eq!(ink(&glyph, w - 1, false), horizontal, "{c}");
+            assert_eq!(ink(&glyph, w - 1, /* row= */ false), horizontal, "{c}");
         }
         for c in ['╔', '╦', '╬', '╣', '╗'] {
             let glyph = box_glyph(c, m).unwrap();
-            assert_eq!(ink(&glyph, h - 1, true), vertical, "{c}");
+            assert_eq!(ink(&glyph, h - 1, /* row= */ true), vertical, "{c}");
         }
         // The outer lines of ╔ meet; the inner ones turn a corner inside.
         let corner = box_glyph('╔', m).unwrap();
@@ -1656,8 +1696,8 @@ mod tests {
     #[test]
     fn single_line_stops_at_a_double_tee() {
         let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
-        let lines = ink(&box_glyph('═', m).unwrap(), 0, false);
-        let middle = ink(&box_glyph('│', m).unwrap(), 0, true)[0];
+        let lines = ink(&box_glyph('═', m).unwrap(), 0, /* row= */ false);
+        let middle = ink(&box_glyph('│', m).unwrap(), 0, /* row= */ true)[0];
         // ╤ reaches only the lower line; ╪ crosses both, and so does ╒,
         // which turns into the upper one.
         let tee = box_glyph('╤', m).unwrap();
@@ -1675,8 +1715,8 @@ mod tests {
             CellMetrics::new(11.0, 24.0, -8.0, 0.0),
         ] {
             let (w, h) = (m.width, m.height);
-            let row = ink(&box_glyph('─', m).unwrap(), 0, false);
-            let column = ink(&box_glyph('│', m).unwrap(), 0, true);
+            let row = ink(&box_glyph('─', m).unwrap(), 0, /* row= */ false);
+            let column = ink(&box_glyph('│', m).unwrap(), 0, /* row= */ true);
             for (c, x, y) in [
                 ('╭', w - 1, h - 1),
                 ('╮', 0, h - 1),
@@ -1684,8 +1724,8 @@ mod tests {
                 ('╰', w - 1, 0),
             ] {
                 let arc = box_glyph(c, m).unwrap();
-                assert_eq!(ink(&arc, x, false), row, "{c} at its side edge");
-                assert_eq!(ink(&arc, y, true), column, "{c} at its end edge");
+                assert_eq!(ink(&arc, x, /* row= */ false), row, "{c} at its side edge");
+                assert_eq!(ink(&arc, y, /* row= */ true), column, "{c} at its end edge");
             }
         }
     }
@@ -1712,8 +1752,8 @@ mod tests {
             starts.windows(2).map(|p| p[1] - p[0]).collect::<Vec<_>>()
         };
         let corner = full.data.iter().position(|&p| p > 0).unwrap() as u32;
-        let row = ink(&full, corner / w, true);
-        let column = ink(&full, corner % w, false);
+        let row = ink(&full, corner / w, /* row= */ true);
+        let column = ink(&full, corner % w, /* row= */ false);
         for (pitches, cells) in [(starts(row, w), 2), (starts(column, h), 4)] {
             assert_eq!(pitches.len(), cells, "{pitches:?}");
             let (lo, hi) = (pitches.iter().min().unwrap(), pitches.iter().max().unwrap());
@@ -1758,7 +1798,7 @@ mod tests {
 
         // Each smooth mosaic fills its corner and leaves the opposite one.
         for (i, &[.., cx, cy]) in MOSAICS.iter().enumerate() {
-            let c = char::from_u32(0x1FB3C + i as u32).unwrap();
+            let c = char::from_u32(0x1fb3c + i as u32).unwrap();
             let glyph = box_glyph(c, m).unwrap();
             let (x, y) = (
                 if cx == 0 { 0 } else { w - 1 },
@@ -1791,10 +1831,10 @@ mod tests {
     #[test]
     fn dashes_and_quadrants() {
         let m = CellMetrics::new(12.0, 16.0, -5.0, 0.0);
-        let row = ink(&box_glyph('─', m).unwrap(), 0, false)[0];
+        let row = ink(&box_glyph('─', m).unwrap(), 0, /* row= */ false)[0];
         let dashes = |c| {
             let glyph = box_glyph(c, m).unwrap();
-            let ink = ink(&glyph, row, true);
+            let ink = ink(&glyph, row, /* row= */ true);
             ink.windows(2).filter(|p| p[1] != p[0] + 1).count() + 1
         };
         assert_eq!((dashes('╌'), dashes('┄'), dashes('┈')), (2, 3, 4));
@@ -1947,22 +1987,26 @@ mod tests {
     /// such as the Nix build sandbox.
     #[test]
     fn loads_system_monospace() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             eprintln!("no system fonts, skipping");
             return;
         };
         let m = fonts.metrics;
         assert!(m.width > 0 && m.height > m.width);
         let glyph = fonts
-            .rasterize('A', Style::Regular, false)
+            .rasterize('A', Style::Regular, /* wide= */ false)
             .expect("glyph for A");
         assert_eq!(glyph.data.len(), (glyph.width * glyph.height) as usize);
         assert!(glyph.top >= 0);
-        assert!(fonts.rasterize(' ', Style::Regular, false).is_none());
+        assert!(
+            fonts
+                .rasterize(' ', Style::Regular, /* wide= */ false)
+                .is_none()
+        );
 
         // In a two-cell slot, a narrow glyph is enlarged and centered.
         let wide = fonts
-            .rasterize('A', Style::Regular, true)
+            .rasterize('A', Style::Regular, /* wide= */ true)
             .expect("wide glyph for A");
         assert!(wide.height > glyph.height);
         assert!(wide.height <= m.height);
@@ -1970,7 +2014,7 @@ mod tests {
         assert!((wide.left - right_gap).abs() <= 1);
 
         // Icons, when some installed font has them, are centered vertically.
-        if let Some(icon) = fonts.rasterize('\u{F43A}', Style::Regular, false) {
+        if let Some(icon) = fonts.rasterize('\u{F43A}', Style::Regular, /* wide= */ false) {
             let (first, last) = ink_rows(&icon.data, icon.width, 64).unwrap();
             let top_gap = icon.top + first as i32;
             let bottom_gap = m.height as i32 - (icon.top + last as i32 + 1);
@@ -1997,9 +2041,9 @@ mod tests {
 
         // Thai ส + ำ is one cluster over two cells: ส keeps its size and
         // ำ, a spacing vowel, is drawn in the second cell.
-        let base = fonts.rasterize('ส', Style::Regular, false);
-        let vowel = fonts.rasterize('ำ', Style::Regular, false);
-        let cluster = fonts.rasterize_cluster("สำ", Style::Regular, true);
+        let base = fonts.rasterize('ส', Style::Regular, /* wide= */ false);
+        let vowel = fonts.rasterize('ำ', Style::Regular, /* wide= */ false);
+        let cluster = fonts.rasterize_cluster("สำ", Style::Regular, /* wide= */ true);
         if let (Some(base), Some(vowel), Some(cluster)) = (base, vowel, cluster) {
             let top = base.top.min(vowel.top);
             let bottom = (base.top + base.height as i32).max(vowel.top + vowel.height as i32);
@@ -2012,7 +2056,7 @@ mod tests {
 
         // Symbols, often from a fallback font, stay inside their cell.
         for c in ['☺', '♀', '♥'] {
-            if let Some(glyph) = fonts.rasterize(c, Style::Regular, false) {
+            if let Some(glyph) = fonts.rasterize(c, Style::Regular, /* wide= */ false) {
                 // A pixel of overhang is allowed on either side.
                 assert!(glyph.left >= -1, "{c}");
                 assert!(glyph.left + glyph.width as i32 <= m.width as i32 + 1, "{c}");

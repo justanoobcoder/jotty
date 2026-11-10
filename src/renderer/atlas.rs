@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use super::{GlyphCache, GlyphInfo};
-use crate::font::{Fonts, Glyph, Style, underline_glyph};
+use crate::font::{self, Fonts, Glyph, Style};
 use crate::terminal::Underline;
 
 /// Packs rectangles left to right into rows ("shelves") as tall as their
@@ -23,6 +23,7 @@ pub struct Packer {
 const PADDING: u32 = 1;
 
 impl Packer {
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Packer {
             width,
@@ -33,6 +34,7 @@ impl Packer {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
@@ -57,6 +59,7 @@ impl Packer {
         Some(pos)
     }
 
+    /// Frees the whole area, for repacking from scratch.
     pub fn clear(&mut self) {
         *self = Packer::new(self.width, self.height);
     }
@@ -93,6 +96,7 @@ pub struct Atlas {
 impl Atlas {
     /// Square atlas images of `size` (coverage) and `color_size` (RGBA)
     /// pixels.
+    #[must_use]
     pub fn new(size: u32, color_size: u32) -> Self {
         Atlas {
             packer: Packer::new(size, size),
@@ -122,6 +126,7 @@ impl Atlas {
 
     /// Changes when the atlas is cleared, so that drawings that look the
     /// same by glyph position can be told apart.
+    #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -153,11 +158,11 @@ impl Atlas {
     /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
     /// hands each new bitmap to `store` with its position in its atlas
     /// image (the color one when `glyph.color`).
-    pub fn cache<'a, S: FnMut(u32, u32, &Glyph)>(
-        &'a mut self,
-        fonts: &'a mut Fonts,
+    pub fn cache<'cache, S: FnMut(u32, u32, &Glyph)>(
+        &'cache mut self,
+        fonts: &'cache mut Fonts,
         store: S,
-    ) -> Cache<'a, S> {
+    ) -> Cache<'cache, S> {
         Cache {
             atlas: self,
             fonts,
@@ -166,9 +171,11 @@ impl Atlas {
     }
 }
 
-pub struct Cache<'a, S> {
-    atlas: &'a mut Atlas,
-    fonts: &'a mut Fonts,
+/// A [`GlyphCache`] over an atlas and the fonts, which calls `store` to
+/// upload each newly placed glyph.
+pub struct Cache<'cache, S> {
+    atlas: &'cache mut Atlas,
+    fonts: &'cache mut Fonts,
     store: S,
 }
 
@@ -228,7 +235,7 @@ impl<S: FnMut(u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
 
     fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
         self.cached(GlyphKey::Underline(style, cells), |fonts| {
-            underline_glyph(style, fonts.metrics, cells)
+            font::underline_glyph(style, fonts.metrics, cells)
         })
     }
 }
@@ -244,17 +251,17 @@ mod tests {
     #[test]
     fn a_screen_too_big_for_the_atlas_redraws_only_once() {
         let mut atlas = Atlas::new(10, 10);
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         let generation = atlas.generation();
         // The first frame overflows and asks for one more.
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         assert_ne!(atlas.generation(), generation);
         assert!(atlas.take_overflowed());
         // That one doesn't fit either: it drops the glyph and is the last.
-        assert_eq!(atlas.allocate(10, 10, false), None);
+        assert_eq!(atlas.allocate(10, 10, /* color= */ false), None);
         assert!(!atlas.take_overflowed());
         // The next frame can start over.
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         assert!(atlas.take_overflowed());
     }
 

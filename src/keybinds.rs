@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 use xkbcommon::xkb;
 
@@ -166,7 +166,8 @@ impl FromStr for KeyCombo {
             None => ("", s),
         };
         let mut mods = Mods::default();
-        for name in mod_names.split('+').filter(|n| !n.is_empty()) {
+        let names = mod_names.split('+').filter(|n| !n.is_empty());
+        for name in names {
             let flag = match name.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => &mut mods.ctrl,
                 "alt" | "meta" | "mod1" => &mut mods.alt,
@@ -218,7 +219,11 @@ impl fmt::Display for KeyCombo {
         match self.trigger {
             Trigger::Key(keysym) => write!(f, "{}", xkb::keysym_get_name(keysym)),
             Trigger::Wheel(wheel) => {
-                let name = Wheel::ALL.iter().find(|&&(_, w)| w == wheel).unwrap().0;
+                let name = Wheel::ALL
+                    .iter()
+                    .find(|&&(_, w)| w == wheel)
+                    .expect("Wheel::ALL lists every wheel")
+                    .0;
                 write!(f, "{name}")
             }
         }
@@ -248,7 +253,7 @@ impl TryFrom<BTreeMap<String, Vec<String>>> for Keybinds {
 
 /// Every action with its combos, in the form the config takes.
 impl Serialize for Keybinds {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let map: BTreeMap<&str, Vec<String>> = Action::ALL
             .iter()
             .map(|&(name, action)| (name, self.combos(action)))
@@ -288,6 +293,7 @@ impl Keybinds {
     /// The action bound to a key press. `keysym` is the symbol produced with
     /// the current modifiers; `base` is the key's symbol without them, when
     /// the keymap is known.
+    #[must_use]
     pub fn lookup(&self, keysym: Keysym, base: Option<Keysym>, mods: Modifiers) -> Option<Action> {
         let mods = Mods::from(mods);
         let shifted = lower(keysym);
@@ -309,6 +315,7 @@ impl Keybinds {
     }
 
     /// The action bound to turning the wheel in `wheel` with `mods` held.
+    #[must_use]
     pub fn lookup_wheel(&self, wheel: Wheel, mods: Modifiers) -> Option<Action> {
         let combo = KeyCombo {
             mods: Mods::from(mods),

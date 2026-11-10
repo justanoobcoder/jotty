@@ -10,8 +10,7 @@
 //! the window.
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
-use std::os::linux::net::SocketAddrExt;
+use std::io;
 use std::os::unix::net::{SocketAddr, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -65,6 +64,8 @@ pub struct RateLimit {
 }
 
 impl RateLimit {
+    /// A limit that starts with the whole burst allowed.
+    #[must_use]
     pub fn new(now: Instant) -> Self {
         RateLimit {
             allowance: NOTIFICATION_BURST,
@@ -86,6 +87,8 @@ impl RateLimit {
     }
 }
 
+/// A connection to the D-Bus session bus, for desktop notifications and
+/// the activation of a clicked one.
 pub struct Bus {
     stream: UnixStream,
     serial: u32,
@@ -136,6 +139,7 @@ impl Bus {
     /// Writes queued messages, as far as the socket takes them. An error
     /// means the connection is gone.
     pub fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
         while !self.outgoing.is_empty() {
             let (chunk, _) = self.outgoing.as_slices();
             match self.stream.write(chunk) {
@@ -152,6 +156,7 @@ impl Bus {
     }
 
     /// Whether messages wait for the socket to take them.
+    #[must_use]
     pub fn has_outgoing(&self) -> bool {
         !self.outgoing.is_empty()
     }
@@ -188,6 +193,7 @@ impl Bus {
     /// Reads what the bus sent, when the socket is readable. An error means
     /// the connection is gone.
     pub fn read(&mut self) -> io::Result<Vec<Event>> {
+        use std::io::Read;
         let mut chunk = [0; 4096];
         match self.stream.read(&mut chunk) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
@@ -204,8 +210,9 @@ impl Bus {
             && len <= self.received.len()
         {
             let message: Vec<u8> = self.received.drain(..len).collect();
-            if let Some(message) = Message::parse(&message) {
-                self.handle(message, &mut events);
+            match Message::parse(&message) {
+                Ok(message) => self.handle(message, &mut events),
+                Err(e) => log::debug!("ignoring a D-Bus message: {e}"),
             }
         }
         Ok(events)
@@ -225,7 +232,7 @@ impl Bus {
                 let mut body = message.body();
                 if message.kind == ERROR {
                     let text = if message.signature.starts_with('s') {
-                        body.str()
+                        body.str().ok()
                     } else {
                         None
                     };
@@ -235,7 +242,7 @@ impl Bus {
                         text.unwrap_or_default()
                     );
                 } else if message.signature == "u"
-                    && let Some(id) = body.u32()
+                    && let Ok(id) = body.u32()
                 {
                     if self.shown.len() == MAX_SHOWN {
                         self.shown.pop_front();
@@ -250,7 +257,7 @@ impl Bus {
             }
             SIGNAL if message.interface.as_deref() == Some(NOTIFICATIONS) => {
                 let mut body = message.body();
-                let Some(id) = body.u32() else { return };
+                let Ok(id) = body.u32() else { return };
                 let Some(i) = self
                     .shown
                     .iter()
@@ -261,8 +268,8 @@ impl Bus {
                 match (message.member.as_deref(), message.signature.as_str()) {
                     // Sent just before ActionInvoked, by daemons following
                     // version 1.2 of the specification.
-                    (Some("ActivationToken"), "us") => self.shown[i].token = body.str(),
-                    (Some("ActionInvoked"), "us") if body.str().as_deref() == Some("default") => {
+                    (Some("ActivationToken"), "us") => self.shown[i].token = body.str().ok(),
+                    (Some("ActionInvoked"), "us") if body.str().as_deref() == Ok("default") => {
                         events.push(Event::Activate(self.shown[i].token.take()));
                     }
                     (Some("NotificationClosed"), _) => {
@@ -275,6 +282,7 @@ impl Bus {
         }
     }
 
+    // One argument per field of the D-Bus method call header.
     #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
@@ -311,6 +319,7 @@ enum Address {
 }
 
 fn connect_session() -> io::Result<UnixStream> {
+    use std::os::linux::net::SocketAddrExt;
     let mut addresses = std::env::var("DBUS_SESSION_BUS_ADDRESS")
         .map(|value| parse_addresses(&value))
         .unwrap_or_default();
@@ -344,7 +353,7 @@ fn parse_addresses(list: &str) -> Vec<Address> {
             let pairs = entry.strip_prefix("unix:")?;
             pairs.split(',').find_map(|pair| {
                 let (key, value) = pair.split_once('=')?;
-                let value = unescape(value)?;
+                let value = unescape(value).ok()?;
                 match key {
                     "path" => Some(Address::Path(PathBuf::from(String::from_utf8(value).ok()?))),
                     "abstract" => Some(Address::Abstract(value)),
@@ -356,26 +365,32 @@ fn parse_addresses(list: &str) -> Vec<Address> {
 }
 
 /// Decodes the `%XX` escapes of an address value.
-fn unescape(value: &str) -> Option<Vec<u8>> {
+fn unescape(value: &str) -> Result<Vec<u8>, &'static str> {
+    const BAD_ESCAPE: &str = "% is not followed by two hex digits";
     let mut out = Vec::with_capacity(value.len());
     let mut bytes = value.bytes();
     while let Some(b) = bytes.next() {
         if b == b'%' {
-            let hex = [bytes.next()?, bytes.next()?];
+            let hex = [
+                bytes.next().ok_or(BAD_ESCAPE)?,
+                bytes.next().ok_or(BAD_ESCAPE)?,
+            ];
             // from_str_radix alone would accept a sign.
             if !hex.iter().all(u8::is_ascii_hexdigit) {
-                return None;
+                return Err(BAD_ESCAPE);
             }
-            out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+            let hex = std::str::from_utf8(&hex).expect("hex digits are ASCII");
+            out.push(u8::from_str_radix(hex, 16).expect("checked as hex digits above"));
         } else {
             out.push(b);
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// SASL EXTERNAL: the bus checks our uid on the socket.
 fn authenticate(stream: &mut UnixStream) -> io::Result<()> {
+    use std::io::{Read, Write};
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     let hex: String = uid
@@ -441,6 +456,7 @@ fn notify_body(app_id: &str, summary: &str, body: &str) -> Vec<u8> {
     w.buf
 }
 
+// One argument per field of the D-Bus method call header.
 #[allow(clippy::too_many_arguments)]
 fn method_call(
     serial: u32,
@@ -553,8 +569,8 @@ fn message_len(buf: &[u8]) -> io::Result<Option<usize>> {
 }
 
 /// The parts of a received message jotty looks at.
-struct Message<'a> {
-    buf: &'a [u8],
+struct Message<'buf> {
+    buf: &'buf [u8],
     big: bool,
     kind: u8,
     body_start: usize,
@@ -566,11 +582,11 @@ struct Message<'a> {
     signature: String,
 }
 
-impl<'a> Message<'a> {
-    /// Parses one whole message; `None` when it has header fields of a type
+impl<'buf> Message<'buf> {
+    /// Parses one whole message. Fails when it has header fields of a type
     /// no message to jotty uses, or is cut short.
-    fn parse(buf: &'a [u8]) -> Option<Message<'a>> {
-        let big = buf.first()? == &b'B';
+    fn parse(buf: &'buf [u8]) -> Result<Message<'buf>, &'static str> {
+        let big = buf.first().ok_or(TRUNCATED)? == &b'B';
         let mut r = Reader { buf, pos: 1, big };
         let kind = r.u8()?;
         r.pos = 12;
@@ -600,13 +616,17 @@ impl<'a> Message<'a> {
                 (_, "s" | "o") => _ = r.str()?,
                 (_, "u") => _ = r.u32()?,
                 (_, "g") => _ = r.signature()?,
-                _ => return None,
+                _ => return Err("a header field has an unexpected type"),
             }
         }
-        (m.body_start <= buf.len()).then_some(m)
+        if m.body_start <= buf.len() {
+            Ok(m)
+        } else {
+            Err(TRUNCATED)
+        }
     }
 
-    fn body(&self) -> Reader<'a> {
+    fn body(&self) -> Reader<'buf> {
         Reader {
             buf: self.buf,
             pos: self.body_start,
@@ -615,51 +635,60 @@ impl<'a> Message<'a> {
     }
 }
 
-struct Reader<'a> {
-    buf: &'a [u8],
+struct Reader<'buf> {
+    buf: &'buf [u8],
     pos: usize,
     big: bool,
 }
 
+// Why a message could not be read.
+const TRUNCATED: &str = "the message is cut short";
+const NOT_UTF8: &str = "a string is not UTF-8";
+
 impl Reader<'_> {
-    fn align(&mut self, align: usize) -> Option<()> {
+    fn align(&mut self, align: usize) -> Result<(), &'static str> {
         self.pos = self.pos.next_multiple_of(align);
-        (self.pos <= self.buf.len()).then_some(())
+        if self.pos <= self.buf.len() {
+            Ok(())
+        } else {
+            Err(TRUNCATED)
+        }
     }
 
-    fn bytes(&mut self, n: usize) -> Option<&[u8]> {
-        let bytes = self.buf.get(self.pos..self.pos.checked_add(n)?)?;
-        self.pos += n;
-        Some(bytes)
+    fn bytes(&mut self, n: usize) -> Result<&[u8], &'static str> {
+        let end = self.pos.checked_add(n).ok_or(TRUNCATED)?;
+        let bytes = self.buf.get(self.pos..end).ok_or(TRUNCATED)?;
+        self.pos = end;
+        Ok(bytes)
     }
 
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.bytes(1)?[0])
+    fn u8(&mut self) -> Result<u8, &'static str> {
+        Ok(self.bytes(1)?[0])
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    fn u32(&mut self) -> Result<u32, &'static str> {
         self.align(4)?;
         let big = self.big;
-        let bytes: [u8; 4] = self.bytes(4)?.try_into().ok()?;
-        Some(if big {
+        let bytes: [u8; 4] = self.bytes(4)?.try_into().expect("bytes(4) is 4 bytes");
+        Ok(if big {
             u32::from_be_bytes(bytes)
         } else {
             u32::from_le_bytes(bytes)
         })
     }
 
-    fn str(&mut self) -> Option<String> {
+    fn str(&mut self) -> Result<String, &'static str> {
         let len = self.u32()? as usize;
-        let text = String::from_utf8(self.bytes(len)?.to_vec()).ok()?;
+        let text = String::from_utf8(self.bytes(len)?.to_vec()).map_err(|_| NOT_UTF8)?;
         self.u8()?;
-        Some(text)
+        Ok(text)
     }
 
-    fn signature(&mut self) -> Option<String> {
+    fn signature(&mut self) -> Result<String, &'static str> {
         let len = self.u8()? as usize;
-        let text = String::from_utf8(self.bytes(len)?.to_vec()).ok()?;
+        let text = String::from_utf8(self.bytes(len)?.to_vec()).map_err(|_| NOT_UTF8)?;
         self.u8()?;
-        Some(text)
+        Ok(text)
     }
 }
 
@@ -780,8 +809,8 @@ mod tests {
 
     #[test]
     fn address_escapes_must_be_hexadecimal() {
-        assert_eq!(unescape("a%2fb"), Some(b"a/b".to_vec()));
-        assert_eq!(unescape("%+f"), None);
+        assert_eq!(unescape("a%2fb"), Ok(b"a/b".to_vec()));
+        assert!(unescape("%+f").is_err());
     }
 
     #[test]
@@ -814,24 +843,24 @@ mod tests {
         assert_eq!(u32::from_le_bytes(m[8..12].try_into().unwrap()), 3);
 
         let mut r = parsed.body();
-        assert_eq!(r.str().as_deref(), Some("jotty"));
-        assert_eq!(r.u32(), Some(0));
-        assert_eq!(r.str().as_deref(), Some("jotty"));
-        assert_eq!(r.str().as_deref(), Some("Title"));
-        assert_eq!(r.str().as_deref(), Some("Body"));
+        assert_eq!(r.str().as_deref(), Ok("jotty"));
+        assert_eq!(r.u32(), Ok(0));
+        assert_eq!(r.str().as_deref(), Ok("jotty"));
+        assert_eq!(r.str().as_deref(), Ok("Title"));
+        assert_eq!(r.str().as_deref(), Ok("Body"));
         // as: its byte length, then the strings.
-        assert_eq!(r.u32(), Some(4 + 8 + 4 + 5));
-        assert_eq!(r.str().as_deref(), Some("default"));
-        assert_eq!(r.str().as_deref(), Some("Show"));
+        assert_eq!(r.u32(), Ok(4 + 8 + 4 + 5));
+        assert_eq!(r.str().as_deref(), Ok("default"));
+        assert_eq!(r.str().as_deref(), Ok("Show"));
         // a{sv}: the length excludes the padding to the dict entry.
         let len = r.u32().unwrap() as usize;
         r.align(8).unwrap();
         let start = r.pos;
-        assert_eq!(r.str().as_deref(), Some("desktop-entry"));
-        assert_eq!(r.signature().as_deref(), Some("s"));
-        assert_eq!(r.str().as_deref(), Some("jotty"));
+        assert_eq!(r.str().as_deref(), Ok("desktop-entry"));
+        assert_eq!(r.signature().as_deref(), Ok("s"));
+        assert_eq!(r.str().as_deref(), Ok("jotty"));
         assert_eq!(r.pos - start, len);
-        assert_eq!(r.u32(), Some(u32::MAX)); // -1
+        assert_eq!(r.u32(), Ok(u32::MAX)); // -1
         assert_eq!(r.pos, r.buf.len());
     }
 
@@ -905,7 +934,7 @@ mod tests {
         let parsed = Message::parse(&m).unwrap();
         assert_eq!(parsed.reply_serial, Some(5));
         assert_eq!(parsed.signature, "u");
-        assert_eq!(parsed.body().u32(), Some(42));
+        assert_eq!(parsed.body().u32(), Ok(42));
     }
 
     #[test]

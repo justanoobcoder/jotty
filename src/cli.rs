@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+/// The text `--help` prints.
 pub const USAGE: &str = "\
 Usage: jotty [OPTIONS] [-e COMMAND [ARGS...]]
        jotty [-c PATH] config [export [--merged] [--nix]]
@@ -25,6 +26,7 @@ Config commands (overrides in $XDG_STATE_HOME/jotty/overrides.toml):
   config reset         Remove all overrides
 ";
 
+/// Options for running a window.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Options {
     pub config: Option<PathBuf>,
@@ -32,6 +34,7 @@ pub struct Options {
     pub command: Option<Vec<OsString>>,
 }
 
+/// What the command line asks jotty to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     Run(Options),
@@ -41,6 +44,7 @@ pub enum Parsed {
     Version,
 }
 
+/// A `jotty config` subcommand.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfigCommand {
     /// Edit the overrides in the TUI.
@@ -177,10 +181,13 @@ mod tests {
     #[test]
     fn config_commands() {
         let export = |merged, nix| Ok(Parsed::Config(None, ConfigCommand::Export { merged, nix }));
-        assert_eq!(run(&["config", "export"]), export(false, false));
+        assert_eq!(
+            run(&["config", "export"]),
+            export(/* merged= */ false, /* nix= */ false)
+        );
         assert_eq!(
             run(&["config", "export", "--nix", "--merged"]),
-            export(true, true)
+            export(/* merged= */ true, /* nix= */ true)
         );
         assert_eq!(
             run(&["-c", "/a.toml", "config", "reset"]),

@@ -1,17 +1,22 @@
 //! Cells, rows and the screen grid with its scrollback history.
 
 use std::collections::VecDeque;
-use std::ops::Range;
+use std::ops::{BitOr, Range};
 
+use crate::color::Rgb;
+
+/// A cell's foreground, background or underline color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
     /// The configured default foreground or background.
     #[default]
     Default,
     Indexed(u8),
-    Rgb(u8, u8, u8),
+    Rgb(Rgb),
 }
 
+/// A cell's attributes (SGR), layout flags and underline style, in one
+/// `u16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(u16);
 
@@ -35,15 +40,18 @@ impl Flags {
     /// fit there. It isn't text: the line goes on at the next row.
     pub const WRAP_GAP: Flags = Flags(1 << 11);
 
+    #[must_use]
     pub const fn empty() -> Self {
         Flags(0)
     }
 
+    #[must_use]
     pub const fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// Whether any of the flags in `other` is set.
+    #[must_use]
     pub const fn intersects(self, other: Flags) -> bool {
         self.0 & other.0 != 0
     }
@@ -57,6 +65,7 @@ impl Flags {
     }
 
     /// The underline style, kept in bits 12–14 so that `Cell` stays small.
+    #[must_use]
     pub const fn underline(self) -> Underline {
         match (self.0 & Self::UNDERLINE_MASK) >> Self::UNDERLINE_SHIFT {
             0 => Underline::None,
@@ -68,6 +77,7 @@ impl Flags {
         }
     }
 
+    /// Sets the underline style, replacing the one before.
     pub fn set_underline(&mut self, underline: Underline) {
         let bits = (underline as u16) << Self::UNDERLINE_SHIFT;
         self.0 = (self.0 & !Self::UNDERLINE_MASK) | bits;
@@ -77,7 +87,7 @@ impl Flags {
     const UNDERLINE_MASK: u16 = 0b111 << Self::UNDERLINE_SHIFT;
 }
 
-impl std::ops::BitOr for Flags {
+impl BitOr for Flags {
     type Output = Flags;
 
     fn bitor(self, rhs: Flags) -> Flags {
@@ -112,7 +122,10 @@ pub struct Cell {
     pub extra: u16,
 }
 
-const _: () = assert!(std::mem::size_of::<Cell>() == 16);
+const _: () = assert!(
+    std::mem::size_of::<Cell>() == 16,
+    "a Cell must stay 16 bytes"
+);
 
 impl Default for Cell {
     fn default() -> Self {
@@ -143,6 +156,7 @@ pub struct Extra {
 impl Cell {
     /// A blank cell that keeps only the background of `template`
     /// (background color erase).
+    #[must_use]
     pub fn blank(template: &Cell) -> Cell {
         Cell {
             bg: template.bg,
@@ -162,6 +176,7 @@ pub enum Mark {
     Output { col: usize },
 }
 
+/// One row of cells, with what the row knows about the line it is part of.
 #[derive(Debug, Clone)]
 pub struct Row {
     cells: Vec<Cell>,
@@ -187,6 +202,8 @@ impl PartialEq for Row {
 impl Eq for Row {}
 
 impl Row {
+    /// A blank row: `cols` cells with the colors of `template`.
+    #[must_use]
     pub fn new(cols: usize, template: &Cell) -> Self {
         Row {
             cells: vec![Cell::blank(template); cols],
@@ -196,6 +213,7 @@ impl Row {
         }
     }
 
+    #[must_use]
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -240,6 +258,8 @@ impl Row {
         self.mark = None;
     }
 
+    /// Truncates or pads the row to `cols` cells, without rewrapping. A wide
+    /// character cut in half is cleared.
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
         self.occupied = cols;
@@ -278,6 +298,8 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// A blank grid with room for `max_history` rows of history.
+    #[must_use]
     pub fn new(cols: usize, rows: usize, max_history: usize) -> Self {
         Grid {
             rows: (0..rows)
@@ -610,7 +632,7 @@ mod tests {
     #[test]
     fn scroll_up_pushes_history() {
         let mut grid = grid_with_lines(&["a", "b", "c"], 4);
-        grid.scroll_up(0, 2, 1, &Cell::default(), true);
+        grid.scroll_up(0, 2, 1, &Cell::default(), /* keep= */ true);
         assert_eq!(texts(&grid), ["b", "c", ""]);
         assert_eq!(grid.history.len(), 1);
         assert_eq!(grid.history[0].text(), "a");
@@ -619,7 +641,7 @@ mod tests {
     #[test]
     fn scroll_region_does_not_touch_history() {
         let mut grid = grid_with_lines(&["a", "b", "c", "d"], 4);
-        grid.scroll_up(1, 2, 1, &Cell::default(), false);
+        grid.scroll_up(1, 2, 1, &Cell::default(), /* keep= */ false);
         assert_eq!(texts(&grid), ["a", "c", "", "d"]);
         assert!(grid.history.is_empty());
         grid.scroll_down(0, 3, 2, &Cell::default());
@@ -631,7 +653,7 @@ mod tests {
         let mut grid = Grid::new(2, 1, 2);
         for c in ['a', 'b', 'c'] {
             grid.rows[0].cell_mut(0).c = c;
-            grid.scroll_up(0, 0, 1, &Cell::default(), true);
+            grid.scroll_up(0, 0, 1, &Cell::default(), /* keep= */ true);
         }
         let history: Vec<_> = grid.history.iter().map(Row::text).collect();
         assert_eq!(history, ["b", "c"]);
@@ -652,7 +674,7 @@ mod tests {
                 row.cell_mut(1).extra = 1;
                 row.wrapped = true;
                 row.mark = Some(Mark::Prompt);
-                grid.scroll_up(0, 0, 1, &template, true);
+                grid.scroll_up(0, 0, 1, &template, /* keep= */ true);
                 let row = &grid.rows[0];
                 assert_eq!(row.cells, [Cell::blank(&template); 3]);
                 assert!(!row.wrapped);

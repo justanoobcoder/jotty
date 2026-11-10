@@ -1,4 +1,10 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use super::{
+    Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_OSC_BYTES,
+    MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
+};
+use crate::color::Rgb;
 
 fn term(cols: usize, rows: usize) -> Terminal {
     Terminal::new(cols, rows, 100)
@@ -398,8 +404,8 @@ fn sgr_extended_colors() {
     t.feed(b"\x1b[38:2::10:20:30;48:5:7mb");
     t.feed(b"\x1b[38:2:40:50:60;91mc");
     assert_eq!(cell(&t, 0, 0).fg, Color::Indexed(200));
-    assert_eq!(cell(&t, 0, 0).bg, Color::Rgb(1, 2, 3));
-    assert_eq!(cell(&t, 0, 1).fg, Color::Rgb(10, 20, 30));
+    assert_eq!(cell(&t, 0, 0).bg, Color::Rgb(Rgb::new(1, 2, 3)));
+    assert_eq!(cell(&t, 0, 1).fg, Color::Rgb(Rgb::new(10, 20, 30)));
     assert_eq!(cell(&t, 0, 1).bg, Color::Indexed(7));
     assert_eq!(cell(&t, 0, 2).fg, Color::Indexed(9));
 }
@@ -918,9 +924,9 @@ fn osc_12_sets_and_resets_cursor_color() {
     let mut t = term(10, 1);
     assert_eq!(t.screen().cursor_color(), None);
     t.feed(b"\x1b]12;#ff8000\x07");
-    assert_eq!(t.screen().cursor_color(), Some((255, 128, 0)));
+    assert_eq!(t.screen().cursor_color(), Some(Rgb::new(255, 128, 0)));
     t.feed(b"\x1b]12;rgb:00/80/ff\x1b\\");
-    assert_eq!(t.screen().cursor_color(), Some((0, 128, 255)));
+    assert_eq!(t.screen().cursor_color(), Some(Rgb::new(0, 128, 255)));
     t.feed(b"\x1b]112\x07");
     assert_eq!(t.screen().cursor_color(), None);
     // Invalid specifications are ignored.
@@ -932,7 +938,7 @@ fn osc_12_sets_and_resets_cursor_color() {
 fn osc_12_query_reports_current_color() {
     let mut t = term(10, 1);
     t.screen_mut().set_default_colors(DefaultColors {
-        cursor: (0x12, 0x34, 0x56),
+        cursor: Rgb::new(0x12, 0x34, 0x56),
         ..DefaultColors::default()
     });
     t.feed(b"\x1b]12;?\x07");
@@ -951,7 +957,7 @@ fn osc_12_query_reports_current_color() {
 fn full_reset_restores_cursor_color() {
     let mut t = term(10, 1);
     t.screen_mut().set_default_colors(DefaultColors {
-        cursor: (1, 2, 3),
+        cursor: Rgb::new(1, 2, 3),
         ..DefaultColors::default()
     });
     t.feed(b"\x1b]12;#ffffff\x07\x1bc\x1b]12;?\x07");
@@ -963,12 +969,12 @@ fn full_reset_restores_cursor_color() {
 }
 
 fn colors() -> DefaultColors {
-    let mut palette = [(0, 0, 0); 256];
-    palette[1] = (0xaa, 0, 0);
+    let mut palette = [Rgb::new(0, 0, 0); 256];
+    palette[1] = Rgb::new(0xaa, 0, 0);
     DefaultColors {
-        foreground: (0xdc, 0xdc, 0xdc),
-        background: (0x18, 0x18, 0x18),
-        cursor: (0xff, 0xff, 0xff),
+        foreground: Rgb::new(0xdc, 0xdc, 0xdc),
+        background: Rgb::new(0x18, 0x18, 0x18),
+        cursor: Rgb::new(0xff, 0xff, 0xff),
         palette,
     }
 }
@@ -985,8 +991,8 @@ fn osc_10_11_query_and_set() {
     // OSC 10 with two colors also sets the background.
     t.feed(b"\x1b]10;#ffffff;#000000\x07");
     let o = t.screen().color_overrides();
-    assert_eq!(o.foreground, Some((255, 255, 255)));
-    assert_eq!(o.background, Some((0, 0, 0)));
+    assert_eq!(o.foreground, Some(Rgb::new(255, 255, 255)));
+    assert_eq!(o.background, Some(Rgb::new(0, 0, 0)));
     t.feed(b"\x1b]11;?\x07");
     assert_eq!(
         t.screen_mut().take_responses(),
@@ -1007,25 +1013,34 @@ fn osc_4_palette_query_set_and_reset() {
     );
     t.feed(b"\x1b]4;1;#00ff00;200;#0000ff\x07");
     let o = t.screen().color_overrides();
-    assert_eq!(o.palette[1], Some((0, 255, 0)));
-    assert_eq!(o.palette[200], Some((0, 0, 255)));
+    assert_eq!(o.palette[1], Some(Rgb::new(0, 255, 0)));
+    assert_eq!(o.palette[200], Some(Rgb::new(0, 0, 255)));
     t.feed(b"\x1b]104;1\x07");
     assert_eq!(t.screen().color_overrides().palette[1], None);
-    assert_eq!(t.screen().color_overrides().palette[200], Some((0, 0, 255)));
+    assert_eq!(
+        t.screen().color_overrides().palette[200],
+        Some(Rgb::new(0, 0, 255))
+    );
     t.feed(b"\x1b]104\x07");
     assert!(t.screen().color_overrides().is_empty());
 }
 
 #[test]
 fn color_specifications() {
-    assert_eq!(parse_color(b"#fff"), Some((255, 255, 255)));
-    assert_eq!(parse_color(b"#102030"), Some((0x10, 0x20, 0x30)));
-    assert_eq!(parse_color(b"rgb:f/0/8"), Some((255, 0, 136)));
-    assert_eq!(parse_color(b"rgb:ffff/0000/8080"), Some((255, 0, 128)));
-    assert_eq!(parse_color(b"rgb:1/2"), None);
-    assert_eq!(parse_color(b"rgb:1/2/3/4"), None);
-    assert_eq!(parse_color(b"#12345"), None);
-    assert_eq!(parse_color(b"red"), None);
+    assert_eq!(super::parse_color(b"#fff"), Ok(Rgb::new(255, 255, 255)));
+    assert_eq!(
+        super::parse_color(b"#102030"),
+        Ok(Rgb::new(0x10, 0x20, 0x30))
+    );
+    assert_eq!(super::parse_color(b"rgb:f/0/8"), Ok(Rgb::new(255, 0, 136)));
+    assert_eq!(
+        super::parse_color(b"rgb:ffff/0000/8080"),
+        Ok(Rgb::new(255, 0, 128))
+    );
+    assert!(super::parse_color(b"rgb:1/2").is_err());
+    assert!(super::parse_color(b"rgb:1/2/3/4").is_err());
+    assert!(super::parse_color(b"#12345").is_err());
+    assert!(super::parse_color(b"red").is_err());
 }
 
 #[test]
@@ -1045,7 +1060,10 @@ fn underline_color() {
     let mut t = term(10, 1);
     // Neovim's colon form, the semicolon form, then reset.
     t.feed(b"\x1b[4:3;58:2::255:0:0ma\x1b[58;5;4mb\x1b[59mc\x1b[0md");
-    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(255, 0, 0));
+    assert_eq!(
+        extra(&t, 0, 0).underline_color,
+        Color::Rgb(Rgb::new(255, 0, 0))
+    );
     assert_eq!(extra(&t, 0, 1).underline_color, Color::Indexed(4));
     assert_eq!(extra(&t, 0, 2).underline_color, Color::Default);
     assert_eq!(cell(&t, 0, 3).flags.underline(), Underline::None);
@@ -1306,9 +1324,9 @@ fn combining_mark_floods_take_linear_time() {
     for _ in 0..200_000 {
         input.extend_from_slice("\u{301}".as_bytes());
     }
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     t.feed(&input);
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(5));
     let tail = t.screen().cluster(&cell(&t, 0, 0));
     assert_eq!(tail.chars().count(), MAX_CLUSTER_CHARS);
     assert_eq!(t.screen().cursor(), (0, 1));
@@ -1415,9 +1433,12 @@ fn unused_extras_are_dropped_when_the_table_fills() {
     t.feed("a".as_bytes());
     let e = extra(&t, 1, 0);
     assert_eq!(t.screen().link(e.link), Some("https://kept"));
-    assert_eq!(e.underline_color, Color::Rgb(1, 17, 111));
+    assert_eq!(e.underline_color, Color::Rgb(Rgb::new(1, 17, 111)));
     assert_eq!(text_at(&t, 0, 0), "e\u{301}");
-    assert_eq!(extra(&t, 0, 0).underline_color, Color::Rgb(1, 17, 111));
+    assert_eq!(
+        extra(&t, 0, 0).underline_color,
+        Color::Rgb(Rgb::new(1, 17, 111))
+    );
 }
 
 #[test]
@@ -1729,7 +1750,7 @@ fn feed_throughput() {
         let mut best = f64::MAX;
         for _ in 0..3 {
             let mut t = Terminal::new(200, 50, 10_000);
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             for chunk in data.chunks(4096) {
                 t.feed(chunk);
             }

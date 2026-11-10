@@ -3,9 +3,9 @@
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::io;
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::terminfo::Term;
@@ -30,6 +30,7 @@ impl WindowSize {
     }
 }
 
+/// A pseudo-terminal with the child process running in it.
 pub struct Pty {
     master: File,
     child: Child,
@@ -71,6 +72,8 @@ impl Pty {
         term: &Term,
         size: WindowSize,
     ) -> io::Result<Pty> {
+        use std::os::fd::{AsFd, FromRawFd};
+        use std::os::unix::process::CommandExt;
         let (mut master, mut slave) = (0, 0);
         let winsize = size.to_winsize();
         // SAFETY: openpty writes two descriptors into the provided pointers.
@@ -149,13 +152,16 @@ impl Pty {
         })
     }
 
+    #[must_use]
     pub fn fd(&self) -> BorrowedFd<'_> {
+        use std::os::fd::AsFd;
         self.master.as_fd()
     }
 
     /// Reads child output. Returns `WouldBlock` when nothing is available.
     /// Once the child has exited, Linux reports `EIO`.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
         self.master.read(buf)
     }
 
@@ -184,6 +190,7 @@ impl Pty {
 
     /// Writes queued input. Leaves the rest queued if the pty is full.
     pub fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
         while !self.pending.is_empty() {
             let (chunk, _) = self.pending.as_slices();
             match self.master.write(chunk) {
@@ -198,10 +205,13 @@ impl Pty {
         Ok(())
     }
 
+    /// Whether some input is still waiting for the child to read it.
+    #[must_use]
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
+    /// Tells the child the new window size (it gets SIGWINCH).
     pub fn resize(&self, size: WindowSize) -> io::Result<()> {
         let winsize = size.to_winsize();
         // SAFETY: TIOCSWINSZ reads a winsize struct.
@@ -211,7 +221,8 @@ impl Pty {
 
     /// The current directory of the program in the foreground (the shell,
     /// or what it runs), for resolving relative paths it printed.
-    pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+    #[must_use]
+    pub fn foreground_cwd(&self) -> Option<PathBuf> {
         // SAFETY: tcgetpgrp only reads the terminal's foreground group.
         let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
         // The group's leader may be gone while the group lives on.
@@ -226,6 +237,7 @@ impl Pty {
     /// terminal still edits lines, as `sudo`, `passwd` and `ssh` set it.
     /// Full-screen programs (and multiplexers such as zellij) turn off line
     /// editing as well, so they don't count.
+    #[must_use]
     pub fn password_input(&self) -> bool {
         // SAFETY: an all-zero termios is a valid value for tcgetattr to fill.
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
@@ -237,6 +249,7 @@ impl Pty {
         termios.c_lflag & libc::ECHO == 0 && termios.c_lflag & libc::ICANON != 0
     }
 
+    /// The child's exit status, if it has exited; never blocks.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }
@@ -263,6 +276,7 @@ impl Drop for Pty {
 }
 
 /// The program to run when none is given: `$SHELL`, then `/bin/sh`.
+#[must_use]
 pub fn default_shell() -> String {
     std::env::var("SHELL")
         .ok()
@@ -272,8 +286,9 @@ pub fn default_shell() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::{Duration, Instant};
+
+    use super::*;
 
     const SIZE: WindowSize = WindowSize {
         cols: 80,

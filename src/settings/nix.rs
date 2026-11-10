@@ -1,7 +1,5 @@
 //! TOML values written as Nix expressions, for `programs.jotty.settings`.
 
-use std::fmt::Write;
-
 /// The Nix expression for `value`, indented as a top-level expression.
 /// Fails on infinite and NaN floats, which Nix can't spell.
 pub fn to_nix(value: &toml::Value) -> Result<String, String> {
@@ -12,6 +10,7 @@ pub fn to_nix(value: &toml::Value) -> Result<String, String> {
 }
 
 fn write_value(out: &mut String, value: &toml::Value, depth: usize) -> Result<(), String> {
+    use std::fmt::Write;
     match value {
         toml::Value::String(s) => write_string(out, s),
         toml::Value::Integer(i) => {

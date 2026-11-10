@@ -11,15 +11,13 @@ pub mod software;
 
 use std::borrow::Cow;
 
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use crate::config::{Config, Rgb};
-use crate::font::{CellMetrics, Style, is_icon};
+use crate::color::Rgb;
+use crate::config::Config;
+use crate::font::{self, CellMetrics, Fonts, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
-use crate::terminal::{Cell, Color, CursorShape, Flags, Screen, Underline};
+use crate::terminal::{Cell, Color, CursorShape, DefaultColors, Flags, Screen, Underline};
 
 /// One of the two backends, which draw the same [`Batch`].
 pub enum Renderer {
@@ -28,6 +26,7 @@ pub enum Renderer {
 }
 
 impl Renderer {
+    #[must_use]
     pub fn cell(&self) -> CellMetrics {
         match self {
             Renderer::Gpu(r) => r.cell(),
@@ -43,6 +42,7 @@ impl Renderer {
         }
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         match self {
             Renderer::Gpu(r) => r.set_font_size(px),
@@ -50,7 +50,8 @@ impl Renderer {
         }
     }
 
-    pub fn set_fonts(&mut self, fonts: crate::font::Fonts) {
+    /// Replaces the fonts, after a config reload.
+    pub fn set_fonts(&mut self, fonts: Fonts) {
         match self {
             Renderer::Gpu(r) => r.set_fonts(fonts),
             Renderer::Cpu(r) => r.set_fonts(fonts),
@@ -74,6 +75,7 @@ impl Renderer {
     }
 }
 
+/// The colors and opacity a frame is drawn with.
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub foreground: Rgb,
@@ -94,6 +96,8 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The theme the config asks for, before any program changes colors.
+    #[must_use]
     pub fn from_config(config: &Config) -> Theme {
         Theme {
             foreground: config.colors.foreground,
@@ -111,35 +115,36 @@ impl Theme {
     }
 
     /// The configured colors, as color queries report them.
-    pub fn default_colors(&self) -> crate::terminal::DefaultColors {
-        let rgb = |c: Rgb| (c.0, c.1, c.2);
-        crate::terminal::DefaultColors {
-            foreground: rgb(self.foreground),
-            background: rgb(self.background),
-            cursor: rgb(self.cursor),
-            palette: std::array::from_fn(|i| rgb(self.indexed(i as u8))),
+    #[must_use]
+    pub fn default_colors(&self) -> DefaultColors {
+        DefaultColors {
+            foreground: self.foreground,
+            background: self.background,
+            cursor: self.cursor,
+            palette: std::array::from_fn(|i| self.indexed(i as u8)),
         }
     }
 
     /// The theme with the colors the program changed (OSC 4, 10, 11).
+    #[must_use]
     pub fn effective(&self, screen: &Screen) -> Cow<'_, Theme> {
         let colors = screen.color_overrides();
         if colors.is_empty() {
             return Cow::Borrowed(self);
         }
-        let rgb = |(r, g, b): (u8, u8, u8)| Rgb(r, g, b);
         let mut theme = self.clone();
         if let Some(c) = colors.foreground {
-            theme.foreground = rgb(c);
+            theme.foreground = c;
         }
         if let Some(c) = colors.background {
-            theme.background = rgb(c);
+            theme.background = c;
         }
-        theme.overrides = colors.palette.map(|c| c.map(rgb));
+        theme.overrides = colors.palette;
         Cow::Owned(theme)
     }
 
     /// Resolves a 256-color index.
+    #[must_use]
     pub fn indexed(&self, i: u8) -> Rgb {
         if let Some(c) = self.overrides[usize::from(i)] {
             return c;
@@ -149,17 +154,18 @@ impl Theme {
             16..=231 => {
                 let i = i - 16;
                 let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
-                Rgb(level(i / 36), level(i / 6 % 6), level(i % 6))
+                Rgb::new(level(i / 36), level(i / 6 % 6), level(i % 6))
             }
             232..=255 => {
                 let v = 8 + (i - 232) * 10;
-                Rgb(v, v, v)
+                Rgb::new(v, v, v)
             }
         }
     }
 
     /// Final foreground and background of a cell. `block_cursor` is the
     /// cursor color when a block cursor covers the cell.
+    #[must_use]
     pub fn cell_colors(
         &self,
         cell: &Cell,
@@ -174,12 +180,12 @@ impl Theme {
                 self.indexed(i + 8)
             }
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb(r, g, b),
+            Color::Rgb(rgb) => rgb,
         };
         let mut bg = match cell.bg {
             Color::Default => self.background,
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb(r, g, b),
+            Color::Rgb(rgb) => rgb,
         };
         if cell.flags.contains(Flags::DIM) {
             fg = blend(fg, bg, 0.66);
@@ -214,7 +220,7 @@ impl Theme {
 /// Mixes `a` into `b` with weight `t` for `a`.
 fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let mix = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
-    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+    Rgb::new(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b))
 }
 
 /// A glyph's location in the atlas and placement relative to its cell.
@@ -230,6 +236,9 @@ pub struct GlyphInfo {
     pub color: bool,
 }
 
+/// Where [`build`] gets glyphs: each backend caches them in its own atlas.
+/// `None` means there is nothing to draw: a blank, a character no font
+/// has, or a full atlas.
 pub trait GlyphCache {
     /// The glyph for `c` in a one-cell slot, or a two-cell slot when `wide`.
     fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo>;
@@ -245,6 +254,8 @@ pub trait GlyphCache {
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
 pub const VERTEX_FLOATS: usize = 9;
 
+/// The quads of a frame, ready to upload: 6 vertices of
+/// [`VERTEX_FLOATS`] floats each.
 #[derive(Debug, Default)]
 pub struct Batch {
     pub vertices: Vec<f32>,
@@ -274,6 +285,7 @@ impl Batch {
         }
     }
 
+    /// Adds an opaque rectangle of `color`.
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
         self.fill(x, y, w, h, color, 1.0);
     }
@@ -300,7 +312,7 @@ impl Batch {
     /// Part of an image: `uv` normalized within it, drawn into `rect`.
     fn image(&mut self, rect: [f32; 4], uv: [f32; 4], uid: u64) {
         self.images.push((self.vertices.len() / VERTEX_FLOATS, uid));
-        self.quad(rect, uv, Rgb(255, 255, 255), 1.0, 3.0);
+        self.quad(rect, uv, Rgb::new(255, 255, 255), 1.0, 3.0);
     }
 
     #[cfg(test)]
@@ -362,7 +374,8 @@ fn placement_quads(frame: &Frame, m: CellMetrics, out: &mut Vec<ImageQuad>) {
     let clip = [ox, oy, screen.cols() as f32 * cw, screen.rows() as f32 * ch];
     // The line shown in the top row.
     let top = screen.grid().scrolled as i64 - screen.display_offset() as i64;
-    for p in images.placements().iter().filter(|p| !p.is_virtual) {
+    let placed = images.placements().iter().filter(|p| !p.is_virtual);
+    for p in placed {
         let Some(image) = images.image(p.image) else {
             continue;
         };
@@ -434,10 +447,10 @@ fn placeholder_quad(
 }
 
 /// Everything besides the screen that affects what is drawn.
-pub struct Frame<'a> {
-    pub screen: &'a Screen,
-    pub selection: Option<&'a Selection>,
-    pub preedit: Option<&'a Preedit>,
+pub struct Frame<'frame> {
+    pub screen: &'frame Screen,
+    pub selection: Option<&'frame Selection>,
+    pub preedit: Option<&'frame Preedit>,
     pub focused: bool,
     /// Grid origin in physical pixels.
     pub origin: (u32, u32),
@@ -448,9 +461,9 @@ pub struct Frame<'a> {
     /// The vi mode cursor, drawn as a block instead of the terminal's.
     pub vi_cursor: Option<Point>,
     /// A short label drawn in the top-right corner, such as vi mode's.
-    pub label: Option<&'a str>,
+    pub label: Option<&'frame str>,
     /// The search bar's text, drawn over the bottom row while searching.
-    pub search: Option<&'a str>,
+    pub search: Option<&'frame str>,
 }
 
 fn style_of(cell: &Cell) -> Style {
@@ -460,6 +473,9 @@ fn style_of(cell: &Cell) -> Style {
     )
 }
 
+/// Turns a frame into quads: cell backgrounds, then glyphs, decorations
+/// and the cursor. Images go under the backgrounds, under the text or
+/// over it, by z-index.
 pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl GlyphCache) -> Batch {
     let screen = frame.screen;
     let (cw, ch) = (m.width as f32, m.height as f32);
@@ -472,9 +488,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         screen.cursor_visible() && frame.preedit.is_none() && frame.vi_cursor.is_none();
     let (cursor_row, cursor_col) = screen.cursor();
     let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
-    let cursor_color = screen
-        .cursor_color()
-        .map_or(theme.cursor, |(r, g, b)| Rgb(r, g, b));
+    let cursor_color = screen.cursor_color().unwrap_or(theme.cursor);
     let offset = screen.display_offset() as isize;
     let mut images = Vec::new();
     if !screen.graphics().is_empty() {
@@ -559,7 +573,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 // A Nerd Font icon followed by a space gets both cells, as in
                 // kitty and Ghostty; otherwise it is shrunk to fit its own.
                 let wide = span > 1.0
-                    || is_icon(cell.c)
+                    || font::is_icon(cell.c)
                         && row.cells().get(x + 1).is_some_and(|next| {
                             next.c == ' '
                                 && screen.cluster(next).is_empty()
@@ -579,7 +593,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 let color = match extra.underline_color {
                     Color::Default => fg,
                     Color::Indexed(i) => theme.indexed(i),
-                    Color::Rgb(r, g, b) => Rgb(r, g, b),
+                    Color::Rgb(rgb) => rgb,
                 };
                 front.glyph(px, py, &glyph, color);
             }
@@ -653,6 +667,7 @@ fn draw_label(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_width::UnicodeWidthChar;
     let cols = frame.screen.cols();
     let width: usize = text.chars().filter_map(|c| c.width()).sum();
     // A cell of padding on each side.
@@ -693,6 +708,7 @@ fn draw_search_bar(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_width::UnicodeWidthChar;
     let screen = frame.screen;
     let (cw, ch) = (m.width as f32, m.height as f32);
     let x = |col: usize| frame.origin.0 as f32 + col as f32 * cw;
@@ -730,6 +746,8 @@ fn draw_preedit(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let screen = frame.screen;
     let (row, start) = screen.cursor();
     let (cw, ch) = (m.width as f32, m.height as f32);
@@ -739,7 +757,7 @@ fn draw_preedit(
     let mut col = start;
     let mut cursor_col = None;
     // By grapheme: an input method may send a letter and its tone mark apart.
-    for (i, text) in preedit.text.grapheme_indices(true) {
+    for (i, text) in preedit.text.grapheme_indices(/* is_extended= */ true) {
         if preedit
             .cursor
             .is_some_and(|(begin, _)| (i..i + text.len()).contains(&begin))
@@ -882,10 +900,10 @@ mod tests {
         assert!(matches!(base.effective(t.screen()), Cow::Borrowed(_)));
         t.feed(b"\x1b]11;#010203\x07\x1b]4;1;#00ff00\x07\x1b]4;100;#0000ff\x07");
         let theme = base.effective(t.screen());
-        assert_eq!(theme.background, Rgb(1, 2, 3));
+        assert_eq!(theme.background, Rgb::new(1, 2, 3));
         assert_eq!(theme.foreground, base.foreground);
-        assert_eq!(theme.indexed(1), Rgb(0, 255, 0));
-        assert_eq!(theme.indexed(100), Rgb(0, 0, 255));
+        assert_eq!(theme.indexed(1), Rgb::new(0, 255, 0));
+        assert_eq!(theme.indexed(100), Rgb::new(0, 0, 255));
         assert_eq!(theme.indexed(2), base.indexed(2));
     }
 
@@ -919,11 +937,11 @@ mod tests {
     fn indexed_colors() {
         let t = theme();
         assert_eq!(t.indexed(3), t.palette[3]);
-        assert_eq!(t.indexed(16), Rgb(0, 0, 0));
-        assert_eq!(t.indexed(196), Rgb(255, 0, 0));
-        assert_eq!(t.indexed(231), Rgb(255, 255, 255));
-        assert_eq!(t.indexed(232), Rgb(8, 8, 8));
-        assert_eq!(t.indexed(255), Rgb(238, 238, 238));
+        assert_eq!(t.indexed(16), Rgb::new(0, 0, 0));
+        assert_eq!(t.indexed(196), Rgb::new(255, 0, 0));
+        assert_eq!(t.indexed(231), Rgb::new(255, 255, 255));
+        assert_eq!(t.indexed(232), Rgb::new(8, 8, 8));
+        assert_eq!(t.indexed(255), Rgb::new(238, 238, 238));
     }
 
     #[test]
@@ -934,19 +952,22 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, false, None),
+            t.cell_colors(&cell, /* selected= */ false, None),
             (t.palette[1], t.background)
         );
         cell.flags.insert(Flags::BOLD);
-        assert_eq!(t.cell_colors(&cell, false, None).0, t.palette[9]);
+        assert_eq!(
+            t.cell_colors(&cell, /* selected= */ false, None).0,
+            t.palette[9]
+        );
         cell.flags.insert(Flags::INVERSE);
         assert_eq!(
-            t.cell_colors(&cell, false, None),
+            t.cell_colors(&cell, /* selected= */ false, None),
             (t.background, t.palette[9])
         );
         // Selecting inverted text un-inverts it.
         assert_eq!(
-            t.cell_colors(&cell, true, None),
+            t.cell_colors(&cell, /* selected= */ true, None),
             (t.palette[9], t.background)
         );
 
@@ -954,7 +975,7 @@ mod tests {
             flags: Flags::HIDDEN,
             ..Cell::default()
         };
-        let (fg, bg) = t.cell_colors(&hidden, false, None);
+        let (fg, bg) = t.cell_colors(&hidden, /* selected= */ false, None);
         assert_eq!(fg, bg);
     }
 
@@ -966,15 +987,15 @@ mod tests {
             ..Cell::default()
         };
         // Only the background configured: the text is still inverted.
-        t.selection_background = Some(Rgb(1, 2, 3));
+        t.selection_background = Some(Rgb::new(1, 2, 3));
         assert_eq!(
-            t.cell_colors(&red, true, None),
-            (t.background, Rgb(1, 2, 3))
+            t.cell_colors(&red, /* selected= */ true, None),
+            (t.background, Rgb::new(1, 2, 3))
         );
-        t.selection_foreground = Some(Rgb(4, 5, 6));
+        t.selection_foreground = Some(Rgb::new(4, 5, 6));
         assert_eq!(
-            t.cell_colors(&red, true, None),
-            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+            t.cell_colors(&red, /* selected= */ true, None),
+            (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Inverse cells use the configured colors too.
         let inverse = Cell {
@@ -982,12 +1003,12 @@ mod tests {
             ..red
         };
         assert_eq!(
-            t.cell_colors(&inverse, true, None),
-            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+            t.cell_colors(&inverse, /* selected= */ true, None),
+            (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Unselected cells are unaffected.
         assert_eq!(
-            t.cell_colors(&red, false, None),
+            t.cell_colors(&red, /* selected= */ false, None),
             (t.palette[1], t.background)
         );
     }
@@ -995,7 +1016,7 @@ mod tests {
     #[test]
     fn block_cursor_colors() {
         let t = theme();
-        let (fg, bg) = t.cell_colors(&Cell::default(), false, Some(t.cursor));
+        let (fg, bg) = t.cell_colors(&Cell::default(), /* selected= */ false, Some(t.cursor));
         assert_eq!(bg, t.cursor);
         assert_eq!(fg, t.background);
     }
@@ -1003,14 +1024,14 @@ mod tests {
     #[test]
     fn cursor_text_color() {
         let mut t = theme();
-        t.cursor_text = Some(Rgb(1, 2, 3));
+        t.cursor_text = Some(Rgb::new(1, 2, 3));
         let cell = Cell {
             fg: Color::Indexed(2),
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, false, Some(Rgb(9, 9, 9))),
-            (Rgb(1, 2, 3), Rgb(9, 9, 9))
+            t.cell_colors(&cell, /* selected= */ false, Some(Rgb::new(9, 9, 9))),
+            (Rgb::new(1, 2, 3), Rgb::new(9, 9, 9))
         );
     }
 
@@ -1024,7 +1045,7 @@ mod tests {
             METRICS,
             &mut FakeGlyphs::default(),
         );
-        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+        assert_eq!(quad_at(&batch, 0).1, Rgb::new(0, 255, 0).to_f32());
 
         // Other cursor shapes and the unfocused outline use it too.
         term.feed(b"\x1b[6 q");
@@ -1034,7 +1055,7 @@ mod tests {
             METRICS,
             &mut FakeGlyphs::default(),
         );
-        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+        assert_eq!(quad_at(&batch, 0).1, Rgb::new(0, 255, 0).to_f32());
 
         term.feed(b"\x1b]112\x07");
         let batch = build(
@@ -1053,8 +1074,8 @@ mod tests {
             flags: Flags::DIM,
             ..Cell::default()
         };
-        let fg = t.cell_colors(&cell, false, None).0;
-        assert!(fg.0 < t.foreground.0 && fg.0 > t.background.0);
+        let fg = t.cell_colors(&cell, /* selected= */ false, None).0;
+        assert!(fg.r < t.foreground.r && fg.r > t.background.r);
     }
 
     #[test]
@@ -1157,8 +1178,8 @@ mod tests {
         let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.1, [(Underline::Curly, 1), (Underline::Curly, 2)]);
         // Each cell: glyph, then its underline in red.
-        assert_eq!(quad_at(&batch, 1).1, Rgb(255, 0, 0).to_f32());
-        assert_eq!(quad_at(&batch, 3).1, Rgb(255, 0, 0).to_f32());
+        assert_eq!(quad_at(&batch, 1).1, Rgb::new(255, 0, 0).to_f32());
+        assert_eq!(quad_at(&batch, 3).1, Rgb::new(255, 0, 0).to_f32());
 
         // An indexed underline color resolves through the palette.
         let mut term = Terminal::new(6, 1, 0);
@@ -1205,7 +1226,7 @@ mod tests {
     fn explicit_background_matching_default_stays_opaque() {
         let mut theme = theme();
         theme.opacity = 0.5;
-        let Rgb(r, g, b) = theme.background;
+        let Rgb { r, g, b } = theme.background;
         // A theme painting the configured background color explicitly.
         let mut term = Terminal::new(4, 1, 0);
         term.feed(format!("\x1b[?25l\x1b[48;2;{r};{g};{b}m ").as_bytes());

@@ -5,13 +5,15 @@
 //! Every field has a default, so an empty or missing file is valid.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
+use std::{fmt, io};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
+use crate::color::Rgb;
 use crate::keybinds::Keybinds;
 
+/// The config file. Every key is optional; missing keys keep their defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -26,7 +28,8 @@ pub struct Config {
     pub files: Files,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+/// The `[url]` section: opening links.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UrlConfig {
     /// Command that opens a link; the link is appended as its last argument.
@@ -51,7 +54,8 @@ impl Default for UrlConfig {
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// A kind of file that Ctrl+click opens, such as images.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileKind {
     /// File name extensions, without the dot, matched case-insensitively.
     pub extensions: Vec<String>,
@@ -110,6 +114,7 @@ impl From<BTreeMap<String, FileKindOverride>> for Files {
     }
 }
 
+/// The `[font]` section.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FontConfig {
@@ -137,6 +142,7 @@ impl Default for FontConfig {
     }
 }
 
+/// The `[window]` section.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
@@ -190,6 +196,7 @@ impl Default for WindowConfig {
     }
 }
 
+/// Which backend draws the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererKind {
@@ -200,7 +207,8 @@ pub enum RendererKind {
     Cpu,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+/// The `[terminal]` section.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
@@ -226,7 +234,8 @@ impl Default for TerminalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+/// The `[colors]` section.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorConfig {
     pub foreground: Rgb,
@@ -253,8 +262,8 @@ pub struct ColorConfig {
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
-            foreground: Rgb(0xdc, 0xdc, 0xdc),
-            background: Rgb(0x18, 0x18, 0x18),
+            foreground: Rgb::new(0xdc, 0xdc, 0xdc),
+            background: Rgb::new(0x18, 0x18, 0x18),
             cursor: None,
             cursor_text: None,
             selection_foreground: None,
@@ -264,27 +273,29 @@ impl Default for ColorConfig {
     }
 }
 
+/// The 16 ANSI colors used where `colors.palette` sets none.
 pub const DEFAULT_PALETTE: [Rgb; 16] = [
-    Rgb(0x24, 0x24, 0x24),
-    Rgb(0xe0, 0x6c, 0x75),
-    Rgb(0x98, 0xc3, 0x79),
-    Rgb(0xe5, 0xc0, 0x7b),
-    Rgb(0x61, 0xaf, 0xef),
-    Rgb(0xc6, 0x78, 0xdd),
-    Rgb(0x56, 0xb6, 0xc2),
-    Rgb(0xc8, 0xc8, 0xc8),
-    Rgb(0x5c, 0x63, 0x70),
-    Rgb(0xff, 0x7a, 0x85),
-    Rgb(0xb5, 0xe8, 0x90),
-    Rgb(0xff, 0xd6, 0x8a),
-    Rgb(0x7e, 0xc7, 0xff),
-    Rgb(0xde, 0x93, 0xf2),
-    Rgb(0x6e, 0xd3, 0xdf),
-    Rgb(0xff, 0xff, 0xff),
+    Rgb::new(0x24, 0x24, 0x24),
+    Rgb::new(0xe0, 0x6c, 0x75),
+    Rgb::new(0x98, 0xc3, 0x79),
+    Rgb::new(0xe5, 0xc0, 0x7b),
+    Rgb::new(0x61, 0xaf, 0xef),
+    Rgb::new(0xc6, 0x78, 0xdd),
+    Rgb::new(0x56, 0xb6, 0xc2),
+    Rgb::new(0xc8, 0xc8, 0xc8),
+    Rgb::new(0x5c, 0x63, 0x70),
+    Rgb::new(0xff, 0x7a, 0x85),
+    Rgb::new(0xb5, 0xe8, 0x90),
+    Rgb::new(0xff, 0xd6, 0x8a),
+    Rgb::new(0x7e, 0xc7, 0xff),
+    Rgb::new(0xde, 0x93, 0xf2),
+    Rgb::new(0x6e, 0xd3, 0xdf),
+    Rgb::new(0xff, 0xff, 0xff),
 ];
 
 impl ColorConfig {
     /// The 16 ANSI colors with user overrides applied.
+    #[must_use]
     pub fn palette(&self) -> [Rgb; 16] {
         let mut palette = DEFAULT_PALETTE;
         for (slot, color) in palette.iter_mut().zip(&self.palette) {
@@ -293,58 +304,18 @@ impl ColorConfig {
         palette
     }
 
+    /// The cursor color: `cursor` when set, else the foreground.
+    #[must_use]
     pub fn cursor(&self) -> Rgb {
         self.cursor.unwrap_or(self.foreground)
     }
 }
 
-/// An sRGB color, written as `"#rrggbb"` in the config file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Rgb(pub u8, pub u8, pub u8);
-
-impl Rgb {
-    pub fn to_f32(self) -> [f32; 3] {
-        [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
-    }
-}
-
-impl From<Rgb> for String {
-    fn from(color: Rgb) -> String {
-        color.to_string()
-    }
-}
-
-impl TryFrom<String> for Rgb {
-    type Error = String;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
-    }
-}
-
-impl std::str::FromStr for Rgb {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex = s.strip_prefix('#').unwrap_or(s);
-        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("invalid color {s:?}, expected \"#rrggbb\""));
-        }
-        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
-        Ok(Rgb(channel(0), channel(2), channel(4)))
-    }
-}
-
-impl fmt::Display for Rgb {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
-    }
-}
-
+/// Why a config file could not be read, with its path.
 #[derive(Debug)]
+#[must_use]
 pub enum ConfigError {
-    Io(PathBuf, std::io::Error),
+    Io(PathBuf, io::Error),
     Parse(PathBuf, toml::de::Error),
 }
 
@@ -360,6 +331,7 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
+    /// Parses a config file's text and clamps its values to their limits.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::from_str(text)?;
         config.sanitize();
@@ -398,7 +370,7 @@ impl Config {
                 Ok(Some(text)) => text,
                 Ok(None) if !required => String::new(),
                 Ok(None) => {
-                    let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+                    let e = io::Error::from(io::ErrorKind::NotFound);
                     return Err(ConfigError::Io(path.to_path_buf(), e));
                 }
                 Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
@@ -456,17 +428,21 @@ impl Config {
 /// Writes an `f32` as the shortest decimal that reads back as it, so 12.4
 /// stays 12.4 rather than widening to 12.399999618530273 (TOML floats
 /// are 64-bit).
-fn short_f32<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+fn short_f32<S: Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
     let shortest = value.to_string().parse().unwrap_or(f64::from(*value));
     serializer.serialize_f64(shortest)
 }
 
+/// Where the config file is when `--config` doesn't say:
+/// `$XDG_CONFIG_HOME/jotty/config.toml`.
+#[must_use]
 pub fn default_path() -> Option<PathBuf> {
     xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
 }
 
 /// Where `jotty config` keeps its overrides, which take precedence over
 /// the config file.
+#[must_use]
 pub fn overrides_path() -> Option<PathBuf> {
     xdg_dir("XDG_STATE_HOME", ".local/state").map(|dir| dir.join("jotty").join("overrides.toml"))
 }
@@ -480,10 +456,10 @@ fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
 }
 
 /// A file's contents, or `None` when it doesn't exist.
-pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
+pub fn read_optional(path: &Path) -> io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -584,13 +560,16 @@ mod tests {
         assert!(config.window.blur);
         assert_eq!(config.terminal.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.terminal.scrollback, 500);
-        assert_eq!(config.colors.cursor(), Rgb(255, 0, 0));
-        assert_eq!(config.colors.cursor_text, Some(Rgb(0, 255, 0)));
-        assert_eq!(config.colors.selection_foreground, Some(Rgb(0, 0, 1)));
-        assert_eq!(config.colors.selection_background, Some(Rgb(255, 255, 254)));
+        assert_eq!(config.colors.cursor(), Rgb::new(255, 0, 0));
+        assert_eq!(config.colors.cursor_text, Some(Rgb::new(0, 255, 0)));
+        assert_eq!(config.colors.selection_foreground, Some(Rgb::new(0, 0, 1)));
+        assert_eq!(
+            config.colors.selection_background,
+            Some(Rgb::new(255, 255, 254))
+        );
         let palette = config.colors.palette();
-        assert_eq!(palette[0], Rgb(1, 2, 3));
-        assert_eq!(palette[1], Rgb(0xaa, 0xbb, 0xcc));
+        assert_eq!(palette[0], Rgb::new(1, 2, 3));
+        assert_eq!(palette[1], Rgb::new(0xaa, 0xbb, 0xcc));
         assert_eq!(palette[2], DEFAULT_PALETTE[2]);
     }
 
@@ -616,7 +595,7 @@ mod tests {
     #[test]
     fn color_roundtrip() {
         let c: Rgb = "#1a2B3c".parse().unwrap();
-        assert_eq!(c, Rgb(0x1a, 0x2b, 0x3c));
+        assert_eq!(c, Rgb::new(0x1a, 0x2b, 0x3c));
         assert_eq!(c.to_string(), "#1a2b3c");
         assert_eq!("1a2b3c".parse::<Rgb>().unwrap(), c);
     }

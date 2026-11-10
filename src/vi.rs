@@ -3,7 +3,7 @@
 //! searching without the mouse.
 
 use crate::search::Direction;
-use crate::selection::{Point, Selection, Unit, line_bounds};
+use crate::selection::{self, Point, Selection, Unit};
 use crate::terminal::{Flags, Screen};
 
 /// A key, as vi mode sees it.
@@ -23,6 +23,7 @@ pub enum Key {
     PageDown,
 }
 
+/// What a visual selection covers: characters, whole lines or a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visual {
     Char,
@@ -47,6 +48,7 @@ pub enum Outcome {
     Next { reverse: bool },
 }
 
+/// The vi mode cursor and the command being typed.
 pub struct ViMode {
     pub cursor: Point,
     /// The visual mode and where it started.
@@ -58,6 +60,7 @@ pub struct ViMode {
 }
 
 impl ViMode {
+    #[must_use]
     pub fn new(cursor: Point) -> ViMode {
         ViMode {
             cursor,
@@ -67,19 +70,22 @@ impl ViMode {
         }
     }
 
+    /// The visual mode, if one is active.
+    #[must_use]
     pub fn visual(&self) -> Option<Visual> {
         self.visual.map(|(mode, _)| mode)
     }
 
     /// What visual mode covers, from where it started to the cursor.
+    #[must_use]
     pub fn selection(&self, screen: &Screen) -> Option<Selection> {
         let (mode, anchor) = self.visual?;
         let (start, end) = (anchor.min(self.cursor), anchor.max(self.cursor));
         Some(match mode {
             Visual::Char => Selection::span(start, end, Unit::Fixed),
             Visual::Line => Selection::span(
-                line_bounds(screen, start).0,
-                line_bounds(screen, end).1,
+                selection::line_bounds(screen, start).0,
+                selection::line_bounds(screen, end).1,
                 Unit::Fixed,
             ),
             Visual::Block => Selection::block(anchor, self.cursor),
@@ -103,6 +109,7 @@ impl ViMode {
         self.clamp(screen);
     }
 
+    /// Handles a key and says what the application should do with it.
     pub fn key(&mut self, screen: &Screen, key: Key) -> Outcome {
         if let Key::Char(c @ '0'..='9') = key
             && (c != '0' || self.count.is_some())
@@ -206,8 +213,8 @@ impl ViMode {
             ('y', Key::Char('y')) => {
                 let line = self.cursor.line;
                 let last = (line + count as isize - 1).min(screen.rows() as isize - 1);
-                let start = line_bounds(screen, self.cursor).0;
-                let end = line_bounds(screen, Point { line: last, col: 0 }).1;
+                let start = selection::line_bounds(screen, self.cursor).0;
+                let end = selection::line_bounds(screen, Point { line: last, col: 0 }).1;
                 Outcome::Yank(Selection::span(start, end, Unit::Fixed).text(screen))
             }
             // Anything else cancels the command.

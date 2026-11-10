@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod color;
 mod config;
 mod emoji;
 mod font;
@@ -26,6 +27,7 @@ use std::process::ExitCode;
 use cli::Parsed;
 use config::Config;
 
+#[must_use]
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 

@@ -28,6 +28,7 @@ fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
     Some(hasher.finish())
 }
 
+/// A cell position in screen lines (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Point {
     pub line: isize,
@@ -93,6 +94,7 @@ fn word_bounds(screen: &Screen, at: Point) -> Option<(Point, Point)> {
 
 /// First and last cell of the line under `at`, including the rows it
 /// soft-wraps onto.
+#[must_use]
 pub fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
     let mut first = at.line;
     while screen.row_at(first - 1).is_some_and(|r| r.wrapped) {
@@ -131,6 +133,7 @@ pub enum Unit {
     Fixed,
 }
 
+/// A selection between two points, by cell, word or line, or a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     anchor: Point,
@@ -145,6 +148,8 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// An empty selection by cell, started by a click at `at`.
+    #[must_use]
     pub fn new(at: Point) -> Self {
         Selection {
             anchor: at,
@@ -157,6 +162,7 @@ impl Selection {
 
     /// A selection of `start..=end` that is never empty and, when dragged,
     /// grows by `unit`.
+    #[must_use]
     pub fn span(start: Point, end: Point, unit: Unit) -> Self {
         Selection {
             anchor: start,
@@ -168,6 +174,7 @@ impl Selection {
     }
 
     /// A rectangle with corners `a` and `b`, made with the keyboard.
+    #[must_use]
     pub fn block(a: Point, b: Point) -> Self {
         Selection {
             block: true,
@@ -177,17 +184,20 @@ impl Selection {
 
     /// The word under `at`, following soft-wrapped lines, or `None` on
     /// whitespace and delimiters.
+    #[must_use]
     pub fn word(screen: &Screen, at: Point) -> Option<Self> {
         let (start, end) = word_bounds(screen, at)?;
         Some(Selection::span(start, end, Unit::Word))
     }
 
     /// The whole line under `at`, including the rows it soft-wraps onto.
+    #[must_use]
     pub fn line(screen: &Screen, at: Point) -> Self {
         let (start, end) = line_bounds(screen, at);
         Selection::span(start, end, Unit::Line)
     }
 
+    /// Moves the end being dragged to `to`.
     pub fn update(&mut self, to: Point) {
         self.head = to;
     }
@@ -226,6 +236,7 @@ impl Selection {
 
     /// A fingerprint of each selected row on the live screen, by line, to
     /// tell later whether output changed the selected text.
+    #[must_use]
     pub fn live_rows(&self, screen: &Screen) -> Vec<(isize, u64)> {
         let (start, end) = self.range();
         (start.line.max(0)..=end.line.min(screen.rows() as isize - 1))
@@ -250,11 +261,14 @@ impl Selection {
                 .all(|&(line, hash)| row_hash(screen, line - scrolled) == Some(hash))
     }
 
+    /// Whether nothing is selected: a click that didn't drag.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.anchor == self.head && self.unit == Unit::Cell
     }
 
     /// Start and end, inclusive, in reading order.
+    #[must_use]
     pub fn range(&self) -> (Point, Point) {
         if self.anchor <= self.head {
             (self.anchor, self.head)
@@ -263,6 +277,7 @@ impl Selection {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, p: Point) -> bool {
         let (start, end) = self.range();
         if self.block {
@@ -278,6 +293,9 @@ impl Selection {
         (a.min(b), a.max(b))
     }
 
+    /// The selected text, without trailing blanks. Soft-wrapped rows are
+    /// joined; other rows end with a newline.
+    #[must_use]
     pub fn text(&self, screen: &Screen) -> String {
         let (start, end) = self.range();
         let mut out = String::new();

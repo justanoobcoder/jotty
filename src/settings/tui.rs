@@ -2,6 +2,7 @@
 //! overrides file right away, so running windows show it as you go.
 
 use std::io;
+use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{
@@ -14,10 +15,11 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
+use super::Layers;
 use super::schema::{self, Key, SECTIONS};
-use super::{Layers, get_path, read_table, remove_path, save, set_path};
-use crate::config::{Config, DEFAULT_PALETTE, Rgb};
-use unicode_width::UnicodeWidthChar;
+use crate::color::Rgb;
+use crate::config::{Config, DEFAULT_PALETTE};
+use crate::settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -65,6 +67,7 @@ pub struct State {
 }
 
 impl State {
+    /// The TUI's state at start, over the config files in `layers`.
     pub fn new(layers: Layers) -> State {
         let mut state = State {
             layers,
@@ -134,7 +137,7 @@ impl State {
         let mut merged = self.layers.base.clone();
         crate::config::merge(&mut merged, overrides.clone());
         Config::from_table(merged).map_err(|e| e.message().to_string())?;
-        save(&self.layers.overrides_path, &overrides)
+        settings::save(&self.layers.overrides_path, &overrides)
             .map_err(|e| format!("{}: {e}", self.layers.overrides_path.display()))?;
         self.layers.overrides = overrides;
         self.refresh();
@@ -144,7 +147,7 @@ impl State {
     /// The overrides as saved now: another `jotty config`, a `reset` or a
     /// hand edit may have changed them since this one started.
     fn current_overrides(&self) -> Result<toml::Table, String> {
-        read_table(&self.layers.overrides_path)
+        settings::read_table(&self.layers.overrides_path)
             .map(Option::unwrap_or_default)
             .map_err(|e| format!("not saving over a broken file: {e}"))
     }
@@ -153,13 +156,13 @@ impl State {
     fn effective_of(&self, key: &Key) -> Option<toml::Value> {
         match key.index {
             Some(i) => Some(toml::Value::String(self.palette[i].to_string())),
-            None => get_path(&self.effective, &key.path).cloned(),
+            None => settings::get_path(&self.effective, &key.path).cloned(),
         }
     }
 
     /// The value the overrides give `key`, if they change it.
     fn override_of(&self, key: &Key) -> Option<toml::Value> {
-        let value = get_path(&self.layers.overrides, &key.path)?;
+        let value = settings::get_path(&self.layers.overrides, &key.path)?;
         match key.index {
             // The list replaces the config file's as a whole, so a color
             // counts as overridden when it ends up different, also when a
@@ -172,7 +175,7 @@ impl State {
 
     /// The value the config file gives `key`.
     fn base_of(&self, key: &Key) -> Option<toml::Value> {
-        let value = get_path(&self.layers.base, &key.path)?;
+        let value = settings::get_path(&self.layers.base, &key.path)?;
         match key.index {
             Some(i) => value.as_array()?.get(i).cloned(),
             None => Some(value.clone()),
@@ -198,18 +201,18 @@ impl State {
                     None => self.base_palette[i],
                 };
                 if palette == self.base_palette {
-                    remove_path(&mut overrides, &key.path);
+                    settings::remove_path(&mut overrides, &key.path);
                 } else {
                     let list = palette.iter().map(|c| toml::Value::String(c.to_string()));
-                    set_path(
+                    settings::set_path(
                         &mut overrides,
                         &key.path,
                         toml::Value::Array(list.collect()),
                     );
                 }
             }
-            (None, Some(value)) => set_path(&mut overrides, &key.path, value),
-            (None, None) => remove_path(&mut overrides, &key.path),
+            (None, Some(value)) => settings::set_path(&mut overrides, &key.path, value),
+            (None, None) => settings::remove_path(&mut overrides, &key.path),
         }
         self.commit(overrides)
     }
@@ -793,7 +796,7 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
         s.parse::<Rgb>()
             .ok()
             // Not reversed with a highlighted row, or it shows the row's color.
-            .map(|Rgb(r, g, b)| Span::raw("  ").bg(Color::Rgb(r, g, b)).not_reversed())
+            .map(|Rgb { r, g, b }| Span::raw("  ").bg(Color::Rgb(r, g, b)).not_reversed())
     };
     let mut spans = Vec::new();
     match value {
@@ -821,12 +824,14 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
 
 /// Columns `s` takes on screen.
 fn text_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
     s.chars().map(|c| c.width().unwrap_or(0)).sum()
 }
 
 /// The part of `buffer` to show in `room` columns so that the char at
 /// `cursor` is visible: its byte range, and the cursor's column in it.
 fn edit_window(buffer: &str, cursor: usize, room: usize) -> (usize, usize, usize) {
+    use unicode_width::UnicodeWidthChar;
     let chars: Vec<(usize, char)> = buffer.char_indices().collect();
     let cursor = cursor.min(chars.len());
     let width = |range: &[(usize, char)]| {
@@ -850,8 +855,8 @@ fn edit_window(buffer: &str, cursor: usize, room: usize) -> (usize, usize, usize
 }
 
 /// `path` with the home directory written as `~`.
-fn tilde(path: &std::path::Path) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+fn tilde(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     match home
         .as_deref()
         .and_then(|home| path.strip_prefix(home).ok())
@@ -887,7 +892,7 @@ pub fn run(layers: Layers) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    fn state(base: &str, overrides: &str) -> (State, std::path::PathBuf) {
+    fn state(base: &str, overrides: &str) -> (State, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "jotty-tui-{}-{}",
             std::process::id(),
@@ -899,7 +904,7 @@ mod tests {
             overrides_path: dir.join("overrides.toml"),
             overrides: toml::from_str(overrides).unwrap(),
         };
-        save(&layers.overrides_path, &layers.overrides).unwrap();
+        settings::save(&layers.overrides_path, &layers.overrides).unwrap();
         (State::new(layers), dir)
     }
 
@@ -923,7 +928,7 @@ mod tests {
         state.handle(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
-    fn saved(dir: &std::path::Path) -> Option<toml::Table> {
+    fn saved(dir: &Path) -> Option<toml::Table> {
         std::fs::read_to_string(dir.join("overrides.toml"))
             .ok()
             .map(|t| toml::from_str(&t).unwrap())
@@ -935,7 +940,7 @@ mod tests {
         let size = key(&state, "font.size");
         state.set(&size, Some(toml::Value::Float(14.0))).unwrap();
         assert_eq!(
-            get_path(&state.effective, &size.path),
+            settings::get_path(&state.effective, &size.path),
             Some(&toml::Value::Float(14.0))
         );
         assert_eq!(
@@ -944,7 +949,7 @@ mod tests {
         );
         state.set(&size, None).unwrap();
         assert_eq!(
-            get_path(&state.effective, &size.path),
+            settings::get_path(&state.effective, &size.path),
             Some(&toml::Value::Float(10.0))
         );
         // Nothing left: the file is gone, and so is the empty [font].
@@ -1022,7 +1027,7 @@ mod tests {
         state.selected = state.visible().iter().position(|k| **k == blur).unwrap();
         press(&mut state, KeyCode::Enter);
         assert_eq!(
-            get_path(&state.layers.overrides, &blur.path),
+            settings::get_path(&state.layers.overrides, &blur.path),
             Some(&toml::Value::Boolean(true))
         );
         state.reset_section("window").unwrap();
@@ -1149,8 +1154,8 @@ mod tests {
         state
             .set(&red, Some(toml::Value::String("#ff0000".into())))
             .unwrap();
-        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
-        assert_eq!(state.palette[0], Rgb(1, 1, 1));
+        assert_eq!(state.palette[1], Rgb::new(0xff, 0, 0));
+        assert_eq!(state.palette[0], Rgb::new(1, 1, 1));
         assert!(state.override_of(&red).is_some());
         // Saved as all 16, but only red counts as overridden.
         let saved_palette = saved(&dir).unwrap()["colors"]["palette"]
@@ -1217,8 +1222,8 @@ mod tests {
         state
             .set(&red, Some(toml::Value::String("#ff0000".into())))
             .unwrap();
-        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
-        assert_eq!(state.palette[4], Rgb(0, 0, 0xff));
+        assert_eq!(state.palette[1], Rgb::new(0xff, 0, 0));
+        assert_eq!(state.palette[4], Rgb::new(0, 0, 0xff));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
