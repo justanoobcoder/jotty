@@ -336,7 +336,14 @@ impl Renderer {
             let stride = (VERTEX_FLOATS * 4) as i32;
             for (index, size, offset) in [(0, 2, 0), (1, 2, 2), (2, 4, 4), (3, 1, 8)] {
                 gl.enable_vertex_attrib_array(index);
-                gl.vertex_attrib_pointer_f32(index, size, glow::FLOAT, false, stride, offset * 4);
+                gl.vertex_attrib_pointer_f32(
+                    index,
+                    size,
+                    glow::FLOAT,
+                    /* normalized= */ false,
+                    stride,
+                    offset * 4,
+                );
             }
 
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);

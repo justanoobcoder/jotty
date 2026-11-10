@@ -740,7 +740,7 @@ fn draw_preedit(
     let mut col = start;
     let mut cursor_col = None;
     // By grapheme: an input method may send a letter and its tone mark apart.
-    for (i, text) in preedit.text.grapheme_indices(true) {
+    for (i, text) in preedit.text.grapheme_indices(/* is_extended= */ true) {
         if preedit
             .cursor
             .is_some_and(|(begin, _)| (i..i + text.len()).contains(&begin))
@@ -935,19 +935,22 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, false, None),
+            t.cell_colors(&cell, /* selected= */ false, None),
             (t.palette[1], t.background)
         );
         cell.flags.insert(Flags::BOLD);
-        assert_eq!(t.cell_colors(&cell, false, None).0, t.palette[9]);
+        assert_eq!(
+            t.cell_colors(&cell, /* selected= */ false, None).0,
+            t.palette[9]
+        );
         cell.flags.insert(Flags::INVERSE);
         assert_eq!(
-            t.cell_colors(&cell, false, None),
+            t.cell_colors(&cell, /* selected= */ false, None),
             (t.background, t.palette[9])
         );
         // Selecting inverted text un-inverts it.
         assert_eq!(
-            t.cell_colors(&cell, true, None),
+            t.cell_colors(&cell, /* selected= */ true, None),
             (t.palette[9], t.background)
         );
 
@@ -955,7 +958,7 @@ mod tests {
             flags: Flags::HIDDEN,
             ..Cell::default()
         };
-        let (fg, bg) = t.cell_colors(&hidden, false, None);
+        let (fg, bg) = t.cell_colors(&hidden, /* selected= */ false, None);
         assert_eq!(fg, bg);
     }
 
@@ -969,12 +972,12 @@ mod tests {
         // Only the background configured: the text is still inverted.
         t.selection_background = Some(Rgb(1, 2, 3));
         assert_eq!(
-            t.cell_colors(&red, true, None),
+            t.cell_colors(&red, /* selected= */ true, None),
             (t.background, Rgb(1, 2, 3))
         );
         t.selection_foreground = Some(Rgb(4, 5, 6));
         assert_eq!(
-            t.cell_colors(&red, true, None),
+            t.cell_colors(&red, /* selected= */ true, None),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
         );
         // Inverse cells use the configured colors too.
@@ -983,12 +986,12 @@ mod tests {
             ..red
         };
         assert_eq!(
-            t.cell_colors(&inverse, true, None),
+            t.cell_colors(&inverse, /* selected= */ true, None),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
         );
         // Unselected cells are unaffected.
         assert_eq!(
-            t.cell_colors(&red, false, None),
+            t.cell_colors(&red, /* selected= */ false, None),
             (t.palette[1], t.background)
         );
     }
@@ -996,7 +999,7 @@ mod tests {
     #[test]
     fn block_cursor_colors() {
         let t = theme();
-        let (fg, bg) = t.cell_colors(&Cell::default(), false, Some(t.cursor));
+        let (fg, bg) = t.cell_colors(&Cell::default(), /* selected= */ false, Some(t.cursor));
         assert_eq!(bg, t.cursor);
         assert_eq!(fg, t.background);
     }
@@ -1010,7 +1013,7 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, false, Some(Rgb(9, 9, 9))),
+            t.cell_colors(&cell, /* selected= */ false, Some(Rgb(9, 9, 9))),
             (Rgb(1, 2, 3), Rgb(9, 9, 9))
         );
     }
@@ -1054,7 +1057,7 @@ mod tests {
             flags: Flags::DIM,
             ..Cell::default()
         };
-        let fg = t.cell_colors(&cell, false, None).0;
+        let fg = t.cell_colors(&cell, /* selected= */ false, None).0;
         assert!(fg.0 < t.foreground.0 && fg.0 > t.background.0);
     }
 

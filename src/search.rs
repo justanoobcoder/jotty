@@ -41,7 +41,7 @@ pub fn find_wrapping(
                 col: 0,
             },
         };
-        find(screen, query, edge, direction, true)
+        find(screen, query, edge, direction, /* inclusive= */ true)
     })
 }
 
@@ -139,15 +139,38 @@ mod tests {
         let from = Point { line: 0, col: 19 };
         for query in ["caf\u{e9}", "cafe\u{301}", "h\u{e0}"] {
             assert!(
-                find(t.screen(), query, from, Direction::Older, true).is_some(),
+                find(
+                    t.screen(),
+                    query,
+                    from,
+                    Direction::Older,
+                    /* inclusive= */ true
+                )
+                .is_some(),
                 "{query}"
             );
         }
         // The plain letter is another one.
-        let found = find(t.screen(), "ha", from, Direction::Older, true).unwrap();
+        let found = find(
+            t.screen(),
+            "ha",
+            from,
+            Direction::Older,
+            /* inclusive= */ true,
+        )
+        .unwrap();
         assert_eq!(found.0.col, 8);
         let first = Point { line: 0, col: 7 };
-        assert_eq!(find(t.screen(), "ha", first, Direction::Older, true), None);
+        assert_eq!(
+            find(
+                t.screen(),
+                "ha",
+                first,
+                Direction::Older,
+                /* inclusive= */ true
+            ),
+            None
+        );
     }
     use crate::terminal::Terminal;
 
@@ -169,22 +192,32 @@ mod tests {
         // History: -3 "a foo", -2 "Foo b", -1 "xx"; screen: 0-1
         // "yyyyyyfo|o", 2 "zz".
         let end = p(2, 7);
-        let m = find(s, "foo", end, Direction::Older, true).unwrap();
+        let m = find(s, "foo", end, Direction::Older, /* inclusive= */ true).unwrap();
         assert_eq!(m, (p(0, 6), p(1, 0)));
-        let m = find(s, "foo", m.0, Direction::Older, false).unwrap();
+        let m = find(s, "foo", m.0, Direction::Older, /* inclusive= */ false).unwrap();
         assert_eq!(m, (p(-2, 0), p(-2, 2)));
-        let m = find(s, "foo", m.0, Direction::Older, false).unwrap();
+        let m = find(s, "foo", m.0, Direction::Older, /* inclusive= */ false).unwrap();
         assert_eq!(m, (p(-3, 2), p(-3, 4)));
-        assert_eq!(find(s, "foo", m.0, Direction::Older, false), None);
+        assert_eq!(
+            find(s, "foo", m.0, Direction::Older, /* inclusive= */ false),
+            None
+        );
         // And back.
-        let m = find(s, "foo", m.0, Direction::Newer, false).unwrap();
+        let m = find(s, "foo", m.0, Direction::Newer, /* inclusive= */ false).unwrap();
         assert_eq!(m, (p(-2, 0), p(-2, 2)));
     }
 
     #[test]
     fn uppercase_makes_it_case_sensitive() {
         let t = terminal();
-        let m = find(t.screen(), "Foo", p(2, 7), Direction::Older, true).unwrap();
+        let m = find(
+            t.screen(),
+            "Foo",
+            p(2, 7),
+            Direction::Older,
+            /* inclusive= */ true,
+        )
+        .unwrap();
         assert_eq!(m, (p(-2, 0), p(-2, 2)));
     }
 
@@ -193,9 +226,16 @@ mod tests {
         let t = terminal();
         let s = t.screen();
         // Past the oldest match, the newest one.
-        let m = find_wrapping(s, "foo", p(-3, 2), Direction::Older, false).unwrap();
+        let m = find_wrapping(
+            s,
+            "foo",
+            p(-3, 2),
+            Direction::Older,
+            /* inclusive= */ false,
+        )
+        .unwrap();
         assert_eq!(m, (p(0, 6), p(1, 0)));
-        let m = find_wrapping(s, "foo", m.0, Direction::Newer, false).unwrap();
+        let m = find_wrapping(s, "foo", m.0, Direction::Newer, /* inclusive= */ false).unwrap();
         assert_eq!(m, (p(-3, 2), p(-3, 4)));
     }
 
@@ -203,9 +243,24 @@ mod tests {
     fn nothing_found() {
         let t = terminal();
         assert_eq!(
-            find(t.screen(), "nope", p(2, 7), Direction::Older, true),
+            find(
+                t.screen(),
+                "nope",
+                p(2, 7),
+                Direction::Older,
+                /* inclusive= */ true
+            ),
             None
         );
-        assert_eq!(find(t.screen(), "", p(2, 7), Direction::Older, true), None);
+        assert_eq!(
+            find(
+                t.screen(),
+                "",
+                p(2, 7),
+                Direction::Older,
+                /* inclusive= */ true
+            ),
+            None
+        );
     }
 }

@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn scroll_up_pushes_history() {
         let mut grid = grid_with_lines(&["a", "b", "c"], 4);
-        grid.scroll_up(0, 2, 1, &Cell::default(), true);
+        grid.scroll_up(0, 2, 1, &Cell::default(), /* keep= */ true);
         assert_eq!(texts(&grid), ["b", "c", ""]);
         assert_eq!(grid.history.len(), 1);
         assert_eq!(grid.history[0].text(), "a");
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn scroll_region_does_not_touch_history() {
         let mut grid = grid_with_lines(&["a", "b", "c", "d"], 4);
-        grid.scroll_up(1, 2, 1, &Cell::default(), false);
+        grid.scroll_up(1, 2, 1, &Cell::default(), /* keep= */ false);
         assert_eq!(texts(&grid), ["a", "c", "", "d"]);
         assert!(grid.history.is_empty());
         grid.scroll_down(0, 3, 2, &Cell::default());
@@ -634,7 +634,7 @@ mod tests {
         let mut grid = Grid::new(2, 1, 2);
         for c in ['a', 'b', 'c'] {
             grid.rows[0].cell_mut(0).c = c;
-            grid.scroll_up(0, 0, 1, &Cell::default(), true);
+            grid.scroll_up(0, 0, 1, &Cell::default(), /* keep= */ true);
         }
         let history: Vec<_> = grid.history.iter().map(Row::text).collect();
         assert_eq!(history, ["b", "c"]);
@@ -655,7 +655,7 @@ mod tests {
                 row.cell_mut(1).extra = 1;
                 row.wrapped = true;
                 row.mark = Some(Mark::Prompt);
-                grid.scroll_up(0, 0, 1, &template, true);
+                grid.scroll_up(0, 0, 1, &template, /* keep= */ true);
                 let row = &grid.rows[0];
                 assert_eq!(row.cells, [Cell::blank(&template); 3]);
                 assert!(!row.wrapped);

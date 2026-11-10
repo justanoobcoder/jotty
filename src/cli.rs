@@ -177,10 +177,13 @@ mod tests {
     #[test]
     fn config_commands() {
         let export = |merged, nix| Ok(Parsed::Config(None, ConfigCommand::Export { merged, nix }));
-        assert_eq!(run(&["config", "export"]), export(false, false));
+        assert_eq!(
+            run(&["config", "export"]),
+            export(/* merged= */ false, /* nix= */ false)
+        );
         assert_eq!(
             run(&["config", "export", "--nix", "--merged"]),
-            export(true, true)
+            export(/* merged= */ true, /* nix= */ true)
         );
         assert_eq!(
             run(&["-c", "/a.toml", "config", "reset"]),

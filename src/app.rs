@@ -884,7 +884,7 @@ impl App {
             }
             Err(e) => self.draw_failed(&e),
         }
-        self.update_text_input(false);
+        self.update_text_input(/* force= */ false);
     }
 
     /// A frame couldn't be drawn. That may pass (a failed allocation under
@@ -1013,12 +1013,12 @@ impl App {
                 };
                 search.query.pop();
                 let direction = search.direction;
-                self.search_step(direction, true);
+                self.search_step(direction, /* inclusive= */ true);
             }
-            Keysym::Up => self.search_step(Direction::Older, false),
-            Keysym::Down => self.search_step(Direction::Newer, false),
-            Keysym::r if ctrl => self.search_step(Direction::Older, false),
-            Keysym::s if ctrl => self.search_step(Direction::Newer, false),
+            Keysym::Up => self.search_step(Direction::Older, /* inclusive= */ false),
+            Keysym::Down => self.search_step(Direction::Newer, /* inclusive= */ false),
+            Keysym::r if ctrl => self.search_step(Direction::Older, /* inclusive= */ false),
+            Keysym::s if ctrl => self.search_step(Direction::Newer, /* inclusive= */ false),
             _ if !ctrl && !self.modifiers.alt => {
                 if let Some(text) = &event.utf8 {
                     self.search_type(text);
@@ -1038,7 +1038,7 @@ impl App {
             .query
             .extend(text.chars().filter(|c| !c.is_control()));
         let direction = search.direction;
-        self.search_step(direction, true);
+        self.search_step(direction, /* inclusive= */ true);
     }
 
     /// Opens the search bar, searching in `direction` from the vi cursor,
@@ -1149,8 +1149,9 @@ impl App {
             *direction
         };
         let screen = self.term.screen();
-        if let Some((start, _)) = search::find_wrapping(screen, query, vi.cursor, direction, false)
-        {
+        if let Some((start, _)) = search::find_wrapping(
+            screen, query, vi.cursor, direction, /* inclusive= */ false,
+        ) {
             vi.move_to(start, screen);
         }
     }
@@ -2054,7 +2055,7 @@ impl App {
             Event::Enter { surface } if &surface == self.window.wl_surface() => {
                 self.ime.active = true;
                 text_input.enable();
-                self.update_text_input(true);
+                self.update_text_input(/* force= */ true);
             }
             Event::Leave { .. } => {
                 text_input.disable();

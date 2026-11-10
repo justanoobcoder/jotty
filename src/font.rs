@@ -582,7 +582,7 @@ impl Fonts {
             if glyph.as_ref().is_some_and(|g| g.color) {
                 break;
             }
-            let Some(mut part) = self.rasterize_text(c, style, false) else {
+            let Some(mut part) = self.rasterize_text(c, style, /* wide= */ false) else {
                 continue;
             };
             if width > 0 {
@@ -1082,14 +1082,20 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
                 } else {
                     [(wf / 2.0, 0.0), (wf / 2.0, hf)]
                 };
-                draw_circles(&mut canvas, s, &centers, wf / 2.0, false);
+                draw_circles(&mut canvas, s, &centers, wf / 2.0, /* filled= */ false);
             }
             // Half discs with their flat side on the cell edge, so ◗ and ◖
             // round off whatever is next to them and pairs make a circle a
             // cell wide.
             '◖' | '◗' => {
                 let x = if c == '◖' { w as f32 } else { 0.0 };
-                draw_circles(&mut canvas, s, &[(x, h as f32 / 2.0)], w as f32 / 2.0, true);
+                draw_circles(
+                    &mut canvas,
+                    s,
+                    &[(x, h as f32 / 2.0)],
+                    w as f32 / 2.0,
+                    /* filled= */ true,
+                );
             }
             // The upper and lower halves of a disc a cell wide.
             '⯊' | '⯋' => {
@@ -1548,7 +1554,8 @@ mod tests {
         let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
             return;
         };
-        let glyph = fonts.rasterize_cluster("\u{231a}\u{fe0e}", Style::Regular, true);
+        let glyph =
+            fonts.rasterize_cluster("\u{231a}\u{fe0e}", Style::Regular, /* wide= */ true);
         assert!(glyph.is_none_or(|g| !g.color));
     }
 
@@ -1558,7 +1565,9 @@ mod tests {
             return;
         };
         // A color bitmap has four bytes per pixel, which must stay intact.
-        if let Some(glyph) = fonts.rasterize_cluster("\u{1f600}\u{301}", Style::Regular, true) {
+        if let Some(glyph) =
+            fonts.rasterize_cluster("\u{1f600}\u{301}", Style::Regular, /* wide= */ true)
+        {
             let bytes = if glyph.color { 4 } else { 1 };
             assert_eq!(
                 glyph.data.len(),
@@ -1647,19 +1656,22 @@ mod tests {
         let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
         let (w, h) = (m.width, m.height);
         // ═ is two lines across the cell; ║ two lines down it.
-        let horizontal = ink(&box_glyph('═', m).unwrap(), 0, false);
+        let horizontal = ink(&box_glyph('═', m).unwrap(), 0, /* row= */ false);
         assert_eq!(horizontal.len(), 2);
-        assert_eq!(horizontal, ink(&box_glyph('═', m).unwrap(), w - 1, false));
-        let vertical = ink(&box_glyph('║', m).unwrap(), 0, true);
+        assert_eq!(
+            horizontal,
+            ink(&box_glyph('═', m).unwrap(), w - 1, /* row= */ false)
+        );
+        let vertical = ink(&box_glyph('║', m).unwrap(), 0, /* row= */ true);
         assert_eq!(vertical.len(), 2);
         // Each corner and tee continues them at its edges.
         for c in ['╔', '╦', '╬', '╠', '╚'] {
             let glyph = box_glyph(c, m).unwrap();
-            assert_eq!(ink(&glyph, w - 1, false), horizontal, "{c}");
+            assert_eq!(ink(&glyph, w - 1, /* row= */ false), horizontal, "{c}");
         }
         for c in ['╔', '╦', '╬', '╣', '╗'] {
             let glyph = box_glyph(c, m).unwrap();
-            assert_eq!(ink(&glyph, h - 1, true), vertical, "{c}");
+            assert_eq!(ink(&glyph, h - 1, /* row= */ true), vertical, "{c}");
         }
         // The outer lines of ╔ meet; the inner ones turn a corner inside.
         let corner = box_glyph('╔', m).unwrap();
@@ -1671,8 +1683,8 @@ mod tests {
     #[test]
     fn single_line_stops_at_a_double_tee() {
         let m = CellMetrics::new(10.0, 16.0, -5.0, 0.0);
-        let lines = ink(&box_glyph('═', m).unwrap(), 0, false);
-        let middle = ink(&box_glyph('│', m).unwrap(), 0, true)[0];
+        let lines = ink(&box_glyph('═', m).unwrap(), 0, /* row= */ false);
+        let middle = ink(&box_glyph('│', m).unwrap(), 0, /* row= */ true)[0];
         // ╤ reaches only the lower line; ╪ crosses both, and so does ╒,
         // which turns into the upper one.
         let tee = box_glyph('╤', m).unwrap();
@@ -1690,8 +1702,8 @@ mod tests {
             CellMetrics::new(11.0, 24.0, -8.0, 0.0),
         ] {
             let (w, h) = (m.width, m.height);
-            let row = ink(&box_glyph('─', m).unwrap(), 0, false);
-            let column = ink(&box_glyph('│', m).unwrap(), 0, true);
+            let row = ink(&box_glyph('─', m).unwrap(), 0, /* row= */ false);
+            let column = ink(&box_glyph('│', m).unwrap(), 0, /* row= */ true);
             for (c, x, y) in [
                 ('╭', w - 1, h - 1),
                 ('╮', 0, h - 1),
@@ -1699,8 +1711,8 @@ mod tests {
                 ('╰', w - 1, 0),
             ] {
                 let arc = box_glyph(c, m).unwrap();
-                assert_eq!(ink(&arc, x, false), row, "{c} at its side edge");
-                assert_eq!(ink(&arc, y, true), column, "{c} at its end edge");
+                assert_eq!(ink(&arc, x, /* row= */ false), row, "{c} at its side edge");
+                assert_eq!(ink(&arc, y, /* row= */ true), column, "{c} at its end edge");
             }
         }
     }
@@ -1727,8 +1739,8 @@ mod tests {
             starts.windows(2).map(|p| p[1] - p[0]).collect::<Vec<_>>()
         };
         let corner = full.data.iter().position(|&p| p > 0).unwrap() as u32;
-        let row = ink(&full, corner / w, true);
-        let column = ink(&full, corner % w, false);
+        let row = ink(&full, corner / w, /* row= */ true);
+        let column = ink(&full, corner % w, /* row= */ false);
         for (pitches, cells) in [(starts(row, w), 2), (starts(column, h), 4)] {
             assert_eq!(pitches.len(), cells, "{pitches:?}");
             let (lo, hi) = (pitches.iter().min().unwrap(), pitches.iter().max().unwrap());
@@ -1806,10 +1818,10 @@ mod tests {
     #[test]
     fn dashes_and_quadrants() {
         let m = CellMetrics::new(12.0, 16.0, -5.0, 0.0);
-        let row = ink(&box_glyph('─', m).unwrap(), 0, false)[0];
+        let row = ink(&box_glyph('─', m).unwrap(), 0, /* row= */ false)[0];
         let dashes = |c| {
             let glyph = box_glyph(c, m).unwrap();
-            let ink = ink(&glyph, row, true);
+            let ink = ink(&glyph, row, /* row= */ true);
             ink.windows(2).filter(|p| p[1] != p[0] + 1).count() + 1
         };
         assert_eq!((dashes('╌'), dashes('┄'), dashes('┈')), (2, 3, 4));
@@ -1969,15 +1981,19 @@ mod tests {
         let m = fonts.metrics;
         assert!(m.width > 0 && m.height > m.width);
         let glyph = fonts
-            .rasterize('A', Style::Regular, false)
+            .rasterize('A', Style::Regular, /* wide= */ false)
             .expect("glyph for A");
         assert_eq!(glyph.data.len(), (glyph.width * glyph.height) as usize);
         assert!(glyph.top >= 0);
-        assert!(fonts.rasterize(' ', Style::Regular, false).is_none());
+        assert!(
+            fonts
+                .rasterize(' ', Style::Regular, /* wide= */ false)
+                .is_none()
+        );
 
         // In a two-cell slot, a narrow glyph is enlarged and centered.
         let wide = fonts
-            .rasterize('A', Style::Regular, true)
+            .rasterize('A', Style::Regular, /* wide= */ true)
             .expect("wide glyph for A");
         assert!(wide.height > glyph.height);
         assert!(wide.height <= m.height);
@@ -1985,7 +2001,7 @@ mod tests {
         assert!((wide.left - right_gap).abs() <= 1);
 
         // Icons, when some installed font has them, are centered vertically.
-        if let Some(icon) = fonts.rasterize('\u{F43A}', Style::Regular, false) {
+        if let Some(icon) = fonts.rasterize('\u{F43A}', Style::Regular, /* wide= */ false) {
             let (first, last) = ink_rows(&icon.data, icon.width, 64).unwrap();
             let top_gap = icon.top + first as i32;
             let bottom_gap = m.height as i32 - (icon.top + last as i32 + 1);
@@ -2012,9 +2028,9 @@ mod tests {
 
         // Thai ส + ำ is one cluster over two cells: ส keeps its size and
         // ำ, a spacing vowel, is drawn in the second cell.
-        let base = fonts.rasterize('ส', Style::Regular, false);
-        let vowel = fonts.rasterize('ำ', Style::Regular, false);
-        let cluster = fonts.rasterize_cluster("สำ", Style::Regular, true);
+        let base = fonts.rasterize('ส', Style::Regular, /* wide= */ false);
+        let vowel = fonts.rasterize('ำ', Style::Regular, /* wide= */ false);
+        let cluster = fonts.rasterize_cluster("สำ", Style::Regular, /* wide= */ true);
         if let (Some(base), Some(vowel), Some(cluster)) = (base, vowel, cluster) {
             let top = base.top.min(vowel.top);
             let bottom = (base.top + base.height as i32).max(vowel.top + vowel.height as i32);
@@ -2027,7 +2043,7 @@ mod tests {
 
         // Symbols, often from a fallback font, stay inside their cell.
         for c in ['☺', '♀', '♥'] {
-            if let Some(glyph) = fonts.rasterize(c, Style::Regular, false) {
+            if let Some(glyph) = fonts.rasterize(c, Style::Regular, /* wide= */ false) {
                 // A pixel of overhang is allowed on either side.
                 assert!(glyph.left >= -1, "{c}");
                 assert!(glyph.left + glyph.width as i32 <= m.width as i32 + 1, "{c}");

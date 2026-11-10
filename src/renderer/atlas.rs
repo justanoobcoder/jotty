@@ -244,17 +244,17 @@ mod tests {
     #[test]
     fn a_screen_too_big_for_the_atlas_redraws_only_once() {
         let mut atlas = Atlas::new(10, 10);
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         let generation = atlas.generation();
         // The first frame overflows and asks for one more.
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         assert_ne!(atlas.generation(), generation);
         assert!(atlas.take_overflowed());
         // That one doesn't fit either: it drops the glyph and is the last.
-        assert_eq!(atlas.allocate(10, 10, false), None);
+        assert_eq!(atlas.allocate(10, 10, /* color= */ false), None);
         assert!(!atlas.take_overflowed());
         // The next frame can start over.
-        assert!(atlas.allocate(10, 10, false).is_some());
+        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         assert!(atlas.take_overflowed());
     }
 

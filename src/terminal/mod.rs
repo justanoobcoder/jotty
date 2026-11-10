@@ -709,7 +709,8 @@ impl Screen {
         self.cell_text(start, &mut text);
         let before = text.len();
         text.push(c);
-        let boundary = GraphemeCursor::new(before, text.len(), true).is_boundary(&text, 0);
+        let boundary =
+            GraphemeCursor::new(before, text.len(), /* is_extended= */ true).is_boundary(&text, 0);
         self.cluster_scratch = text;
         // With the whole text given, no more context is ever asked for.
         boundary == Ok(false)
@@ -1435,7 +1436,8 @@ impl Screen {
         }
         let template = self.cursor.template;
         let bottom = self.scroll_bottom;
-        self.grid_mut().scroll_up(row, bottom, n, &template, false);
+        self.grid_mut()
+            .scroll_up(row, bottom, n, &template, /* keep= */ false);
         self.scroll_graphics(row, bottom, n as i64);
         self.move_prompt_end(row, bottom, -(n as isize));
         self.carriage_return();
@@ -1671,13 +1673,13 @@ impl Screen {
             }
             7 => self.modes.autowrap = on,
             25 => self.modes.show_cursor = on,
-            47 => self.set_alt_screen(on, false),
+            47 => self.set_alt_screen(on, /* clear= */ false),
             1047 => {
                 if self.alt_active && !on {
                     self.erase_rows(0, self.rows);
                     self.graphics[1].clear_all();
                 }
-                self.set_alt_screen(on, false);
+                self.set_alt_screen(on, /* clear= */ false);
             }
             1048 => {
                 if on {
@@ -1689,11 +1691,11 @@ impl Screen {
             1049 => {
                 if on {
                     self.save_cursor();
-                    self.set_alt_screen(true, true);
+                    self.set_alt_screen(/* on= */ true, /* clear= */ true);
                     // The alternate screen starts with the same cursor.
                     self.saved[1] = self.saved[0];
                 } else {
-                    self.set_alt_screen(false, false);
+                    self.set_alt_screen(/* on= */ false, /* clear= */ false);
                     self.restore_cursor();
                 }
             }
@@ -2215,12 +2217,16 @@ impl Perform for Screen {
                 3 => self.tabs.fill(false),
                 _ => {}
             },
-            ([], 'h') => args.iter().for_each(|&m| self.set_mode(m, true)),
-            ([], 'l') => args.iter().for_each(|&m| self.set_mode(m, false)),
-            ([b'?'], 'h') => args.iter().for_each(|&m| self.set_private_mode(m, true)),
-            ([b'?'], 'l') => args.iter().for_each(|&m| self.set_private_mode(m, false)),
-            ([b'?', b'$'], 'p') => self.report_mode(raw(0), true),
-            ([b'$'], 'p') => self.report_mode(raw(0), false),
+            ([], 'h') => args.iter().for_each(|&m| self.set_mode(m, /* on= */ true)),
+            ([], 'l') => args.iter().for_each(|&m| self.set_mode(m, /* on= */ false)),
+            ([b'?'], 'h') => args
+                .iter()
+                .for_each(|&m| self.set_private_mode(m, /* on= */ true)),
+            ([b'?'], 'l') => args
+                .iter()
+                .for_each(|&m| self.set_private_mode(m, /* on= */ false)),
+            ([b'?', b'$'], 'p') => self.report_mode(raw(0), /* private= */ true),
+            ([b'$'], 'p') => self.report_mode(raw(0), /* private= */ false),
             ([], 'm') => self.sgr(params),
             ([], 'r') => {
                 let top = arg(0, 1) - 1;
