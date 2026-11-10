@@ -42,6 +42,14 @@ packages for x86_64 and aarch64 (the Arch package is x86_64 only):
 `SHA256SUMS` lists their checksums. The packages install the terminfo
 entry, a desktop entry and the icon, so app launchers list jotty.
 
+On Arch, the AUR has [`jotty-bin`](https://aur.archlinux.org/packages/jotty-bin),
+the release binaries, and [`jotty-git`](https://aur.archlinux.org/packages/jotty-git),
+built from the latest commit:
+
+```sh
+paru -S jotty-bin    # or jotty-git; yay works too
+```
+
 From source (needs Rust 1.88+, and the development files for wayland,
 libxkbcommon, libEGL/libglvnd and fontconfig):
 

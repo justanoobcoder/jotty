@@ -117,6 +117,35 @@ A tag with a `-` (`v0.2.0-rc.1`) makes a pre-release, and needs its own
 the PKGBUILD. The PKGBUILD also
 works for the AUR: it downloads the tagged source from GitHub.
 
+### AUR
+
+The AUR has two packages, whose PKGBUILDs live in `packaging/aur/`:
+
+| Package | What it installs |
+| --- | --- |
+| `jotty-bin` | The release tarballs, repackaged (x86_64 and aarch64) |
+| `jotty-git` | A build of the latest commit on `main` |
+
+After a release (not a pre-release), the `aur` job of `release.yml` pushes
+both to the AUR: `jotty-bin` with the new `pkgver` and the tarballs'
+checksums, `jotty-git` with the `pkgver` its `pkgver()` gives for the
+tagged commit. `jotty-git` is pushed only then, not on every commit: it
+always builds the latest commit, and AUR helpers find new commits with
+`--devel`. A change to the PKGBUILDs between releases is pushed by hand,
+with `pkgrel` bumped.
+
+The job needs the `AUR_SSH_PRIVATE_KEY` secret, the private half of an SSH
+key added to the maintainer's AUR account. The first push of each package,
+which creates it on the AUR, is done by hand:
+
+```sh
+git clone ssh://aur@aur.archlinux.org/jotty-bin.git
+cp packaging/aur/jotty-bin/PKGBUILD jotty-bin/
+cd jotty-bin
+makepkg --printsrcinfo > .SRCINFO
+git add PKGBUILD .SRCINFO && git commit -m 'Initial import' && git push
+```
+
 `CHANGELOG.md` lists only what users notice: features, bug fixes and
 performance, one short line each. Refactors, dependency bumps, CI and docs
 changes stay out of it. Add an entry under `## Unreleased` with the change
