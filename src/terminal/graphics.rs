@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::grid::{Cell, Color};
+use super::sixel;
 use crate::color::Rgb;
 
 /// U+10EEEE: a cell showing part of an image through a virtual placement.
@@ -116,6 +117,8 @@ pub struct Placement {
     pub rows: u32,
     pub z: i32,
     pub is_virtual: bool,
+    /// A sixel image, which text written over it erases.
+    pub sixel: bool,
 }
 
 impl Placement {
@@ -159,6 +162,29 @@ impl Placement {
 
     fn lines(&self, cell: (u32, u32)) -> Range<i64> {
         self.line..self.line + i64::from(self.size_in_cells(cell).1)
+    }
+
+    fn columns(&self, cell: (u32, u32)) -> Range<usize> {
+        self.col..self.col + self.size_in_cells(cell).0 as usize
+    }
+
+    /// The part of a placement drawn at its pixel size that falls in
+    /// `lines` × `columns`, if any.
+    fn crop(&self, lines: Range<i64>, columns: Range<usize>, (cw, ch): (u32, u32)) -> Option<Self> {
+        if lines.is_empty() || columns.is_empty() {
+            return None;
+        }
+        let [x, y, w, h] = self.source;
+        let dx = (columns.start - self.col) as u32 * cw;
+        let dy = (lines.start - self.line) as u32 * ch;
+        let width = (columns.len() as u32 * cw).min(w.checked_sub(dx)?);
+        let height = ((lines.end - lines.start) as u32 * ch).min(h.checked_sub(dy)?);
+        (width > 0 && height > 0).then_some(Placement {
+            line: lines.start,
+            col: columns.start,
+            source: [x + dx, y + dy, width, height],
+            ..*self
+        })
     }
 }
 
@@ -302,6 +328,9 @@ pub struct Graphics {
     next_id: u32,
     /// The cell size in pixels, which sizes placements in cells.
     pub cell: (u32, u32),
+    /// Whether a placement may be a sixel image; false only when none is,
+    /// so that writing text needn't look for them.
+    may_have_sixels: bool,
 }
 
 impl Default for Graphics {
@@ -312,6 +341,7 @@ impl Default for Graphics {
             loading: None,
             next_id: 1 << 31,
             cell: (10, 20),
+            may_have_sixels: false,
         }
     }
 }
@@ -352,6 +382,12 @@ impl Graphics {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
+    }
+
+    /// Whether a placement may be a sixel image; false when none is.
+    #[must_use]
+    pub fn may_have_sixels(&self) -> bool {
+        self.may_have_sixels
     }
 
     /// Handles a command: the APC body after the `G`.
@@ -573,21 +609,109 @@ impl Graphics {
             rows: cmd.rows,
             z: cmd.z,
             is_virtual: cmd.is_virtual,
+            sixel: false,
         };
         if cmd.placement != 0 {
             self.placements
                 .retain(|p| !(p.image == uid && p.id == cmd.placement));
         }
-        self.placements.push(placement);
-        if self.placements.len() > MAX_PLACEMENTS {
-            self.placements.remove(0);
-            self.drop_unreachable();
-        }
+        self.push(placement);
         let moved = (!cmd.is_virtual && !cmd.no_move).then(|| placement.size_in_cells(self.cell));
         Outcome {
             response: reply(cmd, Ok(())),
             moved,
         }
+    }
+
+    /// Adds a placement, dropping the oldest past the limit.
+    fn push(&mut self, placement: Placement) {
+        self.placements.push(placement);
+        if self.placements.len() > MAX_PLACEMENTS {
+            self.placements.remove(0);
+            self.drop_unreachable();
+        }
+    }
+
+    /// Shows a sixel image at the cursor, at its pixel size, over the parts
+    /// of other sixel images it covers. Returns the columns and rows it
+    /// covers.
+    pub fn place_sixel(&mut self, image: sixel::Image, ctx: &Context) -> (u32, u32) {
+        let (width, height) = (image.width, image.height);
+        let mut placement = Placement {
+            image: 0,
+            id: 0,
+            line: ctx.cursor.0,
+            col: ctx.cursor.1,
+            offset: (0, 0),
+            source: [0, 0, width, height],
+            cols: 0,
+            rows: 0,
+            z: 0,
+            is_virtual: false,
+            sixel: true,
+        };
+        let cell = self.cell;
+        self.erase_sixels(placement.lines(cell), placement.columns(cell));
+        placement.image = self.store(&Command::default(), width, height, image.pixels);
+        self.push(placement);
+        self.may_have_sixels = true;
+        placement.size_in_cells(cell)
+    }
+
+    /// Cuts the cells in `lines` × `columns` out of the sixel images, as
+    /// text or another sixel image written there replaces them. What is
+    /// left of an image stays, in up to four pieces.
+    pub fn erase_sixels(&mut self, lines: Range<i64>, columns: Range<usize>) {
+        if !self.may_have_sixels {
+            return;
+        }
+        let cell = self.cell;
+        // Cheap tests first: this runs for text printed while a sixel image
+        // is anywhere in the history.
+        let overlaps = |p: &Placement| {
+            if !p.sixel || p.line >= lines.end || p.col >= columns.end {
+                return false;
+            }
+            let (l, c) = (p.lines(cell), p.columns(cell));
+            lines.start < l.end && columns.start < c.end
+        };
+        self.may_have_sixels = false;
+        let mut hit = false;
+        for p in &self.placements {
+            self.may_have_sixels |= p.sixel;
+            if overlaps(p) {
+                hit = true;
+                break;
+            }
+        }
+        if !hit {
+            return;
+        }
+        let mut kept = Vec::with_capacity(self.placements.len() + 3);
+        for p in std::mem::take(&mut self.placements) {
+            if !overlaps(&p) {
+                kept.push(p);
+                continue;
+            }
+            let (l, c) = (p.lines(cell), p.columns(cell));
+            let hit_lines = l.start.max(lines.start)..l.end.min(lines.end);
+            let hit_columns = c.start.max(columns.start)..c.end.min(columns.end);
+            let pieces = [
+                (l.start..hit_lines.start, c.clone()),
+                (hit_lines.end..l.end, c.clone()),
+                (hit_lines.clone(), c.start..hit_columns.start),
+                (hit_lines.clone(), hit_columns.end..c.end),
+            ];
+            kept.extend(
+                pieces
+                    .into_iter()
+                    .filter_map(|(lines, columns)| p.crop(lines, columns, cell)),
+            );
+        }
+        self.placements = kept;
+        let excess = self.placements.len().saturating_sub(MAX_PLACEMENTS);
+        self.placements.drain(..excess);
+        self.drop_unreachable();
     }
 
     /// Deletes placements (`a=d`) and, for an upper-case specifier, the

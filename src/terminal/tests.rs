@@ -1208,6 +1208,88 @@ fn alternate_screen_has_its_own_images() {
     assert_eq!(t.screen().graphics().placements().len(), 1);
 }
 
+/// A 20×36 red sixel image: 2×2 cells of 10×20 pixels.
+const SIXEL: &[u8] = b"\x1bPq\"1;1;20;36#1;2;100;0;0!20~-!20~-!20~-!20~-!20~-!20~\x1b\\";
+
+#[test]
+fn sixel_image_is_placed_at_the_cursor_and_leaves_it_on_its_last_row() {
+    let mut t = term(10, 4);
+    t.screen_mut().set_cell_size(10, 20);
+    t.feed(b"\x1b[1;3H");
+    t.feed(SIXEL);
+    let placements = t.screen().graphics().placements();
+    assert_eq!(placements.len(), 1);
+    assert_eq!((placements[0].line, placements[0].col), (0, 2));
+    let image = t
+        .screen()
+        .image(placements[0].image)
+        .expect("the image is stored");
+    assert_eq!((image.width, image.height), (20, 36));
+    assert_eq!(image.pixels[..4], [255, 0, 0, 255]);
+    assert_eq!(t.screen().cursor(), (1, 2));
+    // At the bottom, the screen scrolls to make room.
+    t.feed(b"\x1b[4;1H");
+    t.feed(SIXEL);
+    assert_eq!(t.screen().cursor(), (3, 0));
+    let screen = t.screen();
+    assert_eq!(
+        screen.graphics().placements()[1].line - screen.grid().scrolled as i64,
+        2
+    );
+}
+
+#[test]
+fn text_written_over_a_sixel_image_cuts_its_cells_out() {
+    let mut t = term(10, 4);
+    t.screen_mut().set_cell_size(10, 20);
+    t.feed(SIXEL);
+    // Beside it, the image stays whole.
+    t.feed(b"\x1b[1;3Hab\x1b[2;3H\x1b[K");
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+    // The cell at row 1, column 1: the row above and the cell to its left stay.
+    t.feed(b"\x1b[2;2Hx");
+    let pieces: Vec<_> = t
+        .screen()
+        .graphics()
+        .placements()
+        .iter()
+        .map(|p| (p.line, p.col, p.source))
+        .collect();
+    assert_eq!(pieces, [(0, 0, [0, 0, 20, 20]), (1, 0, [0, 20, 10, 16])]);
+    // Erasing whole rows leaves nothing.
+    t.feed(b"\x1b[H\x1b[2J");
+    t.feed(SIXEL);
+    t.feed(b"\x1b[1;1H\x1b[2K\x1b[2;1H\x1b[2K");
+    assert!(t.screen().graphics().placements().is_empty());
+    assert!(t.screen().graphics().is_empty());
+}
+
+#[test]
+fn sixel_image_replaces_the_sixel_images_it_covers() {
+    let mut t = term(10, 4);
+    t.screen_mut().set_cell_size(10, 20);
+    t.feed(SIXEL);
+    t.feed(b"\x1b[1;1H");
+    t.feed(SIXEL);
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+    // Kitty images stay under it.
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1,C=1\x1b\\\x1b[1;1H");
+    t.feed(SIXEL);
+    assert_eq!(t.screen().graphics().placements().len(), 2);
+}
+
+#[test]
+fn reports_sixel_support() {
+    let mut t = term(80, 24);
+    t.screen_mut().set_cell_size(9, 18);
+    t.feed(b"\x1b[c\x1b[?1;1;0S\x1b[?2;1;0S\x1b[?2;4;0S\x1b[?1;3;0S\x1b[?3;1;0S");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b[?62;4;22c\x1b[?1;0;256S\x1b[?2;0;720;432S\x1b[?2;0;4096;4096S\x1b[?1;3;0S\x1b[?3;1;0S"
+    );
+}
+
 #[test]
 fn reports_pixel_sizes() {
     let mut t = term(80, 24);
