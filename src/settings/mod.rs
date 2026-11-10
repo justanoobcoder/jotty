@@ -3,6 +3,8 @@
 //! instead of the (often read-only, home-manager-managed) config file.
 
 mod nix;
+mod schema;
+mod tui;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -90,6 +92,52 @@ pub fn save(path: &Path, overrides: &toml::Table) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// The value at `path` in nested tables.
+pub fn get_path<'a>(table: &'a toml::Table, path: &[String]) -> Option<&'a toml::Value> {
+    let (last, tables) = path.split_last()?;
+    let mut table = table;
+    for name in tables {
+        table = table.get(name)?.as_table()?;
+    }
+    table.get(last)
+}
+
+/// Sets the value at `path`, creating the tables on the way.
+pub fn set_path(table: &mut toml::Table, path: &[String], value: toml::Value) {
+    let Some((last, tables)) = path.split_last() else {
+        return;
+    };
+    let mut table = table;
+    for name in tables {
+        let entry = table
+            .entry(name.clone())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(toml::Table::new());
+        }
+        table = entry.as_table_mut().expect("made a table above");
+    }
+    table.insert(last.clone(), value);
+}
+
+/// Removes the value at `path`, and the tables it leaves empty.
+pub fn remove_path(table: &mut toml::Table, path: &[String]) {
+    match path {
+        [] => {}
+        [last] => {
+            table.remove(last);
+        }
+        [first, rest @ ..] => {
+            if let Some(toml::Value::Table(inner)) = table.get_mut(first) {
+                remove_path(inner, rest);
+                if inner.is_empty() {
+                    table.remove(first);
+                }
+            }
+        }
+    }
+}
+
 /// Runs a `jotty config` subcommand.
 pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
     match run_command(command, config_path) {
@@ -104,6 +152,12 @@ pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
 fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(), String> {
     let layers = Layers::load(config_path)?;
     match command {
+        ConfigCommand::Edit => {
+            if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                return Err("jotty config needs a terminal; see jotty config export".into());
+            }
+            tui::run(layers).map_err(|e| e.to_string())
+        }
         ConfigCommand::Export { merged, nix } => {
             if merged && let Some(e) = &layers.base_error {
                 return Err(e.clone());
@@ -129,6 +183,34 @@ fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_create_and_prune_tables() {
+        let path = |p: &str| p.split('.').map(String::from).collect::<Vec<_>>();
+        let mut table = toml::Table::new();
+        set_path(
+            &mut table,
+            &path("files.pdf.launcher"),
+            toml::Value::Integer(1),
+        );
+        set_path(
+            &mut table,
+            &path("files.image.launcher"),
+            toml::Value::Integer(2),
+        );
+        assert_eq!(
+            get_path(&table, &path("files.pdf.launcher")),
+            Some(&toml::Value::Integer(1))
+        );
+        assert_eq!(get_path(&table, &path("files.pdf.launcher.x")), None);
+        remove_path(&mut table, &path("files.pdf.launcher"));
+        assert_eq!(
+            table,
+            toml::from_str("[files.image]\nlauncher = 2").unwrap()
+        );
+        remove_path(&mut table, &path("files.image.launcher"));
+        assert!(table.is_empty());
+    }
 
     #[test]
     fn saving_nothing_removes_the_file() {

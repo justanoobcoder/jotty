@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "\
 Usage: jotty [OPTIONS] [-e COMMAND [ARGS...]]
-       jotty [-c PATH] config export [--merged] [--nix]
+       jotty [-c PATH] config [export [--merged] [--nix]]
        jotty config reset
 
 Options:
@@ -17,6 +17,7 @@ Options:
   -V, --version        Print the version
 
 Config commands (overrides in $XDG_STATE_HOME/jotty/overrides.toml):
+  config               Edit the overrides in a TUI
   config export        Print the overrides as TOML
          --merged      Print the config file merged with the overrides
          --nix         Print a Nix attrset for programs.jotty.settings
@@ -41,6 +42,8 @@ pub enum Parsed {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfigCommand {
+    /// Edit the overrides in the TUI.
+    Edit,
     /// Print the overrides, or with `merged` the config file merged with
     /// them, as TOML or as Nix.
     Export { merged: bool, nix: bool },
@@ -72,7 +75,7 @@ fn parse_config_command(args: impl Iterator<Item = OsString>) -> Result<ConfigCo
             "unknown config command {:?}",
             String::from_utf8_lossy(other)
         )),
-        None => Err("config needs a command: export or reset".into()),
+        None => Ok(ConfigCommand::Edit),
     }
 }
 
@@ -182,7 +185,10 @@ mod tests {
             run(&["-c", "/a.toml", "config", "reset"]),
             Ok(Parsed::Config(Some("/a.toml".into()), ConfigCommand::Reset))
         );
-        assert!(run(&["config"]).is_err());
+        assert_eq!(
+            run(&["config"]),
+            Ok(Parsed::Config(None, ConfigCommand::Edit))
+        );
         assert!(run(&["config", "reset", "now"]).is_err());
         assert!(run(&["config", "export", "--json"]).is_err());
         assert!(run(&["config", "frobnicate"]).is_err());
