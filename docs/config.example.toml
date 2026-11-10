@@ -43,6 +43,10 @@ bell_urgent = true
 # Show the desktop notifications programs ask for (OSC 9, OSC 777) while
 # the window isn't focused. Clicking one focuses the window.
 notifications = true
+# Open each new window in the jotty already running for this Wayland display
+# and config file instead of starting another process, as --single-instance
+# does. Takes effect when jotty starts.
+single_instance = false
 # Initial size in cells (the compositor may override it).
 columns = 80
 lines = 24

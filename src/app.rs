@@ -81,6 +81,7 @@ use crate::config::{Config, RendererKind};
 use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
+use crate::instance::{self, Client, DecodeError, Received, Reply, Server};
 use crate::keybinds::{Action, Wheel};
 use crate::links::{Detector, Link};
 use crate::notify::{self, Bus, RateLimit};
@@ -377,11 +378,13 @@ pub struct TermWindow {
 }
 
 /// Runs the first window, and the ones opened from it, until all are
-/// closed. `config_path` is the config file given on the command line.
+/// closed. `config_path` is the config file given on the command line. With
+/// a `server`, other jottys can hand their windows over to this one.
 pub fn run(
     config: Config,
     config_path: Option<PathBuf>,
     spawn: Spawn,
+    server: Option<Server>,
 ) -> Result<u8, Box<dyn Error>> {
     let conn =
         Connection::connect_to_env().map_err(|e| format!("cannot connect to Wayland: {e}"))?;
@@ -474,6 +477,9 @@ pub fn run(
         exit_code: 0,
     };
     app.open_window(spawn)?;
+    if let Some(server) = &server {
+        app.serve(server);
+    }
 
     app.watch_config();
     // SCTK reports only seats added later through `new_seat`.
@@ -2229,6 +2235,97 @@ impl App {
         }
     }
 
+    /// Opens the windows other jottys hand over to this one.
+    fn serve(&mut self, server: &Server) {
+        let listener = match server.listener() {
+            Ok(listener) => listener,
+            Err(e) => return log::warn!("cannot serve other jottys: {e}"),
+        };
+        let source = Generic::new(listener, Interest::READ, Mode::Level);
+        let inserted = self
+            .shared
+            .loop_handle
+            .insert_source(source, |_, listener, app| {
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => app.accept_client(stream),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            // Such as EMFILE; the connection waits in the
+                            // backlog for the next try.
+                            log::warn!("cannot accept a jotty: {e}");
+                            break;
+                        }
+                    }
+                }
+                Ok(PostAction::Continue)
+            });
+        if let Err(e) = inserted {
+            log::warn!("cannot serve other jottys: {e}");
+        }
+    }
+
+    /// Reads the window a jotty asks for, opens it and answers.
+    fn accept_client(&mut self, stream: std::os::unix::net::UnixStream) {
+        let watched = Client::new(stream).and_then(|client| Ok((client.socket()?, client)));
+        let (socket, mut client) = match watched {
+            Ok(watched) => watched,
+            Err(e) => return log::warn!("cannot read from a jotty: {e}"),
+        };
+        let source = Generic::new(socket, Interest::READ, Mode::Level);
+        let inserted = self
+            .shared
+            .loop_handle
+            .insert_source(source, move |_, _, app| {
+                let reply = match client.read() {
+                    Ok(Received::Incomplete) => return Ok(PostAction::Continue),
+                    Ok(Received::Request(request)) => app.open_requested(request),
+                    Ok(Received::Invalid(DecodeError::Version(_))) => Reply::VersionMismatch,
+                    Ok(Received::Invalid(e)) => {
+                        log::warn!("a jotty sent a bad request: {e}");
+                        Reply::Failed(e.to_string())
+                    }
+                    Err(e) => {
+                        log::debug!("a jotty went away before asking for a window: {e}");
+                        return Ok(PostAction::Remove);
+                    }
+                };
+                if let Err(e) = client.reply(&reply) {
+                    log::debug!("cannot answer a jotty: {e}");
+                }
+                Ok(PostAction::Remove)
+            });
+        if let Err(e) = inserted {
+            log::warn!("cannot read from a jotty: {e}");
+        }
+    }
+
+    /// Opens the window another jotty asked for, with its directory and
+    /// environment.
+    fn open_requested(&mut self, request: instance::Request) -> Reply {
+        let activation_token = request
+            .env
+            .iter()
+            .find(|(name, _)| name == "XDG_ACTIVATION_TOKEN")
+            .and_then(|(_, token)| token.to_str())
+            .filter(|token| !token.is_empty())
+            .map(String::from);
+        let spawn = Spawn {
+            command: request.command,
+            cwd: Some(request.cwd),
+            env: Some(request.env),
+            activation_token,
+        };
+        match self.open_window(spawn) {
+            Ok(_) => Reply::Opened,
+            Err(e) => {
+                log::warn!("cannot open the window a jotty asked for: {e}");
+                Reply::Failed(e.to_string())
+            }
+        }
+    }
+
     /// Hands a key to the window with keyboard focus.
     fn key(&mut self, event: KeyEvent, action: KeyAction) {
         if let Some((shared, window)) = self.split_focused() {
@@ -2356,6 +2453,9 @@ impl App {
             if changed {
                 log::info!("{what} applies to new windows");
             }
+        }
+        if old.window.single_instance != new.window.single_instance {
+            log::info!("window.single_instance applies when jotty starts");
         }
 
         // Every window's fonts first: a family that can't be loaded leaves

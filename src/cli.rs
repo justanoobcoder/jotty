@@ -15,6 +15,10 @@ Options:
                        ($XDG_CONFIG_HOME/jotty/config.toml); the
                        overrides still apply over it
   -e, --command CMD..  Run CMD with its arguments instead of the shell
+      --single-instance
+                       Open the window in the jotty already running for
+                       this Wayland display and config file, if there is
+                       one, and exit
   -h, --help           Print this help
   -V, --version        Print the version
 
@@ -32,6 +36,8 @@ pub struct Options {
     pub config: Option<PathBuf>,
     /// Program and arguments to run instead of the shell.
     pub command: Option<Vec<OsString>>,
+    /// Hand the window over to the jotty already running.
+    pub single_instance: bool,
 }
 
 /// What the command line asks jotty to do.
@@ -97,6 +103,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 let path = args.next().ok_or("--config needs a path")?;
                 options.config = Some(path.into());
             }
+            b"--single-instance" => options.single_instance = true,
             b"config" => {
                 let command = parse_config_command(args)?;
                 return Ok(Parsed::Config(options.config, command));
@@ -153,7 +160,7 @@ mod tests {
     fn config_path() {
         let expected = Parsed::Run(Options {
             config: Some("/tmp/x.toml".into()),
-            command: None,
+            ..Options::default()
         });
         assert_eq!(run(&["-c", "/tmp/x.toml"]), Ok(expected));
         assert!(
@@ -171,6 +178,20 @@ mod tests {
         assert_eq!(options.command.unwrap(), ["vim", "-c", "q"]);
         assert_eq!(options.config, Some("c.toml".into()));
         assert!(run(&["-e"]).is_err());
+    }
+
+    #[test]
+    fn single_instance() {
+        let Ok(Parsed::Run(options)) = run(&["--single-instance", "-e", "htop"]) else {
+            panic!()
+        };
+        assert!(options.single_instance);
+        assert_eq!(options.command.unwrap(), ["htop"]);
+        // After -e, it is the program's.
+        let Ok(Parsed::Run(options)) = run(&["-e", "vim", "--single-instance"]) else {
+            panic!()
+        };
+        assert!(!options.single_instance);
     }
 
     #[test]

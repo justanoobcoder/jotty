@@ -189,6 +189,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         ),
         (
             "window",
+            "single_instance",
+            Bool,
+            "Open windows in the jotty already running. Applies when jotty starts.",
+        ),
+        (
+            "window",
             "columns",
             Int { min: 2, max: 2000 },
             "Initial width in cells. Applies to new windows.",

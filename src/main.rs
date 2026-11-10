@@ -8,6 +8,7 @@ mod emoji;
 mod font;
 mod ime;
 mod input;
+mod instance;
 mod keybinds;
 mod links;
 mod notify;
@@ -62,14 +63,39 @@ fn main() -> ExitCode {
         }
     };
 
+    let mut command = options.command;
+    let mut server = None;
+    if options.single_instance || config.window.single_instance {
+        match std::env::current_dir() {
+            Ok(cwd) => {
+                let request = instance::Request {
+                    cwd,
+                    env: std::env::vars_os().collect(),
+                    command,
+                };
+                match instance::start(options.config.as_deref(), &request) {
+                    instance::Start::HandedOver => return ExitCode::SUCCESS,
+                    instance::Start::Failed(message) => {
+                        eprintln!("jotty: {message}");
+                        return ExitCode::FAILURE;
+                    }
+                    instance::Start::Serve(s) => server = Some(s),
+                    instance::Start::Standalone => {}
+                }
+                command = request.command;
+            }
+            Err(e) => log::warn!("no current directory for single instance ({e}); not using it"),
+        }
+    }
+
     let spawn = app::Spawn {
-        command: options.command,
+        command,
         activation_token: std::env::var("XDG_ACTIVATION_TOKEN")
             .ok()
             .filter(|t| !t.is_empty()),
         ..app::Spawn::default()
     };
-    match app::run(config, options.config, spawn) {
+    match app::run(config, options.config, spawn, server) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("jotty: {e}");
