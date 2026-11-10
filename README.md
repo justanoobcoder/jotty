@@ -42,13 +42,8 @@ packages for x86_64 and aarch64 (the Arch package is x86_64 only):
 `SHA256SUMS` lists their checksums. The packages install the terminfo
 entry, a desktop entry and the icon, so app launchers list jotty.
 
-On Arch, the AUR has [`jotty-bin`](https://aur.archlinux.org/packages/jotty-bin),
-the release binaries, and [`jotty-git`](https://aur.archlinux.org/packages/jotty-git),
-built from the latest commit:
-
-```sh
-paru -S jotty-bin    # or jotty-git; yay works too
-```
+On Arch-based distributions, install from the AUR instead (see
+[Install on Arch Linux](#install-on-arch-linux)).
 
 From source (needs Rust 1.88+, and the development files for wayland,
 libxkbcommon, libEGL/libglvnd and fontconfig):
@@ -57,6 +52,34 @@ libxkbcommon, libEGL/libglvnd and fontconfig):
 cargo build --release
 ./target/release/jotty
 ```
+
+## Install on Arch Linux
+
+jotty is on the AUR, for Arch and Arch-based distributions (Manjaro,
+EndeavourOS, CachyOS, ...), as two packages:
+
+| Package | What it is |
+| --- | --- |
+| [`jotty-bin`](https://aur.archlinux.org/packages/jotty-bin) | The release binaries, for x86_64 and aarch64 |
+| [`jotty-git`](https://aur.archlinux.org/packages/jotty-git) | Built from the latest commit on `main` |
+
+Install one with an AUR helper:
+
+```sh
+paru -S jotty-bin    # or: yay -S jotty-bin
+```
+
+Or without one:
+
+```sh
+git clone https://aur.archlinux.org/jotty-bin.git
+cd jotty-bin
+makepkg -si
+```
+
+`jotty-bin` updates with each release. `jotty-git` follows `main`: to
+rebuild it when there are new commits, upgrade with `paru -Syu --devel`
+(or `yay -Syu --devel`).
 
 ## Install on NixOS
 
