@@ -47,6 +47,9 @@ in
         Configuration written to {file}`$XDG_CONFIG_HOME/jotty/config.toml`.
         See <https://github.com/justanoobcoder/jotty/blob/main/docs/configuration.md>
         for the options. jotty reloads the file when home-manager replaces it.
+        Changes made with `jotty config` go to
+        {file}`$XDG_STATE_HOME/jotty/overrides.toml` and take precedence;
+        `jotty config export --nix` prints them in this format.
       '';
     };
   };

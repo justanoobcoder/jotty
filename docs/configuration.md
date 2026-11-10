@@ -13,7 +13,8 @@ you change. Unknown keys and invalid values are errors:
 - For the default file, jotty logs the error and starts with the defaults, so
   a typo never leaves you without a terminal.
 
-**Reloading.** jotty reloads the config when you save the file, when you
+**Reloading.** jotty reloads the config when you save the file (or
+[`jotty config`](#overrides-and-jotty-config) changes the overrides), when you
 press Ctrl+Shift+R (`reload_config`), and when it receives `SIGUSR1`
 (`pkill -USR1 jotty` reloads every window, handy for theme switchers). If
 the new file has an error, jotty logs it and keeps the current settings.
@@ -27,6 +28,49 @@ only apply to new windows, which jotty logs when they change:
 
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
+
+## Overrides and `jotty config`
+
+`jotty config` opens a TUI that lists every option with its current value
+and lets you change it. It never writes your config file. Its changes go to
+`$XDG_STATE_HOME/jotty/overrides.toml` instead, which defaults to
+`~/.local/state/jotty/overrides.toml`. This is meant for configs managed by
+home-manager, which are read-only and slow to change: try things in the TUI,
+then move them into Nix once they are settled.
+
+- **Precedence.** The overrides are merged over the config file key by key.
+  A key set in the overrides wins, and the rest come from the config file
+  or the defaults. Lists are replaced as a whole, not appended to. With
+  `--config PATH`, the overrides apply over that file too.
+- **Live.** Each change is checked and then saved at once, and running
+  windows reload it, like a change to the config file. jotty creates
+  `~/.local/state/jotty/` at startup so that it can watch the file.
+- **Errors.** The TUI refuses values the config would refuse. If the
+  overrides file is broken anyway, for example after a hand edit, jotty logs
+  the error and ignores the overrides. The config file still applies.
+  `jotty config` won't open such a file, so that it can't overwrite it.
+
+In the TUI, `Enter` toggles a bool, cycles a choice, or edits anything else.
+Lists are typed comma-separated, or as a TOML array (`["a,b", "c"]`) when an
+item contains a comma. `r` removes the override of a key, `R` removes those
+of a whole section, `/` filters keys across sections, and `q` quits. An
+overridden key is marked `●`. For optional keys such as `colors.cursor`,
+saving an empty value removes the override.
+
+Without the TUI:
+
+| Command | Prints |
+| --- | --- |
+| `jotty config export` | The overrides, as TOML |
+| `jotty config export --merged` | The config file merged with the overrides, as one TOML file |
+| `jotty config export --nix` | The overrides as a Nix attrset for `programs.jotty.settings` |
+| `jotty config export --merged --nix` | Both merged, as Nix |
+| `jotty config reset` | Nothing; removes all overrides |
+
+`--merged` only has the keys set in either file, not every default, and it
+drops the config file's comments. To move overrides into home-manager, paste
+`jotty config export --nix` into `programs.jotty.settings` (or `--merged --nix`
+to replace it), run `home-manager switch`, then `jotty config reset`.
 
 ## `[font]`
 

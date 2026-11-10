@@ -11,7 +11,8 @@ Usage: jotty [OPTIONS] [-e COMMAND [ARGS...]]
 
 Options:
   -c, --config PATH    Use this config file instead of the default
-                       ($XDG_CONFIG_HOME/jotty/config.toml)
+                       ($XDG_CONFIG_HOME/jotty/config.toml); the
+                       overrides still apply over it
   -e, --command CMD..  Run CMD with its arguments instead of the shell
   -h, --help           Print this help
   -V, --version        Print the version

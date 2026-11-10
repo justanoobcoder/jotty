@@ -106,6 +106,12 @@ every `home-manager switch`:
 Set `programs.jotty.package = null` to manage only the config of a jotty
 installed some other way.
 
+To try settings without a `home-manager switch` each time, run
+`jotty config`. Its changes go to `~/.local/state/jotty/overrides.toml`,
+which takes precedence over the config from Nix. Once you are happy, paste
+the output of `jotty config export --nix` into `settings` and run
+`jotty config reset`. See [overrides](docs/configuration.md#overrides-and-jotty-config).
+
 From source (needs Rust 1.88+, and the development files for wayland,
 libxkbcommon, libEGL/libglvnd and fontconfig):
 
