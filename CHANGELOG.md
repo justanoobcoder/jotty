@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+## 2.1.0
+
 - Display sixel images
 
 ## 2.0.0
