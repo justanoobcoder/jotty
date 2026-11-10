@@ -1,34 +1,27 @@
 <p align="center">
-  <img src="extra/jotty.svg" alt="jotty logo" width="128">
+  <img src="extra/jotty.svg" alt="Jotty logo" width="128">
+</p>
+<h1 align="center">Jotty</h1>
+<p align="center">Jotty is an opinionated terminal emulator for Wayland</p>
+<p align="center">
+  <a href="https://github.com/justanoobcoder/jotty/actions/workflows/ci.yml"><img src="https://github.com/justanoobcoder/jotty/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="https://github.com/justanoobcoder/jotty/releases/latest"><img src="https://img.shields.io/github/v/release/justanoobcoder/jotty" alt="Release"></a>
+  <img src="https://img.shields.io/badge/Wayland-native-green" alt="Wayland native">
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange" alt="Rust 2024">
 </p>
 
-# jotty
-
-An opinionated terminal emulator for Wayland, written in Rust.
+# Features
 
 - **Wayland native.** It speaks Wayland directly through
-  [smithay-client-toolkit](https://github.com/Smithay/client-toolkit). There
-  is no X11 code path and no GTK, winit or SDL layer.
+  [smithay-client-toolkit](https://github.com/Smithay/client-toolkit).
 - **Input methods with surrounding text.** It implements
   `text-input-unstable-v3`, including surrounding text. Input methods such as
   fcitx5 or IBus can commit text, and delete text around the cursor.
-- **Light on memory, GPU optional.** By default it draws on the CPU into
+- **Support both CPU and GPU renderer.** By default it draws on the CPU into
   shared memory, repainting only the rows that changed, in about 30+ MiB.
   With `renderer = "gpu"` it draws with OpenGL ES 3 instead (one draw call
-  per frame), at the cost of the 120+ MiB a GPU driver takes. Either way,
-  frames are paced by the compositor's frame callbacks.
-- **Modern text.** Grapheme clusters, color emoji with their sequences,
-  reflow on resize, fractional scaling, synchronized output, hyperlinks and
-  clickable URLs, scrollback search, and the primary selection.
-- **Images.** The kitty graphics protocol, so image previews in yazi,
-  `kitten icat`, timg or chafa show real pixels, including through tmux
-  with Unicode placeholders.
-- **Every key distinct.** The kitty keyboard protocol, so programs that
-  ask for it (Claude Code, Neovim, Helix, fish, yazi) can tell Shift+Enter,
-  Ctrl+I and Escape apart from Enter, Tab and Alt sequences.
-- **Notifications.** Programs can raise a desktop notification with
-  `OSC 9` or `OSC 777` (Claude Code can, when a task needs you); clicking
-  it brings the window back.
+  per frame), at the cost of the 130+ MiB a GPU driver takes.
 - **Vi mode.** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
 
@@ -47,46 +40,74 @@ packages for x86_64 and aarch64 (the Arch package is x86_64 only):
 `SHA256SUMS` lists their checksums. The packages install the terminfo
 entry, a desktop entry and the icon, so app launchers list jotty.
 
-With Nix flakes:
+From source (needs Rust 1.88+, and the development files for wayland,
+libxkbcommon, libEGL/libglvnd and fontconfig):
 
 ```sh
-nix run github:justanoobcoder/jotty/cachix               # try it
-nix profile install github:justanoobcoder/jotty/cachix   # install into your profile
+cargo build --release
+./target/release/jotty
 ```
 
-Builds are cached on [Cachix](https://justanoobcoder.cachix.org), so Nix
-downloads jotty instead of compiling it. Add the cache with
-`cachix use justanoobcoder`, or in `nix.conf`:
+## Install on NixOS
 
-```
-extra-substituters = https://justanoobcoder.cachix.org
-extra-trusted-public-keys = justanoobcoder.cachix.org-1:D2/vJZSn8o8Fpsxzbjc9tHo2/D1ejBUqc4r71UvDVyk=
-```
-
-The `cachix` branch always points at the newest commit of `main` whose
-build is already in the cache; following `main` itself can pull in a
-commit CI is still building, which then compiles locally. Don't set
-`inputs.nixpkgs.follows` on jotty: another nixpkgs changes the build, and
-the cache no longer has it.
-
-In a NixOS or home-manager configuration, add this repository as a flake
-input and put its package in your packages:
+Add the flake to your `inputs`:
 
 ```nix
-{
-  inputs.jotty.url = "github:justanoobcoder/jotty/cachix";
-  # ...
-  environment.systemPackages = [ inputs.jotty.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+jotty = {
+  url = "github:justanoobcoder/jotty";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Then put its package in your packages:
+
+```nix
+{ inputs, pkgs, ... }: {
+  environment.systemPackages = [
+    inputs.jotty.packages.${pkgs.stdenv.hostPlatform.system}.default
+  ];
 }
 ```
 
-With home-manager, the flake's module installs jotty and writes its
-config from Nix. `settings` takes the options of
+To try it without installing: `nix run github:justanoobcoder/jotty/cachix`.
+
+### Prebuilt binaries from Cachix
+
+To skip compiling jotty, add the Cachix cache to your NixOS configuration:
+
+```nix
+nix.settings = {
+  substituters = [ "https://justanoobcoder.cachix.org" ];
+  trusted-public-keys = [ "justanoobcoder.cachix.org-1:D2/vJZSn8o8Fpsxzbjc9tHo2/D1ejBUqc4r71UvDVyk=" ];
+};
+```
+
+and follow the `cachix` branch in `flake.nix`:
+
+```nix
+jotty = {
+  url = "github:justanoobcoder/jotty/cachix"; # drop inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+The `cachix` branch points at the newest commit of `main` whose build is
+already in the cache. Without `follows`, jotty is built against its own
+pinned nixpkgs, which is what the cache holds; another nixpkgs changes the
+build and it compiles locally.
+
+The first rebuild after adding the cache still compiles jotty locally,
+because the new substituter only takes effect once that configuration is
+active. Later rebuilds download it.
+
+### home-manager
+
+The flake's home-manager module installs jotty and writes its config from
+Nix. `settings` takes the options of
 [docs/configuration.md](docs/configuration.md), and jotty reloads them on
 every `home-manager switch`:
 
 ```nix
-{
+{ inputs, ... }: {
   imports = [ inputs.jotty.homeManagerModules.default ];
 
   programs.jotty = {
@@ -111,14 +132,6 @@ To try settings without a `home-manager switch` each time, run
 which takes precedence over the config from Nix. Once you are happy, paste
 the output of `jotty config export --nix` into `settings` and run
 `jotty config reset`. See [overrides](docs/configuration.md#overrides-and-jotty-config).
-
-From source (needs Rust 1.88+, and the development files for wayland,
-libxkbcommon, libEGL/libglvnd and fontconfig):
-
-```sh
-cargo build --release
-./target/release/jotty
-```
 
 ## Usage
 
