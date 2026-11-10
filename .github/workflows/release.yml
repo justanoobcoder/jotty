@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag such as `v0.2.0` builds jotty for the major distributions
-# and publishes a GitHub release with the packages attached. Tags with a
-# `-` (`v0.2.0-rc.1`) are published as pre-releases.
+# and publishes a GitHub release with the packages attached, described by
+# the `## 0.2.0` entries of CHANGELOG.md. Tags with a `-` (`v0.2.0-rc.1`)
+# are published as pre-releases.
 on:
   push:
     tags: ["v*"]
@@ -19,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v7
       - id: version
@@ -31,6 +33,25 @@ jobs:
             exit 1
           fi
           echo "version=$tag" >> "$GITHUB_OUTPUT"
+      - id: notes
+        name: CHANGELOG.md must have an entry for the version
+        run: |
+          # The lines under `## VERSION`, up to the next heading, without
+          # the blank lines around them.
+          notes=$(awk -v v="## ${{ steps.version.outputs.version }}" '
+            $0 == v { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' -e ':a' -e '/^\n*$/{$d;N;ba' -e '}')
+          if [ -z "$notes" ]; then
+            echo "::error::CHANGELOG.md has no entries under ## ${{ steps.version.outputs.version }}"
+            exit 1
+          fi
+          {
+            echo "notes<<CHANGELOG_EOF"
+            echo "$notes"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   linux:
     name: Packages (${{ matrix.arch }})
@@ -146,6 +167,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
+          body: ${{ needs.version.outputs.notes }}
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

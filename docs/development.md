@@ -88,7 +88,9 @@ the script: check that it is compatible with MIT before adding it there.
 ## Releasing
 
 1. Set `version` in `Cargo.toml` (and run `cargo build` to update
-   `Cargo.lock`), commit, and push.
+   `Cargo.lock`). In `CHANGELOG.md`, rename `## Unreleased` to the version
+   (`## 0.2.0`) and start a new empty `## Unreleased` above it. Commit and
+   push.
 2. Tag the commit and push the tag:
 
    ```sh
@@ -97,8 +99,9 @@ the script: check that it is compatible with MIT before adding it there.
    ```
 
 `.github/workflows/release.yml` then checks that the tag matches the
-version, builds on Ubuntu 22.04 (for an old enough glibc) for x86_64 and
-aarch64, and publishes a GitHub release with:
+version and that `CHANGELOG.md` has entries under it, builds on Ubuntu
+22.04 (for an old enough glibc) for x86_64 and aarch64, and publishes a
+GitHub release, described by those entries, with:
 
 | File | For |
 | --- | --- |
@@ -108,10 +111,16 @@ aarch64, and publishes a GitHub release with:
 | `jotty-VERSION-ARCH-linux.tar.gz` | Anything else: `bin/jotty` with `share/terminfo`, the desktop entry and docs |
 | `SHA256SUMS` | Checksums of all of the above |
 
-A tag with a `-` (`v0.2.0-rc.1`) makes a pre-release. The package contents
-are listed in `Cargo.toml` (`[package.metadata.deb]` and
-`[package.metadata.generate-rpm]`) and in the PKGBUILD. The PKGBUILD also
+A tag with a `-` (`v0.2.0-rc.1`) makes a pre-release, and needs its own
+`## 0.2.0-rc.1` entry. The package contents are listed in `Cargo.toml`
+(`[package.metadata.deb]` and `[package.metadata.generate-rpm]`) and in
+the PKGBUILD. The PKGBUILD also
 works for the AUR: it downloads the tagged source from GitHub.
+
+`CHANGELOG.md` lists only what users notice: features, bug fixes and
+performance, one short line each. Refactors, dependency bumps, CI and docs
+changes stay out of it. Add an entry under `## Unreleased` with the change
+that makes it.
 
 ## Tests
 
