@@ -198,6 +198,27 @@ These are the defaults; key bindings can be changed in the
 For the best input-method experience, have your shell mark where its prompt
 ends (OSC 133). See [Shell integration](docs/configuration.md#shell-integration).
 
+## Tips
+
+- **Ctrl+C that copies.** Bind `copy_or_interrupt = ["ctrl+c"]` in
+  `[keybinds]`: Ctrl+C then copies when text is selected and interrupts the
+  program when nothing is. Copying clears the selection, so a second Ctrl+C
+  interrupts. See [Ctrl+C that copies](docs/configuration.md#keybinds).
+- **Select a range without dragging.** Shift+click a character to mark it,
+  then Shift+click another: everything between them is selected, even
+  across a long stretch of history. A plain click or Escape cancels the mark.
+- **Select a command's output.** Ctrl+double click anywhere in a command's
+  output selects all of it, up to the next prompt. This needs
+  [shell integration](docs/configuration.md#shell-integration).
+- **Extend by words or lines.** Keep the button down after a double or
+  triple click and drag: the selection grows by whole words or lines.
+- **Open files from the output.** Ctrl+click a URL, an OSC 8 hyperlink
+  (`ls --hyperlink`) or the path of an image or video to open it.
+- **No mouse at all.** Ctrl+Shift+Space enters [vi mode](docs/configuration.md#vi-mode):
+  move with vim keys, select with `v`/`V`/Ctrl+V, yank with `y`, search with `/`.
+- **A new window where you are.** Ctrl+Shift+N opens another jotty in the
+  current directory of the shell.
+
 ## Configuration
 
 jotty reads `$XDG_CONFIG_HOME/jotty/config.toml` (by default
