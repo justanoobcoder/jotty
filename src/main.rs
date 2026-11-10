@@ -64,6 +64,10 @@ fn main() -> ExitCode {
 
     let spawn = app::Spawn {
         command: options.command,
+        activation_token: std::env::var("XDG_ACTIVATION_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty()),
+        ..app::Spawn::default()
     };
     match app::run(config, options.config, spawn) {
         Ok(code) => ExitCode::from(code),

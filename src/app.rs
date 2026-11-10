@@ -205,17 +205,25 @@ impl Notifier {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WindowId(u32);
 
-/// What a new window runs.
+/// What a new window runs, and where.
 #[derive(Debug, Default)]
 pub struct Spawn {
     /// Program and arguments to run instead of the shell.
     pub command: Option<Vec<OsString>>,
+    /// The child's directory, instead of jotty's.
+    pub cwd: Option<PathBuf>,
+    /// The child's environment, instead of jotty's.
+    pub env: Option<Vec<(OsString, OsString)>>,
+    /// An xdg-activation token from whoever asked for the window, to give
+    /// it focus.
+    pub activation_token: Option<String>,
 }
 
 /// Something a window asks of the whole application, done after the event
 /// that asked for it.
 enum Request {
     ReloadConfig,
+    NewWindow(Spawn),
 }
 
 /// The application: what all windows share, and the windows.
@@ -253,7 +261,7 @@ pub struct Shared {
     background_effect: BackgroundEffectState,
 
     config: Rc<Config>,
-    /// The `--config` file, passed on to new windows and reloaded.
+    /// The `--config` file, reloaded when it changes.
     config_path: Option<PathBuf>,
     /// A reload is scheduled (changes come in bursts while a file is saved).
     reload_pending: bool,
@@ -369,8 +377,7 @@ pub struct TermWindow {
 }
 
 /// Runs the first window, and the ones opened from it, until all are
-/// closed. `config_path` is the config file given on the command line,
-/// which new windows also use.
+/// closed. `config_path` is the config file given on the command line.
 pub fn run(
     config: Config,
     config_path: Option<PathBuf>,
@@ -608,10 +615,20 @@ impl TermWindow {
             width: (cols * cell.width).min(u16::MAX.into()) as u16,
             height: (lines * cell.height).min(u16::MAX.into()) as u16,
         };
+        if let (Some(activation), Some(token)) = (&shared.activation, spawn.activation_token) {
+            activation.activate::<App>(window.wl_surface(), token);
+        }
         let term = crate::terminfo::resolve(&config.terminal.term, &crate::terminfo::search_dirs());
         log::info!("TERM={} (terminfo: {:?})", term.name, term.terminfo);
-        let pty = Pty::spawn(&program, &args, &term, window_size)
-            .map_err(|e| format!("cannot run {program:?}: {e}"))?;
+        let pty = Pty::spawn(
+            &program,
+            &args,
+            &term,
+            window_size,
+            spawn.cwd.as_deref(),
+            spawn.env.as_deref(),
+        )
+        .map_err(|e| format!("cannot run {program:?}: {e}"))?;
         let reader = File::from(pty.fd().try_clone_to_owned()?);
         let pty_source = shared
             .loop_handle
@@ -1425,34 +1442,17 @@ impl TermWindow {
         self.request_redraw();
     }
 
-    /// Starts another jotty in the current directory of the program in the
-    /// foreground, with the same config file.
+    /// Opens another window in the current directory of the program in
+    /// the foreground.
     fn new_window(&self, shared: &mut Shared) {
-        let program = match std::env::current_exe() {
-            Ok(program) => program,
-            Err(e) => return log::warn!("cannot find jotty's executable: {e}"),
-        };
-        let mut command = Command::new(program);
-        if let Some(path) = &shared.config_path {
-            // The new window starts elsewhere; a relative path would break.
-            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            command.arg("--config").arg(path);
-        }
-        if let Some(dir) = self.pty.foreground_cwd() {
+        let cwd = self.pty.foreground_cwd();
+        if let Some(dir) = &cwd {
             log::info!("opening a new window in {}", dir.display());
-            command.current_dir(dir);
         }
-        // Its own process group: a hangup sent to ours (when the terminal
-        // that started this jotty closes) must not take it down.
-        use std::os::unix::process::CommandExt;
-        command.process_group(0).stdin(Stdio::null());
-        match command.spawn() {
-            // Reap it when it exits so it doesn't linger as a zombie.
-            Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
-            }
-            Err(e) => log::warn!("cannot start a new window: {e}"),
-        }
+        shared.requests.push(Request::NewWindow(Spawn {
+            cwd,
+            ..Spawn::default()
+        }));
     }
 
     /// Opens a link with its launcher (its file kind's, or else
@@ -2187,6 +2187,11 @@ impl App {
         for request in std::mem::take(&mut self.shared.requests) {
             match request {
                 Request::ReloadConfig => self.reload_config(),
+                Request::NewWindow(spawn) => {
+                    if let Err(e) = self.open_window(spawn) {
+                        log::warn!("cannot open a new window: {e}");
+                    }
+                }
             }
         }
         while let Some(i) = self.windows.iter().position(|w| w.exit) {
