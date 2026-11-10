@@ -1,4 +1,6 @@
-//! User configuration, loaded from `$XDG_CONFIG_HOME/jotty/config.toml`.
+//! User configuration, loaded from `$XDG_CONFIG_HOME/jotty/config.toml`,
+//! with the overrides `jotty config` writes to
+//! `$XDG_STATE_HOME/jotty/overrides.toml` merged over it.
 //!
 //! Every field has a default, so an empty or missing file is valid.
 
@@ -350,21 +352,73 @@ impl Config {
         Ok(config)
     }
 
-    /// Loads the config from `path`, or from the default location when `None`.
-    /// A missing file at the default location yields the default config.
+    /// Builds the config from a table of TOML values, as [`Config::parse`]
+    /// does from text. Errors carry no position.
+    pub fn from_table(table: toml::Table) -> Result<Self, toml::de::Error> {
+        let mut config: Config = toml::Value::Table(table).try_into()?;
+        config.sanitize();
+        Ok(config)
+    }
+
+    /// Loads the config from `path`, or from the default location when `None`,
+    /// with the overrides merged over it. A missing file at the default
+    /// location yields the default config.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let (path, required) = match path {
-            Some(p) => (p.to_path_buf(), true),
-            None => match default_path() {
-                Some(p) => (p, false),
-                None => return Ok(Self::default()),
-            },
+        let base = match path {
+            Some(p) => Some((p.to_path_buf(), true)),
+            None => default_path().map(|p| (p, false)),
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text).map_err(|e| ConfigError::Parse(path, e)),
-            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(ConfigError::Io(path, e)),
+        let base = base.as_ref().map(|(p, required)| (p.as_path(), *required));
+        Self::load_layers(base, overrides_path().as_deref())
+    }
+
+    /// Loads the base file (`required` makes a missing one an error), then
+    /// merges `overlay` over it. A broken overlay is logged and ignored:
+    /// it must never cost the user the config they wrote.
+    fn load_layers(
+        base: Option<(&Path, bool)>,
+        overlay: Option<&Path>,
+    ) -> Result<Self, ConfigError> {
+        let text = match base {
+            Some((path, required)) => match read_optional(path) {
+                Ok(Some(text)) => text,
+                Ok(None) if !required => String::new(),
+                Ok(None) => {
+                    let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+                    return Err(ConfigError::Io(path.to_path_buf(), e));
+                }
+                Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
+            },
+            None => String::new(),
+        };
+        let parse_error = |e| ConfigError::Parse(base.map_or_else(PathBuf::new, |b| b.0.into()), e);
+        let config = Self::parse(&text).map_err(parse_error)?;
+        let Some(overlay) = overlay else {
+            return Ok(config);
+        };
+        match Self::merge_overlay(&text, overlay) {
+            Ok(Some(merged)) => Ok(merged),
+            Ok(None) => Ok(config),
+            Err(e) => {
+                log::error!("{e}; ignoring the overrides");
+                Ok(config)
+            }
         }
+    }
+
+    /// The config from `base_text` (already known to be valid) with the
+    /// file `overlay` merged over it, or `None` without an overlay file.
+    fn merge_overlay(base_text: &str, overlay: &Path) -> Result<Option<Self>, ConfigError> {
+        let io_error = |e| ConfigError::Io(overlay.to_path_buf(), e);
+        let parse_error = |e| ConfigError::Parse(overlay.to_path_buf(), e);
+        let Some(text) = read_optional(overlay).map_err(io_error)? else {
+            return Ok(None);
+        };
+        // Checked on its own first, so errors point into the overlay.
+        Self::parse(&text).map_err(parse_error)?;
+        let mut table: toml::Table = toml::from_str(base_text).map_err(parse_error)?;
+        merge(&mut table, toml::from_str(&text).map_err(parse_error)?);
+        Self::from_table(table).map(Some).map_err(parse_error)
     }
 
     /// Clamps values that would otherwise break rendering.
@@ -383,11 +437,43 @@ impl Config {
 }
 
 pub fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
+}
+
+/// Where `jotty config` keeps its overrides, which take precedence over
+/// the config file.
+pub fn overrides_path() -> Option<PathBuf> {
+    xdg_dir("XDG_STATE_HOME", ".local/state").map(|dir| dir.join("jotty").join("overrides.toml"))
+}
+
+/// `$var` when set and not empty, else `fallback` under `$HOME`.
+fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("jotty").join("config.toml"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
+}
+
+/// A file's contents, or `None` when it doesn't exist.
+pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Merges `over` into `base`: tables present in both are merged key by
+/// key, and any other value in `over`, lists included, replaces `base`'s.
+pub fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(base)), toml::Value::Table(over)) => merge(base, over),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,5 +640,65 @@ mod tests {
     fn missing_explicit_file_is_an_error() {
         let err = Config::load(Some(Path::new("/nonexistent/jotty.toml"))).unwrap_err();
         assert!(matches!(err, ConfigError::Io(..)));
+    }
+
+    /// A scratch directory for one test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jotty-config-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn merge_is_deep_and_replaces_lists() {
+        let mut base: toml::Table = toml::from_str(
+            "[font]\nfamily = \"A\"\nfallback = [\"x\", \"y\"]\n[keybinds]\ncopy = [\"ctrl+c\"]",
+        )
+        .unwrap();
+        let over: toml::Table =
+            toml::from_str("[font]\nsize = 14.0\nfallback = [\"z\"]\n[keybinds]\npaste = []")
+                .unwrap();
+        merge(&mut base, over);
+        let config = Config::from_table(base).unwrap();
+        assert_eq!(config.font.family, "A");
+        assert_eq!(config.font.size, 14.0);
+        assert_eq!(config.font.fallback, ["z"]);
+        let both = Config::parse("[keybinds]\ncopy = [\"ctrl+c\"]\npaste = []").unwrap();
+        assert_eq!(config.keybinds, both.keybinds);
+    }
+
+    #[test]
+    fn overlay_takes_precedence() {
+        let dir = scratch("overlay");
+        let (base, overlay) = (dir.join("config.toml"), dir.join("overrides.toml"));
+        std::fs::write(&base, "[font]\nfamily = \"A\"\nsize = 10.0").unwrap();
+        let load = || Config::load_layers(Some((&base, true)), Some(&overlay)).unwrap();
+        // No overlay file: the base alone.
+        assert_eq!(
+            load(),
+            Config::parse("[font]\nfamily = \"A\"\nsize = 10.0").unwrap()
+        );
+        std::fs::write(&overlay, "[font]\nsize = 13.0").unwrap();
+        assert_eq!((load().font.family.as_str(), load().font.size), ("A", 13.0));
+        // A broken overlay is ignored.
+        std::fs::write(&overlay, "[font]\nsiez = 13.0").unwrap();
+        assert_eq!(load().font.size, 10.0);
+        std::fs::write(&overlay, "not toml").unwrap();
+        assert_eq!(load().font.size, 10.0);
+        // A broken base is still an error.
+        std::fs::write(&base, "[font]\nsiez = 1").unwrap();
+        assert!(Config::load_layers(Some((&base, true)), Some(&overlay)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn overlay_without_base_file() {
+        let dir = scratch("nobase");
+        let overlay = dir.join("overrides.toml");
+        std::fs::write(&overlay, "[window]\npadding = 9").unwrap();
+        let missing = dir.join("config.toml");
+        let config = Config::load_layers(Some((&missing, false)), Some(&overlay)).unwrap();
+        assert_eq!(config.window.padding, 9);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
