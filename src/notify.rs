@@ -276,6 +276,7 @@ impl Bus {
         }
     }
 
+    // One argument per field of the D-Bus method call header.
     #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
@@ -444,6 +445,7 @@ fn notify_body(app_id: &str, summary: &str, body: &str) -> Vec<u8> {
     w.buf
 }
 
+// One argument per field of the D-Bus method call header.
 #[allow(clippy::too_many_arguments)]
 fn method_call(
     serial: u32,
