@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use crate::config::Rgb;
+use crate::color::Rgb;
 
 /// The config's sections, in the order the TUI lists them.
 pub const SECTIONS: [&str; 7] = [

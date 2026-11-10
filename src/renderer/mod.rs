@@ -11,7 +11,8 @@ pub mod software;
 
 use std::borrow::Cow;
 
-use crate::config::{Config, Rgb};
+use crate::color::Rgb;
+use crate::config::Config;
 use crate::font::{self, CellMetrics, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};

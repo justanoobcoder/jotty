@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod color;
 mod config;
 mod emoji;
 mod font;

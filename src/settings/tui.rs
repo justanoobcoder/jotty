@@ -17,7 +17,8 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap}
 
 use super::Layers;
 use super::schema::{self, Key, SECTIONS};
-use crate::config::{Config, DEFAULT_PALETTE, Rgb};
+use crate::color::Rgb;
+use crate::config::{Config, DEFAULT_PALETTE};
 use crate::settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

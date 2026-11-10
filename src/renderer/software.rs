@@ -429,7 +429,7 @@ fn blend(pixel: &mut [u8], color: [u8; 4], a: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Rgb;
+    use crate::color::Rgb;
     use crate::renderer::GlyphInfo;
 
     const CLEAR: [u8; 4] = [0x18, 0x18, 0x18, 0xff];
