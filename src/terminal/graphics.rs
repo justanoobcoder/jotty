@@ -214,18 +214,18 @@ impl Default for Command {
 impl Command {
     /// Parses `key=value` pairs separated by commas. Unknown keys are
     /// ignored; a malformed value rejects the command.
-    fn parse(control: &[u8]) -> Option<Command> {
+    fn parse(control: &[u8]) -> Result<Command, &'static str> {
         let mut cmd = Command::default();
         for pair in control.split(|&b| b == b',').filter(|p| !p.is_empty()) {
             let [key, b'=', value @ ..] = pair else {
-                return None;
+                return Err("expected key=value");
             };
-            let value = std::str::from_utf8(value).ok()?;
+            let value = std::str::from_utf8(value).map_err(|_| "a value is not UTF-8")?;
             let char = || match value.as_bytes() {
-                [c] => Some(*c),
-                _ => None,
+                [c] => Ok(*c),
+                _ => Err("expected a single character"),
             };
-            let num = || value.parse::<u32>().ok();
+            let num = || value.parse::<u32>().map_err(|_| "expected a number");
             match key {
                 b'a' => cmd.action = char()?,
                 b'q' => cmd.quiet = num()?.min(2) as u8,
@@ -250,12 +250,12 @@ impl Command {
                 b'r' => cmd.rows = num()?,
                 b'C' => cmd.no_move = num()? == 1,
                 b'U' => cmd.is_virtual = num()? == 1,
-                b'z' => cmd.z = value.parse().ok()?,
+                b'z' => cmd.z = value.parse().map_err(|_| "expected a number")?,
                 b'd' => cmd.delete = char()?,
                 _ => {}
             }
         }
-        Some(cmd)
+        Ok(cmd)
     }
 }
 
@@ -347,12 +347,15 @@ impl Graphics {
             Some(i) => (&data[..i], &data[i + 1..]),
             None => (data, &[][..]),
         };
-        let Some(cmd) = Command::parse(control) else {
-            log::debug!(
-                "bad graphics command {:?}",
-                String::from_utf8_lossy(control)
-            );
-            return Outcome::default();
+        let cmd = match Command::parse(control) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                log::debug!(
+                    "bad graphics command {:?}: {e}",
+                    String::from_utf8_lossy(control)
+                );
+                return Outcome::default();
+            }
         };
         // Later chunks of a transmission carry only `m` (and maybe `q`).
         if let Some(mut loading) = self.loading.take()
@@ -423,9 +426,13 @@ impl Graphics {
 
     /// Finishes a transmission (`a=t`, `T` or `q`) with its whole payload,
     /// decoded from base64.
-    fn finish(&mut self, mut cmd: Command, data: Option<Vec<u8>>, ctx: &Context) -> Outcome {
+    fn finish(
+        &mut self,
+        mut cmd: Command,
+        data: Result<Vec<u8>, String>,
+        ctx: &Context,
+    ) -> Outcome {
         let image = data
-            .ok_or_else(|| "EINVAL: bad base64 payload".to_string())
             .and_then(|data| read_medium(&cmd, data))
             .and_then(|data| decompress(&cmd, data))
             .and_then(|data| decode(&cmd, data));
@@ -730,7 +737,7 @@ fn reply(cmd: &Command, result: Result<(), String>) -> Option<String> {
 }
 
 /// Decodes standard base64, ignoring padding and whitespace.
-fn base64(text: &[u8]) -> Option<Vec<u8>> {
+fn base64(text: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut acc = 0u32;
     let mut bits = 0;
@@ -742,7 +749,7 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
             b'+' => 62,
             b'/' => 63,
             b'=' | b'\n' | b'\r' | b' ' => continue,
-            _ => return None,
+            _ => return Err("EINVAL: bad base64 payload".into()),
         };
         acc = (acc << 6) | u32::from(value);
         bits += 6;
@@ -751,7 +758,7 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
             out.push((acc >> bits) as u8);
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Gets the image data from where the transmission medium (`t`) says.
@@ -1031,7 +1038,7 @@ mod tests {
     fn decodes_base64() {
         assert_eq!(base64(b"AAAA").unwrap(), [0, 0, 0]);
         assert_eq!(base64(b"aGk=").unwrap(), b"hi");
-        assert!(base64(b"a*").is_none());
+        assert!(base64(b"a*").is_err());
     }
 
     #[test]
