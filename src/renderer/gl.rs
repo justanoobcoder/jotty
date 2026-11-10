@@ -11,6 +11,7 @@ use wayland_egl::WlEglSurface;
 use super::atlas::Atlas;
 use super::{Batch, Frame, Theme, VERTEX_FLOATS};
 use crate::font::{CellMetrics, Fonts, Glyph};
+use crate::terminal::graphics::Image;
 
 const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31d8;
 const ATLAS_SIZE: u32 = 2048;
@@ -105,7 +106,7 @@ impl Egl {
     }
 
     /// # Safety
-    /// As for `new`; `display` is initialized.
+    /// As for `try_new`; `display` is initialized.
     unsafe fn on_display(
         api: &'static egl::Instance<egl::Static>,
         display: egl::Display,
@@ -198,6 +199,10 @@ pub struct Renderer {
     size: (u32, u32),
 }
 
+/// Compiles a shader of `kind` from `source`.
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
 unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader, String> {
     // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
@@ -214,6 +219,9 @@ unsafe fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::S
 /// Creates an empty `size`×`size` texture on texture unit `unit`.
 /// Glyphs are drawn at integer pixel positions, 1:1, so it is sampled with
 /// `NEAREST`.
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
 unsafe fn create_texture(
     gl: &glow::Context,
     unit: u32,
@@ -251,10 +259,10 @@ unsafe fn create_texture(
 
 /// Uploads an image as a texture on texture unit 2. Images are scaled, so
 /// they are sampled with `LINEAR`.
-unsafe fn upload_image(
-    gl: &glow::Context,
-    image: &crate::terminal::graphics::Image,
-) -> Result<Texture, String> {
+///
+/// # Safety
+/// The GL context of `gl` must be current on this thread.
+unsafe fn upload_image(gl: &glow::Context, image: &Image) -> Result<Texture, String> {
     // SAFETY: the caller's GL context is current; `image.pixels` holds width × height RGBA
     // pixels, which `decode` checked.
     unsafe {
@@ -295,7 +303,7 @@ impl Renderer {
         fonts: Fonts,
         theme: Theme,
     ) -> Result<Renderer, String> {
-        // SAFETY: this function's caller promises what `Egl::new` requires.
+        // SAFETY: this function's caller promises what `Egl::try_new` requires.
         let egl = unsafe { Egl::try_new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
         // SAFETY: the context `egl` made is current, so its loader returns its functions.
         let gl = unsafe {
@@ -482,7 +490,7 @@ impl Renderer {
         let (w, h) = self.size;
         let [r, g, b] = theme.background.to_f32();
         let a = theme.opacity;
-        // SAFETY: the context is current; every object used was made by `new` and lives as long as
+        // SAFETY: the context is current; every object used was made by `try_new` and lives as long as
         // the renderer, and the vertex slice outlives the upload.
         unsafe {
             gl.viewport(0, 0, w as i32, h as i32);

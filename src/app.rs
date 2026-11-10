@@ -87,7 +87,7 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{MouseMode, Notification, Terminal};
+use crate::terminal::{Flags, MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
 use smithay_client_toolkit::seat::pointer::AxisScroll;
@@ -1253,7 +1253,7 @@ impl App {
             .screen()
             .row_at(p.line)
             .and_then(|r| r.cells().get(p.col))
-            .is_some_and(|c| c.flags.contains(crate::terminal::Flags::WIDE_SPACER));
+            .is_some_and(|c| c.flags.contains(Flags::WIDE_SPACER));
         Point {
             col: if spacer {
                 p.col.saturating_sub(1)

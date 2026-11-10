@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 use crate::color::Rgb;
 use crate::config::Config;
-use crate::font::{self, CellMetrics, Style};
+use crate::font::{self, CellMetrics, Fonts, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
@@ -51,7 +51,7 @@ impl Renderer {
     }
 
     /// Replaces the fonts, after a config reload.
-    pub fn set_fonts(&mut self, fonts: crate::font::Fonts) {
+    pub fn set_fonts(&mut self, fonts: Fonts) {
         match self {
             Renderer::Gpu(r) => r.set_fonts(fonts),
             Renderer::Cpu(r) => r.set_fonts(fonts),
