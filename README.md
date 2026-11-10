@@ -11,6 +11,8 @@
   <img src="https://img.shields.io/badge/rust-edition%202024-orange" alt="Rust 2024">
 </p>
 
+<img width="1920" height="1080" alt="screenshot_20261110_172458-full" src="https://github.com/user-attachments/assets/d199fad8-129d-4b5a-b09e-1b8973c09c07" />
+
 # Features
 
 - **Wayland native.** It speaks Wayland directly through
