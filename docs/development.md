@@ -176,13 +176,6 @@ See [architecture.md](architecture.md) for the module map. Some conventions:
 - `unsafe` stays in `pty.rs`, `font.rs` (fontconfig, `mmap`), `watch.rs`
   (inotify, signals) and `renderer/gl.rs`,
   with a `SAFETY` comment where the reason isn't obvious.
-- Follow the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html):
-  one module per `use` and no glob imports (except `use super::*` in
-  inline tests), functions called through their module, types imported,
-  `expect` over `unwrap`, `Result` for anything that can fail and `Option`
-  only for a value that may be absent, constructors that can fail named
-  `try_new`, `/* name= */` on literal `bool` arguments, `#[must_use]` on
-  functions whose result matters.
 - Imports come in three groups: std, other crates, then the crate's own.
   The nightly rustfmt options `imports_granularity = "Module"`,
   `group_imports = "StdExternalCrate"` and `hex_literal_case = "Lower"`
