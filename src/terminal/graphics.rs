@@ -216,7 +216,8 @@ impl Command {
     /// ignored; a malformed value rejects the command.
     fn parse(control: &[u8]) -> Result<Command, &'static str> {
         let mut cmd = Command::default();
-        for pair in control.split(|&b| b == b',').filter(|p| !p.is_empty()) {
+        let pairs = control.split(|&b| b == b',').filter(|p| !p.is_empty());
+        for pair in pairs {
             let [key, b'=', value @ ..] = pair else {
                 return Err("expected key=value");
             };

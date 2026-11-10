@@ -819,7 +819,8 @@ impl Screen {
         }
         let mut links = self.links.unused();
         let mut clusters = self.clusters.unused();
-        for (id, _) in extras.iter().enumerate().filter(|(_, used)| **used) {
+        let used_ids = extras.iter().enumerate().filter(|(_, used)| **used);
+        for (id, _) in used_ids {
             if let Some(extra) = self.extras.get(id as u16) {
                 links[usize::from(extra.link)] = true;
                 clusters[usize::from(extra.cluster)] = true;

@@ -504,7 +504,8 @@ mod tests {
         use Kind::*;
         let defaults = toml::Table::try_from(Config::default()).unwrap();
         // Palette entries are set through the TUI, which writes the list.
-        for key in keys(&defaults).into_iter().filter(|k| k.index.is_none()) {
+        let scalar_keys = keys(&defaults).into_iter().filter(|k| k.index.is_none());
+        for key in scalar_keys {
             let input: String = match key.kind {
                 Bool => "true".into(),
                 Float { min, .. } => min.to_string(),

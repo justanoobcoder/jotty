@@ -359,7 +359,8 @@ fn placement_quads(frame: &Frame, m: CellMetrics, out: &mut Vec<ImageQuad>) {
     let clip = [ox, oy, screen.cols() as f32 * cw, screen.rows() as f32 * ch];
     // The line shown in the top row.
     let top = screen.grid().scrolled as i64 - screen.display_offset() as i64;
-    for p in images.placements().iter().filter(|p| !p.is_virtual) {
+    let placed = images.placements().iter().filter(|p| !p.is_virtual);
+    for p in placed {
         let Some(image) = images.image(p.image) else {
             continue;
         };

@@ -166,7 +166,8 @@ impl FromStr for KeyCombo {
             None => ("", s),
         };
         let mut mods = Mods::default();
-        for name in mod_names.split('+').filter(|n| !n.is_empty()) {
+        let names = mod_names.split('+').filter(|n| !n.is_empty());
+        for name in names {
             let flag = match name.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => &mut mods.ctrl,
                 "alt" | "meta" | "mod1" => &mut mods.alt,

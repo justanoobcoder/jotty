@@ -293,11 +293,11 @@ fn paint(
     rows: &[bool],
 ) {
     let width = size.0 as usize;
-    for (pixels, _) in canvas
+    let dirty_rows = canvas
         .chunks_exact_mut(width * 4)
         .zip(rows)
-        .filter(|(_, dirty)| **dirty)
-    {
+        .filter(|(_, dirty)| **dirty);
+    for (pixels, _) in dirty_rows {
         for pixel in pixels.as_chunks_mut::<4>().0 {
             *pixel = clear;
         }
