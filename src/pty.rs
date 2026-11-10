@@ -152,6 +152,7 @@ impl Pty {
         })
     }
 
+    #[must_use]
     pub fn fd(&self) -> BorrowedFd<'_> {
         use std::os::fd::AsFd;
         self.master.as_fd()
@@ -205,6 +206,7 @@ impl Pty {
     }
 
     /// Whether some input is still waiting for the child to read it.
+    #[must_use]
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -219,6 +221,7 @@ impl Pty {
 
     /// The current directory of the program in the foreground (the shell,
     /// or what it runs), for resolving relative paths it printed.
+    #[must_use]
     pub fn foreground_cwd(&self) -> Option<PathBuf> {
         // SAFETY: tcgetpgrp only reads the terminal's foreground group.
         let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
@@ -234,6 +237,7 @@ impl Pty {
     /// terminal still edits lines, as `sudo`, `passwd` and `ssh` set it.
     /// Full-screen programs (and multiplexers such as zellij) turn off line
     /// editing as well, so they don't count.
+    #[must_use]
     pub fn password_input(&self) -> bool {
         // SAFETY: an all-zero termios is a valid value for tcgetattr to fill.
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
@@ -272,6 +276,7 @@ impl Drop for Pty {
 }
 
 /// The program to run when none is given: `$SHELL`, then `/bin/sh`.
+#[must_use]
 pub fn default_shell() -> String {
     std::env::var("SHELL")
         .ok()

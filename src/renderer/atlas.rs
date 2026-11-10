@@ -23,6 +23,7 @@ pub struct Packer {
 const PADDING: u32 = 1;
 
 impl Packer {
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Packer {
             width,
@@ -33,6 +34,7 @@ impl Packer {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
@@ -94,6 +96,7 @@ pub struct Atlas {
 impl Atlas {
     /// Square atlas images of `size` (coverage) and `color_size` (RGBA)
     /// pixels.
+    #[must_use]
     pub fn new(size: u32, color_size: u32) -> Self {
         Atlas {
             packer: Packer::new(size, size),
@@ -123,6 +126,7 @@ impl Atlas {
 
     /// Changes when the atlas is cleared, so that drawings that look the
     /// same by glyph position can be told apart.
+    #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }

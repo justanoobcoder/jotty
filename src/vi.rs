@@ -60,6 +60,7 @@ pub struct ViMode {
 }
 
 impl ViMode {
+    #[must_use]
     pub fn new(cursor: Point) -> ViMode {
         ViMode {
             cursor,
@@ -70,11 +71,13 @@ impl ViMode {
     }
 
     /// The visual mode, if one is active.
+    #[must_use]
     pub fn visual(&self) -> Option<Visual> {
         self.visual.map(|(mode, _)| mode)
     }
 
     /// What visual mode covers, from where it started to the cursor.
+    #[must_use]
     pub fn selection(&self, screen: &Screen) -> Option<Selection> {
         let (mode, anchor) = self.visual?;
         let (start, end) = (anchor.min(self.cursor), anchor.max(self.cursor));

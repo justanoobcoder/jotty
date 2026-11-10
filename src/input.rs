@@ -50,6 +50,7 @@ pub struct Key<'text> {
 
 /// Encodes a key event with the kitty keyboard protocol when the program
 /// turned it on, otherwise as xterm does (only presses and repeats).
+#[must_use]
 pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
     if modes.keyboard != 0 {
         return encode_kitty(key, mods, modes);
@@ -99,6 +100,7 @@ fn with_alt(mods: Modifiers, bytes: &[u8]) -> Vec<u8> {
 
 /// Encodes a key press. `text` is the key's UTF-8 text as produced by xkb,
 /// which already accounts for Shift, Caps Lock and Ctrl on letters.
+#[must_use]
 pub fn encode_key(
     keysym: Keysym,
     text: Option<&str>,
@@ -449,6 +451,7 @@ fn key_number(key: &Key) -> Option<u32> {
 
 /// Wraps pasted text for the child: strips control characters that could
 /// end bracketed paste early, and normalizes newlines to carriage returns.
+#[must_use]
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let cleaned: String = text
         .replace("\r\n", "\r")
@@ -519,6 +522,7 @@ pub struct MouseEvent {
 
 /// Encodes a pointer event for a program that enabled mouse reporting, or
 /// returns `None` if `mode` doesn't report this kind of event.
+#[must_use]
 pub fn encode_mouse(event: MouseEvent, mode: MouseMode, sgr: bool) -> Option<Vec<u8>> {
     use MouseAction::*;
     let reported = match (mode, event.action) {

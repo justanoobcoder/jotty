@@ -15,11 +15,13 @@ pub struct Rgb {
 }
 
 impl Rgb {
+    #[must_use]
     pub const fn new(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }
     }
 
     /// The channels scaled to 0.0–1.0.
+    #[must_use]
     pub fn to_f32(self) -> [f32; 3] {
         [self.r, self.g, self.b].map(|c| f32::from(c) / 255.0)
     }

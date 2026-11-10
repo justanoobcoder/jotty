@@ -22,6 +22,7 @@ pub struct Surrounding {
 impl Surrounding {
     /// Builds the surrounding text from columns `start..` of `row`, with the
     /// cursor at column `cursor_col`.
+    #[must_use]
     pub fn from_row(row: &Row, start: usize, cursor_col: usize) -> Surrounding {
         let start = start.min(cursor_col);
         let mut text = String::new();
@@ -74,6 +75,7 @@ impl Surrounding {
 
     /// Key presses that delete `before` bytes before and `after` bytes after
     /// the cursor, as requested by the input method.
+    #[must_use]
     pub fn delete_keys(&self, before: usize, after: usize) -> Vec<u8> {
         let floor = |mut i: usize| {
             while !self.text.is_char_boundary(i) {
@@ -116,6 +118,7 @@ impl Content {
     /// `password_prompt` is the pty's state; `own_input` is set while
     /// jotty itself takes the keys (search bar, vi mode), which is never a
     /// password field whatever the program behind it is doing.
+    #[must_use]
     pub fn new(password_prompt: bool, own_input: bool) -> Content {
         if password_prompt && !own_input {
             Content::Password

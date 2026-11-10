@@ -24,6 +24,7 @@ impl EmojiFont {
 
     /// The glyph showing `text` (a character or emoji sequence), after the
     /// font's ligatures. `None` if the font lacks its first character.
+    #[must_use]
     pub fn glyph_for(&self, text: &str) -> Option<GlyphId> {
         let first = self.face.glyph_index(text.chars().next()?)?;
         // Characters the font has no glyph for, typically VS16, are left
@@ -41,6 +42,7 @@ impl EmojiFont {
 
     /// Draws `glyph` scaled to fit a `width`×`height` box, keeping its
     /// aspect ratio. Returns its size and premultiplied RGBA pixels.
+    #[must_use]
     pub fn rasterize(
         &self,
         glyph: GlyphId,
@@ -174,6 +176,7 @@ fn resize(src: &[u8], (sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> Vec<u8> {
 /// Whether `text` (a character or a cluster) should be drawn as a color
 /// emoji: an emoji sequence, a character with VS16, or a character shown
 /// as emoji by default. VS15 asks for the text form.
+#[must_use]
 pub fn wants_color(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {

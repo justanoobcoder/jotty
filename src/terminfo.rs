@@ -18,6 +18,7 @@ pub struct Term {
 
 /// Resolves the configured `terminal.term`. `"auto"` picks jotty's entry if
 /// one of `dirs` contains it.
+#[must_use]
 pub fn resolve(configured: &str, dirs: &[PathBuf]) -> Term {
     if configured != "auto" {
         return Term {

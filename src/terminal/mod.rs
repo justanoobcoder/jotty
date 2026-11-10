@@ -52,6 +52,7 @@ enum Strings {
 }
 
 impl Terminal {
+    #[must_use]
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         Terminal {
             parser: vte::Parser::new_with_size(),
@@ -136,6 +137,7 @@ impl Terminal {
         self.apc = Apc::Body(Some(Vec::new()));
     }
 
+    #[must_use]
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -374,6 +376,7 @@ impl Default for ColorOverrides {
 }
 
 impl ColorOverrides {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == ColorOverrides::default()
     }
@@ -436,6 +439,7 @@ fn default_tabs(cols: usize) -> Vec<bool> {
 }
 
 impl Screen {
+    #[must_use]
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -481,15 +485,18 @@ impl Screen {
 
     // ---- Public queries -------------------------------------------------
 
+    #[must_use]
     pub fn cols(&self) -> usize {
         self.cols
     }
 
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.rows
     }
 
     /// The grid on display: the alternate screen's while it is active.
+    #[must_use]
     pub fn grid(&self) -> &Grid {
         if self.alt_active {
             &self.alternate
@@ -506,16 +513,19 @@ impl Screen {
         }
     }
 
+    #[must_use]
     pub fn is_alt_screen(&self) -> bool {
         self.alt_active
     }
 
     /// The cursor position as (row, column), always within the screen.
+    #[must_use]
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor.row, self.cursor.col.min(self.cols - 1))
     }
 
     /// Whether the cursor should be drawn: shown and not scrolled out of view.
+    #[must_use]
     pub fn cursor_visible(&self) -> bool {
         self.modes.show_cursor && self.display_offset == 0
     }
@@ -523,6 +533,7 @@ impl Screen {
     /// The row displayed at screen line `line`, taking the scrollback view
     /// into account. Rows from history may be narrower or wider than the
     /// screen.
+    #[must_use]
     pub fn visible_row(&self, line: usize) -> &Row {
         let grid = self.grid();
         let history = grid.history.len();
@@ -536,6 +547,7 @@ impl Screen {
 
     /// The row at screen line `line`: 0 is the top of the live screen,
     /// negative lines are in the history.
+    #[must_use]
     pub fn row_at(&self, line: isize) -> Option<&Row> {
         let grid = self.grid();
         if line < 0 {
@@ -553,6 +565,7 @@ impl Screen {
     /// found through the shell's OSC 133 marks. Trailing blank lines are
     /// left out. Without a `C` mark, the output is taken to start after the
     /// command line (`B`).
+    #[must_use]
     pub fn command_output(&self, line: isize) -> Option<(isize, isize)> {
         let top = -(self.grid().history.len() as isize);
         let mark_at = |l: isize| self.row_at(l).and_then(|r| r.mark);
@@ -587,6 +600,7 @@ impl Screen {
     }
 
     /// How many rows the view is scrolled back into the history.
+    #[must_use]
     pub fn display_offset(&self) -> usize {
         self.display_offset
     }
@@ -633,11 +647,13 @@ impl Screen {
     }
 
     /// How many synchronized updates have begun, to tell them apart.
+    #[must_use]
     pub fn synchronized_updates(&self) -> u64 {
         self.synchronized_updates
     }
 
     /// The title a program set (OSC 0/2), if any.
+    #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
@@ -676,11 +692,13 @@ impl Screen {
     }
 
     /// The cursor color requested by the program with OSC 12, if any.
+    #[must_use]
     pub fn cursor_color(&self) -> Option<Rgb> {
         self.cursor_color
     }
 
     /// What `cell` carries besides its character, colors and flags.
+    #[must_use]
     pub fn extra(&self, cell: &Cell) -> Extra {
         self.extra_by_id(cell.extra)
     }
@@ -966,6 +984,7 @@ impl Screen {
     }
 
     /// Colors the program set with OSC 4, 10 and 11.
+    #[must_use]
     pub fn color_overrides(&self) -> &ColorOverrides {
         &self.colors
     }
@@ -979,6 +998,7 @@ impl Screen {
 
     /// The column where user input starts on the cursor row: after the
     /// prompt if the shell marked it with OSC 133, otherwise 0.
+    #[must_use]
     pub fn input_start(&self) -> usize {
         match self.prompt_end {
             Some((row, col)) if row == self.cursor.row && !self.alt_active => col,
@@ -1000,6 +1020,7 @@ impl Screen {
 
     /// The kitty keyboard protocol flags in effect (progressive
     /// enhancements; 0 for legacy key encoding).
+    #[must_use]
     pub fn keyboard_flags(&self) -> u8 {
         self.keyboard[self.alt_active as usize].current
     }
@@ -1038,6 +1059,7 @@ impl Screen {
     }
 
     /// The images of the screen being shown.
+    #[must_use]
     pub fn graphics(&self) -> &Graphics {
         &self.graphics[self.alt_active as usize]
     }
@@ -1047,6 +1069,7 @@ impl Screen {
     }
 
     /// An image of either screen by its uid.
+    #[must_use]
     pub fn image(&self, uid: u64) -> Option<&graphics::Image> {
         self.graphics.iter().find_map(|g| g.image(uid))
     }

@@ -293,6 +293,7 @@ impl Keybinds {
     /// The action bound to a key press. `keysym` is the symbol produced with
     /// the current modifiers; `base` is the key's symbol without them, when
     /// the keymap is known.
+    #[must_use]
     pub fn lookup(&self, keysym: Keysym, base: Option<Keysym>, mods: Modifiers) -> Option<Action> {
         let mods = Mods::from(mods);
         let shifted = lower(keysym);
@@ -314,6 +315,7 @@ impl Keybinds {
     }
 
     /// The action bound to turning the wheel in `wheel` with `mods` held.
+    #[must_use]
     pub fn lookup_wheel(&self, wheel: Wheel, mods: Modifiers) -> Option<Action> {
         let combo = KeyCombo {
             mods: Mods::from(mods),

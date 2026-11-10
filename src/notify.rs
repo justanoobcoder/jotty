@@ -65,6 +65,7 @@ pub struct RateLimit {
 
 impl RateLimit {
     /// A limit that starts with the whole burst allowed.
+    #[must_use]
     pub fn new(now: Instant) -> Self {
         RateLimit {
             allowance: NOTIFICATION_BURST,
@@ -155,6 +156,7 @@ impl Bus {
     }
 
     /// Whether messages wait for the socket to take them.
+    #[must_use]
     pub fn has_outgoing(&self) -> bool {
         !self.outgoing.is_empty()
     }

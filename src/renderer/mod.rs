@@ -26,6 +26,7 @@ pub enum Renderer {
 }
 
 impl Renderer {
+    #[must_use]
     pub fn cell(&self) -> CellMetrics {
         match self {
             Renderer::Gpu(r) => r.cell(),
@@ -96,6 +97,7 @@ pub struct Theme {
 
 impl Theme {
     /// The theme the config asks for, before any program changes colors.
+    #[must_use]
     pub fn from_config(config: &Config) -> Theme {
         Theme {
             foreground: config.colors.foreground,
@@ -113,6 +115,7 @@ impl Theme {
     }
 
     /// The configured colors, as color queries report them.
+    #[must_use]
     pub fn default_colors(&self) -> DefaultColors {
         DefaultColors {
             foreground: self.foreground,
@@ -123,6 +126,7 @@ impl Theme {
     }
 
     /// The theme with the colors the program changed (OSC 4, 10, 11).
+    #[must_use]
     pub fn effective(&self, screen: &Screen) -> Cow<'_, Theme> {
         let colors = screen.color_overrides();
         if colors.is_empty() {
@@ -140,6 +144,7 @@ impl Theme {
     }
 
     /// Resolves a 256-color index.
+    #[must_use]
     pub fn indexed(&self, i: u8) -> Rgb {
         if let Some(c) = self.overrides[usize::from(i)] {
             return c;
@@ -160,6 +165,7 @@ impl Theme {
 
     /// Final foreground and background of a cell. `block_cursor` is the
     /// cursor color when a block cursor covers the cell.
+    #[must_use]
     pub fn cell_colors(
         &self,
         cell: &Cell,

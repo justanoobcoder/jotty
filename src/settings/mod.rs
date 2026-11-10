@@ -57,6 +57,7 @@ impl Layers {
     }
 
     /// The config file with the overrides merged over it.
+    #[must_use]
     pub fn merged(&self) -> toml::Table {
         let mut merged = self.base.clone();
         config::merge(&mut merged, self.overrides.clone());
@@ -108,6 +109,7 @@ pub fn save(path: &Path, overrides: &toml::Table) -> io::Result<()> {
 }
 
 /// The value at `path` in nested tables.
+#[must_use]
 pub fn get_path<'a>(table: &'a toml::Table, path: &[String]) -> Option<&'a toml::Value> {
     let (last, tables) = path.split_last()?;
     let mut table = table;
@@ -154,6 +156,7 @@ pub fn remove_path(table: &mut toml::Table, path: &[String]) {
 }
 
 /// Runs a `jotty config` subcommand.
+#[must_use]
 pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
     match run_command(command, config_path) {
         Ok(()) => ExitCode::SUCCESS,

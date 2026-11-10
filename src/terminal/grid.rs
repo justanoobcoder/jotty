@@ -40,15 +40,18 @@ impl Flags {
     /// fit there. It isn't text: the line goes on at the next row.
     pub const WRAP_GAP: Flags = Flags(1 << 11);
 
+    #[must_use]
     pub const fn empty() -> Self {
         Flags(0)
     }
 
+    #[must_use]
     pub const fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// Whether any of the flags in `other` is set.
+    #[must_use]
     pub const fn intersects(self, other: Flags) -> bool {
         self.0 & other.0 != 0
     }
@@ -62,6 +65,7 @@ impl Flags {
     }
 
     /// The underline style, kept in bits 12–14 so that `Cell` stays small.
+    #[must_use]
     pub const fn underline(self) -> Underline {
         match (self.0 & Self::UNDERLINE_MASK) >> Self::UNDERLINE_SHIFT {
             0 => Underline::None,
@@ -152,6 +156,7 @@ pub struct Extra {
 impl Cell {
     /// A blank cell that keeps only the background of `template`
     /// (background color erase).
+    #[must_use]
     pub fn blank(template: &Cell) -> Cell {
         Cell {
             bg: template.bg,
@@ -198,6 +203,7 @@ impl Eq for Row {}
 
 impl Row {
     /// A blank row: `cols` cells with the colors of `template`.
+    #[must_use]
     pub fn new(cols: usize, template: &Cell) -> Self {
         Row {
             cells: vec![Cell::blank(template); cols],
@@ -207,6 +213,7 @@ impl Row {
         }
     }
 
+    #[must_use]
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -292,6 +299,7 @@ pub struct Grid {
 
 impl Grid {
     /// A blank grid with room for `max_history` rows of history.
+    #[must_use]
     pub fn new(cols: usize, rows: usize, max_history: usize) -> Self {
         Grid {
             rows: (0..rows)

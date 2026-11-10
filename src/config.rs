@@ -295,6 +295,7 @@ pub const DEFAULT_PALETTE: [Rgb; 16] = [
 
 impl ColorConfig {
     /// The 16 ANSI colors with user overrides applied.
+    #[must_use]
     pub fn palette(&self) -> [Rgb; 16] {
         let mut palette = DEFAULT_PALETTE;
         for (slot, color) in palette.iter_mut().zip(&self.palette) {
@@ -304,6 +305,7 @@ impl ColorConfig {
     }
 
     /// The cursor color: `cursor` when set, else the foreground.
+    #[must_use]
     pub fn cursor(&self) -> Rgb {
         self.cursor.unwrap_or(self.foreground)
     }
@@ -432,12 +434,14 @@ fn short_f32<S: Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Erro
 
 /// Where the config file is when `--config` doesn't say:
 /// `$XDG_CONFIG_HOME/jotty/config.toml`.
+#[must_use]
 pub fn default_path() -> Option<PathBuf> {
     xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
 }
 
 /// Where `jotty config` keeps its overrides, which take precedence over
 /// the config file.
+#[must_use]
 pub fn overrides_path() -> Option<PathBuf> {
     xdg_dir("XDG_STATE_HOME", ".local/state").map(|dir| dir.join("jotty").join("overrides.toml"))
 }

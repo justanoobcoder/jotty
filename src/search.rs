@@ -14,6 +14,7 @@ pub enum Direction {
 }
 
 impl Direction {
+    #[must_use]
     pub fn reversed(self) -> Direction {
         match self {
             Direction::Older => Direction::Newer,
@@ -24,6 +25,7 @@ impl Direction {
 
 /// Like [`find`], but past the last match in `direction` it continues from
 /// the other end, as vim does.
+#[must_use]
 pub fn find_wrapping(
     screen: &Screen,
     query: &str,

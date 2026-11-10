@@ -122,6 +122,7 @@ impl Placement {
     /// The size the image is drawn at, in pixels, with cells of `cell`
     /// pixels: scaled to the columns and rows given, keeping the aspect
     /// ratio when only one of them is.
+    #[must_use]
     pub fn pixel_size(&self, (cw, ch): (u32, u32)) -> (f32, f32) {
         let [_, _, sw, sh] = self.source.map(|v| v as f32);
         let (dx, dy) = (self.offset.0 as f32, self.offset.1 as f32);
@@ -137,6 +138,7 @@ impl Placement {
 
     /// The columns and rows the placement covers with cells of `cell`
     /// pixels.
+    #[must_use]
     pub fn size_in_cells(&self, cell: (u32, u32)) -> (u32, u32) {
         let (w, h) = self.pixel_size(cell);
         let span = |given: u32, pixels: f32, offset: u32, size: u32| match given {
@@ -315,11 +317,13 @@ impl Default for Graphics {
 }
 
 impl Graphics {
+    #[must_use]
     pub fn placements(&self) -> &[Placement] {
         &self.placements
     }
 
     /// The image with `uid`, if it is still stored.
+    #[must_use]
     pub fn image(&self, uid: u64) -> Option<&Image> {
         let i = self.images.binary_search_by_key(&uid, |i| i.uid).ok()?;
         Some(&self.images[i])
@@ -331,18 +335,21 @@ impl Graphics {
     }
 
     /// The latest image the program gave the id `id`; never an anonymous one.
+    #[must_use]
     pub fn image_by_id(&self, id: u32) -> Option<&Image> {
         self.images.iter().rfind(|i| i.id == id && id != 0)
     }
 
     /// The virtual placement of an image with id `placement`, or its latest
     /// one when `placement` is 0.
+    #[must_use]
     pub fn virtual_placement(&self, image: u64, placement: u32) -> Option<&Placement> {
         self.placements
             .iter()
             .rfind(|p| p.is_virtual && p.image == image && (placement == 0 || p.id == placement))
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }
@@ -948,6 +955,7 @@ fn color_number(color: Color) -> u32 {
 /// (with the third diacritic as its high byte), its `underline_color` the
 /// placement id, and the first two diacritics in `marks` the row and
 /// column. Omitted diacritics continue the cell to the left, `left`.
+#[must_use]
 pub fn decode_placeholder(
     cell: &Cell,
     marks: &str,

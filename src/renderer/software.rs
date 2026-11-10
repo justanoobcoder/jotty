@@ -71,6 +71,7 @@ impl Renderer {
         })
     }
 
+    #[must_use]
     pub fn cell(&self) -> CellMetrics {
         self.fonts.metrics
     }

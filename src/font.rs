@@ -28,6 +28,7 @@ pub enum Style {
 }
 
 impl Style {
+    #[must_use]
     pub fn new(bold: bool, italic: bool) -> Style {
         match (bold, italic) {
             (false, false) => Style::Regular,
@@ -228,6 +229,7 @@ impl Fontconfig {
 }
 
 /// Finds and loads the system's color emoji font.
+#[must_use]
 pub fn load_emoji_font() -> Option<EmojiFont> {
     let file = Fontconfig::try_new().ok()?.find_color_emoji()?;
     match EmojiFont::try_new(map_file(&file.path).ok()?, file.index & 0xffff) {
@@ -644,6 +646,7 @@ fn overlay(a: &Glyph, b: &Glyph) -> Glyph {
 /// Draws an underline of `style` spanning `cells` cells. The bitmap is as
 /// wide as the cells and positioned relative to the cell top; patterns
 /// repeat per cell so neighboring cells join seamlessly.
+#[must_use]
 pub fn underline_glyph(style: Underline, m: CellMetrics, cells: u32) -> Option<Glyph> {
     let (cw, ch) = (m.width, m.height);
     let width = cw * cells;
@@ -1472,6 +1475,7 @@ fn is_private_use(c: char) -> bool {
 /// Icons in the Private Use Areas, as used by Nerd Fonts, except powerline
 /// separators (U+E0A0–U+E0D7), which must keep their position to line up
 /// with the cell backgrounds next to them.
+#[must_use]
 pub fn is_icon(c: char) -> bool {
     matches!(c,
         '\u{E000}'..='\u{E09F}'
@@ -1548,6 +1552,7 @@ fn px_scale(face: &FontRef, px: f32) -> PxScale {
 }
 
 /// Converts a size in points to pixels at the given scale (96 DPI).
+#[must_use]
 pub fn points_to_px(points: f32, scale: f32) -> f32 {
     points * 96.0 / 72.0 * scale
 }

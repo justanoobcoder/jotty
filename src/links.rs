@@ -193,6 +193,7 @@ const LINK_REACH: isize = 64;
 
 /// Whether a target can be given to a launcher as its argument. Programs can
 /// set a hyperlink's target to anything, and an option isn't a place to open.
+#[must_use]
 pub fn is_openable(target: &str) -> bool {
     !target.is_empty() && !target.starts_with('-')
 }

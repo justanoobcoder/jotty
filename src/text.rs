@@ -26,12 +26,14 @@ pub struct LineText {
 
 impl LineText {
     /// The logical line that the row at `at.line` belongs to.
+    #[must_use]
     pub fn new(screen: &Screen, at: Point) -> Option<LineText> {
         Self::around(screen, at, isize::MAX)
     }
 
     /// Like `new`, with at most `reach` rows of the line on either side of
     /// `at`: a line can wrap over the whole history.
+    #[must_use]
     pub fn around(screen: &Screen, at: Point, reach: isize) -> Option<LineText> {
         screen.row_at(at.line)?;
         let limit = at.line.saturating_add(reach);
@@ -70,6 +72,7 @@ impl LineText {
 
     /// The cell at `at`; the second half of a wide character counts as its
     /// first half.
+    #[must_use]
     pub fn index_of(&self, at: Point) -> Option<usize> {
         self.cells
             .iter()
@@ -77,12 +80,14 @@ impl LineText {
     }
 
     /// The point of the character starting at byte `offset`.
+    #[must_use]
     pub fn point_at(&self, offset: usize) -> Point {
         let i = self.cells.partition_point(|c| c.offset < offset);
         self.cells[i.min(self.cells.len() - 1)].point
     }
 
     /// The point of the last character before byte `offset`.
+    #[must_use]
     pub fn point_before(&self, offset: usize) -> Point {
         let i = self.cells.partition_point(|c| c.offset < offset);
         self.cells[i.saturating_sub(1)].point
