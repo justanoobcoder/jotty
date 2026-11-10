@@ -28,6 +28,7 @@ fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
     Some(hasher.finish())
 }
 
+/// A cell position in screen lines (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Point {
     pub line: isize,
@@ -131,6 +132,7 @@ pub enum Unit {
     Fixed,
 }
 
+/// A selection between two points, by cell, word or line, or a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     anchor: Point,
@@ -145,6 +147,7 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// An empty selection by cell, started by a click at `at`.
     pub fn new(at: Point) -> Self {
         Selection {
             anchor: at,
@@ -188,6 +191,7 @@ impl Selection {
         Selection::span(start, end, Unit::Line)
     }
 
+    /// Moves the end being dragged to `to`.
     pub fn update(&mut self, to: Point) {
         self.head = to;
     }
@@ -250,6 +254,7 @@ impl Selection {
                 .all(|&(line, hash)| row_hash(screen, line - scrolled) == Some(hash))
     }
 
+    /// Whether nothing is selected: a click that didn't drag.
     pub fn is_empty(&self) -> bool {
         self.anchor == self.head && self.unit == Unit::Cell
     }
@@ -278,6 +283,8 @@ impl Selection {
         (a.min(b), a.max(b))
     }
 
+    /// The selected text, without trailing blanks. Soft-wrapped rows are
+    /// joined; other rows end with a newline.
     pub fn text(&self, screen: &Screen) -> String {
         let (start, end) = self.range();
         let mut out = String::new();

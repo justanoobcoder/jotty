@@ -198,6 +198,8 @@ impl Notifier {
     }
 }
 
+/// The state of one terminal window: its Wayland objects, the terminal and
+/// the child behind it, input, selection and rendering.
 pub struct App {
     qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,

@@ -34,6 +34,7 @@ impl<T: Clone + Eq + Hash> Table<T> {
         self.capacity = capacity.min(u16::MAX as usize);
     }
 
+    /// The value with `id`; `None` for 0 or an id the table doesn't have.
     pub(super) fn get(&self, id: u16) -> Option<&T> {
         let index = usize::from(id).checked_sub(1)?;
         self.items.get(index)

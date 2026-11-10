@@ -23,6 +23,7 @@ pub enum Key {
     PageDown,
 }
 
+/// What a visual selection covers: characters, whole lines or a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visual {
     Char,
@@ -47,6 +48,7 @@ pub enum Outcome {
     Next { reverse: bool },
 }
 
+/// The vi mode cursor and the command being typed.
 pub struct ViMode {
     pub cursor: Point,
     /// The visual mode and where it started.
@@ -67,6 +69,7 @@ impl ViMode {
         }
     }
 
+    /// The visual mode, if one is active.
     pub fn visual(&self) -> Option<Visual> {
         self.visual.map(|(mode, _)| mode)
     }
@@ -103,6 +106,7 @@ impl ViMode {
         self.clamp(screen);
     }
 
+    /// Handles a key and says what the application should do with it.
     pub fn key(&mut self, screen: &Screen, key: Key) -> Outcome {
         if let Key::Char(c @ '0'..='9') = key
             && (c != '0' || self.count.is_some())

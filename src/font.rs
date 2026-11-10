@@ -17,6 +17,8 @@ use fontconfig_sys::constants::{
 use crate::emoji::{self, EmojiFont};
 use crate::terminal::Underline;
 
+/// The four faces of a font family. The discriminants index
+/// `Fonts::styles`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Style {
     Regular,
@@ -96,6 +98,7 @@ pub struct Glyph {
     pub color: bool,
 }
 
+/// Why the configured font could not be used.
 #[derive(Debug)]
 pub enum FontError {
     NotFound(String),
@@ -246,6 +249,8 @@ impl Drop for Fontconfig {
     }
 }
 
+/// The configured font in its four styles, the fallback fonts loaded so
+/// far and the emoji font, at one size.
 pub struct Fonts {
     fontconfig: Fontconfig,
     faces: Vec<FontRef<'static>>,
@@ -350,6 +355,8 @@ impl Fonts {
         Ok(index)
     }
 
+    /// Changes the size to `px` pixels per em and recomputes the cell
+    /// metrics. Glyphs rasterized before are the wrong size afterwards.
     pub fn set_size(&mut self, px: f32) {
         use ab_glyph::ScaleFont;
         self.px = px;

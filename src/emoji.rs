@@ -5,6 +5,7 @@
 use ttf_parser::gsub::SubstitutionSubtable;
 use ttf_parser::{Face, GlyphId, RasterImageFormat};
 
+/// A font with color bitmaps for emoji.
 pub struct EmojiFont {
     face: Face<'static>,
 }

@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::ops::{BitOr, Range};
 
+/// A cell's foreground, background or underline color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
     /// The configured default foreground or background.
@@ -12,6 +13,8 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// A cell's attributes (SGR), layout flags and underline style, in one
+/// `u16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(u16);
 
@@ -68,6 +71,7 @@ impl Flags {
         }
     }
 
+    /// Sets the underline style, replacing the one before.
     pub fn set_underline(&mut self, underline: Underline) {
         let bits = (underline as u16) << Self::UNDERLINE_SHIFT;
         self.0 = (self.0 & !Self::UNDERLINE_MASK) | bits;
@@ -165,6 +169,7 @@ pub enum Mark {
     Output { col: usize },
 }
 
+/// One row of cells, with what the row knows about the line it is part of.
 #[derive(Debug, Clone)]
 pub struct Row {
     cells: Vec<Cell>,
@@ -190,6 +195,7 @@ impl PartialEq for Row {
 impl Eq for Row {}
 
 impl Row {
+    /// A blank row: `cols` cells with the colors of `template`.
     pub fn new(cols: usize, template: &Cell) -> Self {
         Row {
             cells: vec![Cell::blank(template); cols],
@@ -243,6 +249,8 @@ impl Row {
         self.mark = None;
     }
 
+    /// Truncates or pads the row to `cols` cells, without rewrapping. A wide
+    /// character cut in half is cleared.
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
         self.occupied = cols;
@@ -281,6 +289,7 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// A blank grid with room for `max_history` rows of history.
     pub fn new(cols: usize, rows: usize, max_history: usize) -> Self {
         Grid {
             rows: (0..rows)

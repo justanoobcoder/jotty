@@ -57,6 +57,7 @@ impl Packer {
         Some(pos)
     }
 
+    /// Frees the whole area, for repacking from scratch.
     pub fn clear(&mut self) {
         *self = Packer::new(self.width, self.height);
     }
@@ -166,6 +167,8 @@ impl Atlas {
     }
 }
 
+/// A [`GlyphCache`] over an atlas and the fonts, which calls `store` to
+/// upload each newly placed glyph.
 pub struct Cache<'cache, S> {
     atlas: &'cache mut Atlas,
     fonts: &'cache mut Fonts,

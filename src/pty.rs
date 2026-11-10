@@ -30,6 +30,7 @@ impl WindowSize {
     }
 }
 
+/// A pseudo-terminal with the child process running in it.
 pub struct Pty {
     master: File,
     child: Child,
@@ -203,10 +204,12 @@ impl Pty {
         Ok(())
     }
 
+    /// Whether some input is still waiting for the child to read it.
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
+    /// Tells the child the new window size (it gets SIGWINCH).
     pub fn resize(&self, size: WindowSize) -> io::Result<()> {
         let winsize = size.to_winsize();
         // SAFETY: TIOCSWINSZ reads a winsize struct.
@@ -242,6 +245,7 @@ impl Pty {
         termios.c_lflag & libc::ECHO == 0 && termios.c_lflag & libc::ICANON != 0
     }
 
+    /// The child's exit status, if it has exited; never blocks.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }

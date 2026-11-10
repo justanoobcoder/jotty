@@ -29,6 +29,7 @@ pub mod kitty {
     pub const TEXT: u8 = 16;
 }
 
+/// Whether a key went down, auto-repeated or came up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
     Press,
@@ -465,6 +466,8 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// A button as the mouse protocols number them; the wheel counts as four
+/// buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -495,6 +498,7 @@ impl MouseButton {
     }
 }
 
+/// What happened to the mouse, for reporting it to the program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Press(MouseButton),

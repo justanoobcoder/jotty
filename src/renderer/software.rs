@@ -24,6 +24,8 @@ const ATLAS_SIZE: u32 = 1024;
 /// The color emoji atlas: room for a few hundred emoji at common sizes.
 const COLOR_ATLAS_SIZE: u32 = 512;
 
+/// Draws batches on the CPU into shared-memory buffers. Only the bands of
+/// rows that changed since a buffer was last drawn are redrawn.
 pub struct Renderer {
     surface: WlSurface,
     pool: SlotPool,
@@ -88,6 +90,7 @@ impl Renderer {
         self.atlas.clear();
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
         self.atlas.clear();

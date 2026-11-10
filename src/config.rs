@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::keybinds::Keybinds;
 
+/// The config file. Every key is optional; missing keys keep their defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -27,6 +28,7 @@ pub struct Config {
     pub files: Files,
 }
 
+/// The `[url]` section: opening links.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UrlConfig {
@@ -52,6 +54,7 @@ impl Default for UrlConfig {
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
 
+/// A kind of file that Ctrl+click opens, such as images.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileKind {
     /// File name extensions, without the dot, matched case-insensitively.
@@ -111,6 +114,7 @@ impl From<BTreeMap<String, FileKindOverride>> for Files {
     }
 }
 
+/// The `[font]` section.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FontConfig {
@@ -138,6 +142,7 @@ impl Default for FontConfig {
     }
 }
 
+/// The `[window]` section.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
@@ -191,6 +196,7 @@ impl Default for WindowConfig {
     }
 }
 
+/// Which backend draws the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererKind {
@@ -201,6 +207,7 @@ pub enum RendererKind {
     Cpu,
 }
 
+/// The `[terminal]` section.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
@@ -227,6 +234,7 @@ impl Default for TerminalConfig {
     }
 }
 
+/// The `[colors]` section.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorConfig {
@@ -265,6 +273,7 @@ impl Default for ColorConfig {
     }
 }
 
+/// The 16 ANSI colors used where `colors.palette` sets none.
 pub const DEFAULT_PALETTE: [Rgb; 16] = [
     Rgb(0x24, 0x24, 0x24),
     Rgb(0xe0, 0x6c, 0x75),
@@ -294,6 +303,7 @@ impl ColorConfig {
         palette
     }
 
+    /// The cursor color: `cursor` when set, else the foreground.
     pub fn cursor(&self) -> Rgb {
         self.cursor.unwrap_or(self.foreground)
     }
@@ -305,6 +315,7 @@ impl ColorConfig {
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
+    /// The channels scaled to 0.0–1.0.
     pub fn to_f32(self) -> [f32; 3] {
         [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
     }
@@ -344,6 +355,7 @@ impl fmt::Display for Rgb {
     }
 }
 
+/// Why a config file could not be read, with its path.
 #[derive(Debug)]
 pub enum ConfigError {
     Io(PathBuf, io::Error),
@@ -362,6 +374,7 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
+    /// Parses a config file's text and clamps its values to their limits.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::from_str(text)?;
         config.sanitize();
@@ -463,6 +476,8 @@ fn short_f32<S: Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Erro
     serializer.serialize_f64(shortest)
 }
 
+/// Where the config file is when `--config` doesn't say:
+/// `$XDG_CONFIG_HOME/jotty/config.toml`.
 pub fn default_path() -> Option<PathBuf> {
     xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
 }

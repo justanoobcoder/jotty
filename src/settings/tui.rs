@@ -66,6 +66,7 @@ pub struct State {
 }
 
 impl State {
+    /// The TUI's state at start, over the config files in `layers`.
     pub fn new(layers: Layers) -> State {
         let mut state = State {
             layers,

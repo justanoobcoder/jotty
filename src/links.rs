@@ -12,6 +12,7 @@ use crate::text::LineText;
 /// whitespace and at characters that usually delimit URLs in text.
 const URL_PATTERN: &str = r#"(?:(?:https?|ftp|file|sftp|ssh|git|gemini|gopher|irc|ircs|news|nntp|telnet|wss?)://|mailto:|magnet:\?)[^\s<>"'`{}|\\^]+"#;
 
+/// A link found in the text: a URL, an OSC 8 hyperlink or a file name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     /// First and last cell, inclusive.
@@ -23,6 +24,8 @@ pub struct Link {
     pub kind: Option<usize>,
 }
 
+/// Finds links in the text: URLs, the patterns in `url.regex`, and
+/// names of files of the configured kinds.
 pub struct Detector {
     url: Regex,
     /// Paths ending in one of the configured extensions, bare or in single

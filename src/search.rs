@@ -4,6 +4,7 @@ use crate::selection::Point;
 use crate::terminal::Screen;
 use crate::text::LineText;
 
+/// Which way a search goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Toward the top of the history.

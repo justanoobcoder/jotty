@@ -21,6 +21,7 @@ const MAX_APC: usize = 64 << 20;
 /// without bound.
 const MAX_OSC_BYTES: usize = 16 << 10;
 
+/// A terminal: the parser and the screen it drives.
 pub struct Terminal {
     parser: vte::Parser<MAX_OSC_BYTES>,
     screen: Screen,
@@ -142,6 +143,7 @@ impl Terminal {
     }
 }
 
+/// How the cursor is drawn (DECSCUSR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CursorShape {
     #[default]
@@ -236,6 +238,7 @@ pub enum MouseMode {
     AnyMotion,
 }
 
+/// The modes a program sets with SM and DECSET.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Modes {
     pub app_cursor: bool,
@@ -274,6 +277,8 @@ impl Default for Modes {
     }
 }
 
+/// All the state of a terminal: both screen buffers, the cursor, modes,
+/// colors, and the replies and events waiting for the application.
 pub struct Screen {
     cols: usize,
     rows: usize,
@@ -347,6 +352,7 @@ struct KeyboardFlags {
 /// How many pushed keyboard flags a screen keeps.
 const KEYBOARD_STACK: usize = 16;
 
+/// A color as red, green and blue.
 pub type Rgb = (u8, u8, u8);
 
 /// Colors a program changed with OSC 4 (palette), 10 (foreground) and 11
@@ -484,6 +490,7 @@ impl Screen {
         self.rows
     }
 
+    /// The grid on display: the alternate screen's while it is active.
     pub fn grid(&self) -> &Grid {
         if self.alt_active {
             &self.alternate
@@ -580,6 +587,7 @@ impl Screen {
         (first <= line && line <= last).then_some((first, last))
     }
 
+    /// How many rows the view is scrolled back into the history.
     pub fn display_offset(&self) -> usize {
         self.display_offset
     }
@@ -606,6 +614,7 @@ impl Screen {
         self.scroll_display(offset - self.display_offset as isize);
     }
 
+    /// Scrolls the view back to the bottom.
     pub fn reset_display(&mut self) {
         self.scroll_display(-(self.display_offset as isize));
     }
@@ -634,6 +643,7 @@ impl Screen {
         self.title.as_deref()
     }
 
+    /// Whether the bell rang since the last call.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)
     }
@@ -925,6 +935,7 @@ impl Screen {
         true
     }
 
+    /// The target of the hyperlink with `id`, as cells refer to it.
     pub fn link(&self, id: u16) -> Option<&str> {
         self.links.get(id).map(String::as_str)
     }
@@ -1087,6 +1098,8 @@ impl Screen {
 
     // ---- Resizing -------------------------------------------------------
 
+    /// Resizes both screens. The primary screen and its history reflow to the
+    /// new width; the alternate screen is cut or padded.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let cols = cols.max(1);
         let rows = rows.max(1);

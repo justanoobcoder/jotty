@@ -11,6 +11,7 @@ use crate::terminal::{Flags, Row};
 /// The protocol limits a request to 4096 bytes; stay well below it.
 const MAX_SURROUNDING_BYTES: usize = 4000;
 
+/// The text around the cursor, as the input method is told it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Surrounding {
     pub text: String,
@@ -92,6 +93,8 @@ impl Surrounding {
     }
 }
 
+/// Text the input method is composing, shown at the cursor until it is
+/// committed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Preedit {
     pub text: String,
@@ -140,6 +143,8 @@ pub struct ImeState {
 }
 
 impl ImeState {
+    /// Queues the preedit string for the next `done`. `begin` and `end` are
+    /// byte offsets of the cursor in `text`; negative hides the cursor.
     pub fn set_preedit(&mut self, text: Option<String>, begin: i32, end: i32) {
         self.pending_preedit = text.filter(|t| !t.is_empty()).map(|text| {
             let cursor = (begin >= 0 && end >= 0).then_some((begin as usize, end as usize));
@@ -147,10 +152,13 @@ impl ImeState {
         });
     }
 
+    /// Queues text to send to the child on the next `done`.
     pub fn set_commit(&mut self, text: Option<String>) {
         self.pending_commit = text;
     }
 
+    /// Queues the deletion of `before` and `after` bytes around the cursor
+    /// for the next `done`.
     pub fn set_delete(&mut self, before: u32, after: u32) {
         self.pending_delete = Some((before as usize, after as usize));
     }
@@ -169,6 +177,8 @@ impl ImeState {
         out
     }
 
+    /// Forgets the preedit and every pending event, when the input method
+    /// leaves the window.
     pub fn reset(&mut self) {
         self.active = false;
         self.preedit = None;

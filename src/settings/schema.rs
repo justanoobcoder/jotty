@@ -11,6 +11,7 @@ pub const SECTIONS: [&str; 7] = [
     "font", "window", "terminal", "colors", "keybinds", "url", "files",
 ];
 
+/// The type of a config key's value, which says how the TUI edits it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     Bool,
@@ -64,6 +65,7 @@ pub const PALETTE_NAMES: [&str; 16] = [
 ];
 
 impl Key {
+    /// The table the key is in, such as `font`.
     pub fn section(&self) -> &str {
         &self.path[0]
     }
@@ -90,6 +92,7 @@ impl Key {
         }
     }
 
+    /// The key's path, such as `font.size`.
     pub fn dotted(&self) -> String {
         format!("{}.{}", self.section(), self.name())
     }

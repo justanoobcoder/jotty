@@ -40,6 +40,7 @@ impl Renderer {
         }
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         match self {
             Renderer::Gpu(r) => r.set_font_size(px),
@@ -47,6 +48,7 @@ impl Renderer {
         }
     }
 
+    /// Replaces the fonts, after a config reload.
     pub fn set_fonts(&mut self, fonts: crate::font::Fonts) {
         match self {
             Renderer::Gpu(r) => r.set_fonts(fonts),
@@ -71,6 +73,7 @@ impl Renderer {
     }
 }
 
+/// The colors and opacity a frame is drawn with.
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub foreground: Rgb,
@@ -91,6 +94,7 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The theme the config asks for, before any program changes colors.
     pub fn from_config(config: &Config) -> Theme {
         Theme {
             foreground: config.colors.foreground,
@@ -227,6 +231,9 @@ pub struct GlyphInfo {
     pub color: bool,
 }
 
+/// Where [`build`] gets glyphs: each backend caches them in its own atlas.
+/// `None` means there is nothing to draw: a blank, a character no font
+/// has, or a full atlas.
 pub trait GlyphCache {
     /// The glyph for `c` in a one-cell slot, or a two-cell slot when `wide`.
     fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo>;
@@ -242,6 +249,8 @@ pub trait GlyphCache {
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
 pub const VERTEX_FLOATS: usize = 9;
 
+/// The quads of a frame, ready to upload: 6 vertices of
+/// [`VERTEX_FLOATS`] floats each.
 #[derive(Debug, Default)]
 pub struct Batch {
     pub vertices: Vec<f32>,
@@ -271,6 +280,7 @@ impl Batch {
         }
     }
 
+    /// Adds an opaque rectangle of `color`.
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
         self.fill(x, y, w, h, color, 1.0);
     }
@@ -458,6 +468,9 @@ fn style_of(cell: &Cell) -> Style {
     )
 }
 
+/// Turns a frame into quads: cell backgrounds, then glyphs, decorations
+/// and the cursor. Images go under the backgrounds, under the text or
+/// over it, by z-index.
 pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl GlyphCache) -> Batch {
     let screen = frame.screen;
     let (cw, ch) = (m.width as f32, m.height as f32);

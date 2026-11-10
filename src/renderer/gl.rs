@@ -176,6 +176,7 @@ impl Drop for Egl {
     }
 }
 
+/// Draws batches with OpenGL ES 3 on an EGL window surface.
 pub struct Renderer {
     // Field order matters: GL objects must go before the EGL context.
     gl: glow::Context,
@@ -399,6 +400,7 @@ impl Renderer {
         self.atlas.clear();
     }
 
+    /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
         self.fonts.set_size(px);
         self.atlas.clear();

@@ -64,6 +64,7 @@ pub struct RateLimit {
 }
 
 impl RateLimit {
+    /// A limit that starts with the whole burst allowed.
     pub fn new(now: Instant) -> Self {
         RateLimit {
             allowance: NOTIFICATION_BURST,
@@ -85,6 +86,8 @@ impl RateLimit {
     }
 }
 
+/// A connection to the D-Bus session bus, for desktop notifications and
+/// the activation of a clicked one.
 pub struct Bus {
     stream: UnixStream,
     serial: u32,

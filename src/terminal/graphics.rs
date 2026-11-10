@@ -82,6 +82,7 @@ const MAX_PLACEMENTS: usize = 4096;
 /// renderer can cache it.
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
+/// An image a program transmitted with the kitty graphics protocol.
 pub struct Image {
     pub uid: u64,
     /// The id the program refers to it by; 0 for an anonymous image.
@@ -94,6 +95,8 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
+/// Where an image is shown: a real placement on the grid, or a virtual
+/// one that placeholder cells refer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
     /// The image's uid.
@@ -316,6 +319,7 @@ impl Graphics {
         &self.placements
     }
 
+    /// The image with `uid`, if it is still stored.
     pub fn image(&self, uid: u64) -> Option<&Image> {
         let i = self.images.binary_search_by_key(&uid, |i| i.uid).ok()?;
         Some(&self.images[i])
@@ -326,6 +330,7 @@ impl Graphics {
         self.placements.iter().map(|p| p.image).collect()
     }
 
+    /// The latest image the program gave the id `id`; never an anonymous one.
     pub fn image_by_id(&self, id: u32) -> Option<&Image> {
         self.images.iter().rfind(|i| i.id == id && id != 0)
     }
