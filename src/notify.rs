@@ -553,8 +553,8 @@ fn message_len(buf: &[u8]) -> io::Result<Option<usize>> {
 }
 
 /// The parts of a received message jotty looks at.
-struct Message<'a> {
-    buf: &'a [u8],
+struct Message<'buf> {
+    buf: &'buf [u8],
     big: bool,
     kind: u8,
     body_start: usize,
@@ -566,10 +566,10 @@ struct Message<'a> {
     signature: String,
 }
 
-impl<'a> Message<'a> {
+impl<'buf> Message<'buf> {
     /// Parses one whole message; `None` when it has header fields of a type
     /// no message to jotty uses, or is cut short.
-    fn parse(buf: &'a [u8]) -> Option<Message<'a>> {
+    fn parse(buf: &'buf [u8]) -> Option<Message<'buf>> {
         let big = buf.first()? == &b'B';
         let mut r = Reader { buf, pos: 1, big };
         let kind = r.u8()?;
@@ -606,7 +606,7 @@ impl<'a> Message<'a> {
         (m.body_start <= buf.len()).then_some(m)
     }
 
-    fn body(&self) -> Reader<'a> {
+    fn body(&self) -> Reader<'buf> {
         Reader {
             buf: self.buf,
             pos: self.body_start,
@@ -615,8 +615,8 @@ impl<'a> Message<'a> {
     }
 }
 
-struct Reader<'a> {
-    buf: &'a [u8],
+struct Reader<'buf> {
+    buf: &'buf [u8],
     pos: usize,
     big: bool,
 }

@@ -153,11 +153,11 @@ impl Atlas {
     /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
     /// hands each new bitmap to `store` with its position in its atlas
     /// image (the color one when `glyph.color`).
-    pub fn cache<'a, S: FnMut(u32, u32, &Glyph)>(
-        &'a mut self,
-        fonts: &'a mut Fonts,
+    pub fn cache<'cache, S: FnMut(u32, u32, &Glyph)>(
+        &'cache mut self,
+        fonts: &'cache mut Fonts,
         store: S,
-    ) -> Cache<'a, S> {
+    ) -> Cache<'cache, S> {
         Cache {
             atlas: self,
             fonts,
@@ -166,9 +166,9 @@ impl Atlas {
     }
 }
 
-pub struct Cache<'a, S> {
-    atlas: &'a mut Atlas,
-    fonts: &'a mut Fonts,
+pub struct Cache<'cache, S> {
+    atlas: &'cache mut Atlas,
+    fonts: &'cache mut Fonts,
     store: S,
 }
 

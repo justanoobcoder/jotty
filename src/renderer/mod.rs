@@ -434,10 +434,10 @@ fn placeholder_quad(
 }
 
 /// Everything besides the screen that affects what is drawn.
-pub struct Frame<'a> {
-    pub screen: &'a Screen,
-    pub selection: Option<&'a Selection>,
-    pub preedit: Option<&'a Preedit>,
+pub struct Frame<'frame> {
+    pub screen: &'frame Screen,
+    pub selection: Option<&'frame Selection>,
+    pub preedit: Option<&'frame Preedit>,
     pub focused: bool,
     /// Grid origin in physical pixels.
     pub origin: (u32, u32),
@@ -448,9 +448,9 @@ pub struct Frame<'a> {
     /// The vi mode cursor, drawn as a block instead of the terminal's.
     pub vi_cursor: Option<Point>,
     /// A short label drawn in the top-right corner, such as vi mode's.
-    pub label: Option<&'a str>,
+    pub label: Option<&'frame str>,
     /// The search bar's text, drawn over the bottom row while searching.
-    pub search: Option<&'a str>,
+    pub search: Option<&'frame str>,
 }
 
 fn style_of(cell: &Cell) -> Style {

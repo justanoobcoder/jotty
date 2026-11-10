@@ -38,12 +38,12 @@ pub enum KeyAction {
 
 /// A key event to encode.
 #[derive(Debug, Clone, Copy)]
-pub struct Key<'a> {
+pub struct Key<'text> {
     pub keysym: Keysym,
     /// The key's symbol without modifiers, in the active layout.
     pub base: Option<Keysym>,
     /// The UTF-8 text xkb produced.
-    pub text: Option<&'a str>,
+    pub text: Option<&'text str>,
     pub action: KeyAction,
 }
 

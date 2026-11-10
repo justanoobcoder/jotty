@@ -275,10 +275,10 @@ fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
 /// The atlas images: coverage (`ATLAS_SIZE`²) and color emoji
 /// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed), and the image of each
 /// image quad of the batch.
-struct Atlases<'a> {
-    coverage: &'a [u8],
-    color: &'a [u8],
-    images: &'a [Option<&'a Image>],
+struct Atlases<'pixels> {
+    coverage: &'pixels [u8],
+    color: &'pixels [u8],
+    images: &'pixels [Option<&'pixels Image>],
 }
 
 /// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
