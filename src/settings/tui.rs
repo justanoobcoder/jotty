@@ -648,21 +648,43 @@ impl State {
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        let help = match self.mode {
-            Mode::Normal => {
-                "Enter edit  Space toggle  i edit text  r reset  / filter  ? help  q quit"
-            }
-            Mode::Help => "any key closes the help",
-            Mode::Edit { .. } => {
-                "Enter save  Esc cancel  Ctrl+U clear  (empty resets optional keys)"
-            }
-            Mode::Filter => "type to filter keys in every section  Enter done  Esc clear",
+        // (key, what it does); an empty key is a plain note.
+        let hints: &[(&str, &str)] = match self.mode {
+            Mode::Normal => &[
+                ("Enter", "edit"),
+                ("Space", "toggle"),
+                ("i", "edit text"),
+                ("r", "reset"),
+                ("/", "filter"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            Mode::Help => &[("", "any key closes the help")],
+            Mode::Edit { .. } => &[
+                ("Enter", "save"),
+                ("Esc", "cancel"),
+                ("Ctrl+U", "clear"),
+                ("", "empty resets optional keys"),
+            ],
+            Mode::Filter => &[
+                ("", "type to filter every section"),
+                ("Enter", "done"),
+                ("Esc", "clear"),
+            ],
         };
         let mut spans = Vec::new();
         if self.mode == Mode::Filter {
             spans.extend([FILTER_BADGE.black().on_yellow().bold(), " ".into()]);
         }
-        spans.push(help.dark_gray());
+        for (i, (key, what)) in hints.iter().enumerate() {
+            if i > 0 {
+                spans.push(" • ".dark_gray());
+            }
+            if !key.is_empty() {
+                spans.extend([key.cyan().bold(), " ".into()]);
+            }
+            spans.push(what.dark_gray());
+        }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
