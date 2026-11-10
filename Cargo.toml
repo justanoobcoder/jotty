@@ -45,6 +45,7 @@ codegen-units = 1
 
 [package.metadata.deb]
 section = "x11"
+license-file = ["LICENSE", "0"]
 priority = "optional"
 depends = "$auto"
 extended-description = """\
