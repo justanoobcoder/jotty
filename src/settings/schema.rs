@@ -30,7 +30,6 @@ pub enum Kind {
     /// A color the config may leave unset.
     OptColor,
     StrList,
-    ColorList,
 }
 
 /// One editable key.
@@ -40,7 +39,29 @@ pub struct Key {
     pub path: Vec<String>,
     pub kind: Kind,
     pub doc: Cow<'static, str>,
+    /// For the entries of `colors.palette`: which of the 16 colors.
+    pub index: Option<usize>,
 }
+
+/// The names of the 16 ANSI colors, as `colors.palette` lists them.
+pub const PALETTE_NAMES: [&str; 16] = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright black",
+    "bright red",
+    "bright green",
+    "bright yellow",
+    "bright blue",
+    "bright magenta",
+    "bright cyan",
+    "bright white",
+];
 
 impl Key {
     pub fn section(&self) -> &str {
@@ -49,11 +70,16 @@ impl Key {
 
     /// The path without the section, as the TUI lists it.
     pub fn name(&self) -> String {
-        self.path[1..].join(".")
+        let name = self.path[1..].join(".");
+        match self.index {
+            // Padded so the names line up past palette[9].
+            Some(i) => format!("{:<12}{}", format!("{name}[{i}]"), PALETTE_NAMES[i]),
+            None => name,
+        }
     }
 
     pub fn dotted(&self) -> String {
-        self.path.join(".")
+        format!("{}.{}", self.section(), self.name())
     }
 }
 
@@ -212,12 +238,6 @@ const STATIC: &[(&str, &str, Kind, &str)] = &[
         "Background of selected cells; empty means the cell's foreground.",
     ),
     (
-        "colors",
-        "palette",
-        ColorList,
-        "The 16 ANSI colors, black to bright white; a shorter list keeps the rest.",
-    ),
-    (
         "url",
         "launcher",
         StrList,
@@ -240,8 +260,17 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
             path: vec![section.into(), name.into()],
             kind,
             doc: doc.into(),
+            index: None,
         })
         .collect();
+    for (i, name) in PALETTE_NAMES.iter().enumerate() {
+        keys.push(Key {
+            path: vec!["colors".into(), "palette".into()],
+            kind: Color,
+            doc: format!("ANSI color {i}, {name}. Changing any of them saves all 16.").into(),
+            index: Some(i),
+        });
+    }
     let names = |section: &str| -> Vec<String> {
         effective
             .get(section)
@@ -256,6 +285,7 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
             path: vec!["keybinds".into(), action],
             kind: StrList,
             doc: doc.into(),
+            index: None,
         });
     }
     for kind in names("files") {
@@ -263,11 +293,13 @@ pub fn keys(effective: &toml::Table) -> Vec<Key> {
             path: vec!["files".into(), kind.clone(), "extensions".into()],
             kind: StrList,
             doc: format!("File name extensions of {kind} files, without the dot.").into(),
+            index: None,
         });
         keys.push(Key {
             path: vec!["files".into(), kind.clone(), "launcher".into()],
             kind: StrList,
             doc: format!("Command that opens {kind} files; empty means url.launcher.").into(),
+            index: None,
         });
     }
     let order = |key: &Key| SECTIONS.iter().position(|s| *s == key.section());
@@ -288,7 +320,6 @@ impl Kind {
             Color => "#rrggbb".into(),
             OptColor => "#rrggbb, or empty for the default".into(),
             StrList => "comma-separated list, or a TOML array".into(),
-            ColorList => "comma-separated #rrggbb colors".into(),
         }
     }
 
@@ -354,12 +385,6 @@ impl Kind {
             }
             Color | OptColor => toml::Value::String(parse_color(input)?),
             StrList => toml::Value::Array(parse_list(input)?),
-            ColorList => toml::Value::Array(
-                parse_list(input)?
-                    .iter()
-                    .map(|v| parse_color(v.as_str().unwrap_or_default()).map(toml::Value::String))
-                    .collect::<Result<_, _>>()?,
-            ),
         };
         Ok(Some(value))
     }
@@ -459,7 +484,8 @@ mod tests {
     #[test]
     fn parsed_values_are_valid_config() {
         let defaults = toml::Table::try_from(Config::default()).unwrap();
-        for key in keys(&defaults) {
+        // Palette entries are set through the TUI, which writes the list.
+        for key in keys(&defaults).into_iter().filter(|k| k.index.is_none()) {
             let input: String = match key.kind {
                 Bool => "true".into(),
                 Float { min, .. } => min.to_string(),
@@ -469,7 +495,6 @@ mod tests {
                 Color | OptColor => "#123456".into(),
                 StrList if key.section() == "keybinds" => "ctrl+shift+x, alt+F5".into(),
                 StrList => "a, b".into(),
-                ColorList => "#000000, #ffffff".into(),
             };
             let value = key.kind.parse(&input).unwrap().unwrap();
             let mut table = toml::Table::new();
@@ -510,7 +535,6 @@ mod tests {
             list(&["a,b", "c"])
         );
         assert!(StrList.parse("[1, 2]").is_err());
-        assert!(ColorList.parse("#000000, red").is_err());
     }
 
     #[test]

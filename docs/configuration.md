@@ -54,7 +54,9 @@ In the TUI, `Enter` toggles a bool, cycles a choice, or edits anything else.
 Lists are typed comma-separated, or as a TOML array (`["a,b", "c"]`) when an
 item contains a comma. `r` removes the override of a key, `R` removes those
 of a whole section, `/` filters keys across sections, and `q` quits. An
-overridden key is marked `●`. For optional keys such as `colors.cursor`,
+overridden key is marked `●`. The palette is listed as its 16 colors by name
+(`palette[9]  bright red`). Changing one saves the whole list, which the TUI
+drops again once it matches the config file. For optional keys such as `colors.cursor`,
 saving an empty value removes the override.
 
 Without the TUI:

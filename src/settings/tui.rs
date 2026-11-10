@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::schema::{self, Key, SECTIONS};
 use super::{Layers, get_path, read_table, remove_path, save, set_path};
-use crate::config::{Config, Rgb};
+use crate::config::{Config, DEFAULT_PALETTE, Rgb};
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,9 @@ pub struct State {
     layers: Layers,
     /// The serialized effective config.
     effective: toml::Table,
+    /// The 16 colors in effect, and those without the overrides.
+    palette: [Rgb; 16],
+    base_palette: [Rgb; 16],
     keys: Vec<Key>,
     section: usize,
     /// Index into [`State::visible`].
@@ -62,6 +65,8 @@ impl State {
         let mut state = State {
             layers,
             effective: toml::Table::new(),
+            palette: DEFAULT_PALETTE,
+            base_palette: DEFAULT_PALETTE,
             keys: Vec::new(),
             section: 0,
             selected: 0,
@@ -85,6 +90,9 @@ impl State {
             Config::default()
         });
         self.effective = toml::Table::try_from(&config).unwrap_or_default();
+        self.palette = config.colors.palette();
+        let base = Config::from_table(self.layers.base.clone()).unwrap_or_default();
+        self.base_palette = base.colors.palette();
         self.keys = schema::keys(&self.effective);
         self.selected = self.selected.min(self.visible().len().saturating_sub(1));
     }
@@ -130,12 +138,62 @@ impl State {
             .map_err(|e| format!("not saving over a broken file: {e}"))
     }
 
+    /// The value of `key` in effect.
+    fn effective_of(&self, key: &Key) -> Option<toml::Value> {
+        match key.index {
+            Some(i) => Some(toml::Value::String(self.palette[i].to_string())),
+            None => get_path(&self.effective, &key.path).cloned(),
+        }
+    }
+
+    /// The value the overrides give `key`, if they change it.
+    fn override_of(&self, key: &Key) -> Option<toml::Value> {
+        let value = get_path(&self.layers.overrides, &key.path)?;
+        match key.index {
+            // The whole list is saved; only colors it changes count.
+            Some(i) => {
+                let color = value.as_array()?.get(i)?;
+                let changed = color.as_str()?.parse::<Rgb>().ok() != Some(self.base_palette[i]);
+                changed.then(|| color.clone())
+            }
+            None => Some(value.clone()),
+        }
+    }
+
+    /// The value the config file gives `key`.
+    fn base_of(&self, key: &Key) -> Option<toml::Value> {
+        let value = get_path(&self.layers.base, &key.path)?;
+        match key.index {
+            Some(i) => value.as_array()?.get(i).cloned(),
+            None => Some(value.clone()),
+        }
+    }
+
     /// Overrides `key` with `value`, or removes its override for `None`.
     pub fn set(&mut self, key: &Key, value: Option<toml::Value>) -> Result<(), String> {
         let mut overrides = self.current_overrides()?;
-        match value {
-            Some(value) => set_path(&mut overrides, &key.path, value),
-            None => remove_path(&mut overrides, &key.path),
+        match (key.index, value) {
+            (Some(i), value) => {
+                // One color changes the whole list. Without differences from
+                // the config file left, the override goes.
+                let mut palette = self.palette;
+                palette[i] = match value.as_ref().and_then(toml::Value::as_str) {
+                    Some(color) => color.parse()?,
+                    None => self.base_palette[i],
+                };
+                if palette == self.base_palette {
+                    remove_path(&mut overrides, &key.path);
+                } else {
+                    let list = palette.iter().map(|c| toml::Value::String(c.to_string()));
+                    set_path(
+                        &mut overrides,
+                        &key.path,
+                        toml::Value::Array(list.collect()),
+                    );
+                }
+            }
+            (None, Some(value)) => set_path(&mut overrides, &key.path, value),
+            (None, None) => remove_path(&mut overrides, &key.path),
         }
         self.commit(overrides)
     }
@@ -156,7 +214,11 @@ impl State {
 
     fn handle(&mut self, key: KeyEvent) {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Normal => self.handle_normal(key),
+            Mode::Normal => {
+                // The last result stays only until the next key.
+                self.message = None;
+                self.handle_normal(key)
+            }
             Mode::Edit { buffer, cursor } => self.handle_edit(key, buffer, cursor),
             Mode::Filter => self.handle_filter(key),
         }
@@ -236,15 +298,15 @@ impl State {
         let Some(key) = self.selected_key() else {
             return;
         };
-        let current = get_path(&self.effective, &key.path);
+        let current = self.effective_of(&key);
         if key.kind.toggles() {
-            let result = self.set(&key, key.kind.next(current));
-            let shown = get_path(&self.effective, &key.path).map(schema::format);
+            let result = self.set(&key, key.kind.next(current.as_ref()));
+            let shown = self.effective_of(&key).as_ref().map(schema::format);
             self.report(
                 result.map(|()| format!("{} = {}", key.dotted(), shown.unwrap_or_default())),
             );
         } else {
-            let buffer = current.map(schema::format).unwrap_or_default();
+            let buffer = current.as_ref().map(schema::format).unwrap_or_default();
             let cursor = buffer.chars().count();
             self.mode = Mode::Edit { buffer, cursor };
         }
@@ -260,8 +322,15 @@ impl State {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => return,
-            KeyCode::Char('c') if ctrl => return,
+            // Cancelled: its error, if any, no longer applies.
+            KeyCode::Esc => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Char('c') if ctrl => {
+                self.message = None;
+                return;
+            }
             KeyCode::Enter => {
                 if let Some(selected) = self.selected_key() {
                     let result = selected
@@ -432,16 +501,16 @@ impl State {
             _ => None,
         };
         let items = visible.iter().enumerate().map(|(i, key)| {
-            let overridden = get_path(&self.layers.overrides, &key.path).is_some();
+            let overridden = self.override_of(key).is_some();
             let mark = if overridden { "● " } else { "  " };
-            let value = get_path(&self.effective, &key.path);
+            let value = self.effective_of(key);
             let mut spans = vec![mark.yellow(), Span::raw(format!("{:width$}  ", label(key)))];
             if let (Mode::Edit { buffer, .. }, Some((start, end, _))) = (&self.mode, window)
                 && i == self.selected
             {
                 spans.push(Span::raw(buffer[start..end].to_string()).underlined());
             } else {
-                spans.extend(value_spans(value));
+                spans.extend(value_spans(value.as_ref()));
             }
             ListItem::new(Line::from(spans))
         });
@@ -491,8 +560,8 @@ impl State {
                 format!("  {}", key.kind.describe()).dark_gray(),
             ]));
             lines.push(Line::from(key.doc.to_string()));
-            let base = get_path(&self.layers.base, &key.path).map(schema::format);
-            let source = match (get_path(&self.layers.overrides, &key.path), base) {
+            let base = self.base_of(&key).as_ref().map(schema::format);
+            let source = match (self.override_of(&key), base) {
                 (Some(_), Some(base)) => format!("overridden; the config file has {base}"),
                 (Some(_), None) => "overridden; not in the config file".into(),
                 (None, Some(_)) => "from the config file".into(),
@@ -843,6 +912,67 @@ mod tests {
         // Ctrl+C cancels, rather than typing a c.
         state.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert_eq!(state.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn cancelling_an_edit_clears_its_error() {
+        let (mut state, _dir) = state("", "");
+        state.focus = Focus::Keys;
+        state.mode = Mode::Edit {
+            buffer: "x".into(),
+            cursor: 1,
+        };
+        state.selected = state
+            .visible()
+            .iter()
+            .position(|k| k.name() == "size")
+            .unwrap();
+        press(&mut state, KeyCode::Enter);
+        assert!(matches!(state.message, Some((_, true))));
+        press(&mut state, KeyCode::Esc);
+        assert_eq!(state.message, None);
+        // A result is shown until the next key.
+        state.report(Ok("done".into()));
+        press(&mut state, KeyCode::Char('j'));
+        assert_eq!(state.message, None);
+    }
+
+    #[test]
+    fn palette_colors_are_listed_and_set_one_by_one() {
+        let (mut state, dir) = state("[colors]\npalette = [\"#010101\"]", "");
+        let names: Vec<String> = state
+            .keys
+            .iter()
+            .filter(|k| k.index.is_some())
+            .map(|k| k.name())
+            .collect();
+        assert_eq!(names.len(), 16);
+        assert_eq!(names[1], "palette[1]  red");
+        assert_eq!(names[10], "palette[10] bright green");
+        let red = key(&state, "colors.palette[1]  red");
+        let black = key(&state, "colors.palette[0]  black");
+        assert_eq!(
+            state.base_of(&black),
+            Some(toml::Value::String("#010101".into()))
+        );
+        state
+            .set(&red, Some(toml::Value::String("#ff0000".into())))
+            .unwrap();
+        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
+        assert_eq!(state.palette[0], Rgb(1, 1, 1));
+        assert!(state.override_of(&red).is_some());
+        // Saved as all 16, but only red counts as overridden.
+        let saved_palette = saved(&dir).unwrap()["colors"]["palette"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(saved_palette, 16);
+        assert!(state.override_of(&black).is_none());
+        // Resetting the only change drops the override.
+        state.set(&red, None).unwrap();
+        assert_eq!(saved(&dir), None);
+        assert_eq!(state.palette[1], DEFAULT_PALETTE[1]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
