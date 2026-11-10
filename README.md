@@ -195,11 +195,34 @@ jotty [-c CONFIG] [-e COMMAND [ARGS...]]
 These are the defaults; key bindings can be changed in the
 [`[keybinds]`](docs/configuration.md#keybinds) section.
 
-The configuration lives in `$XDG_CONFIG_HOME/jotty/config.toml`. See
-[docs/configuration.md](docs/configuration.md) for every option.
-
 For the best input-method experience, have your shell mark where its prompt
 ends (OSC 133). See [Shell integration](docs/configuration.md#shell-integration).
+
+## Configuration
+
+jotty reads `$XDG_CONFIG_HOME/jotty/config.toml` (by default
+`~/.config/jotty/config.toml`), or the file given with `--config PATH`.
+Every option has a default, so the file is optional and only needs what you
+change. Saving it reloads every running window.
+
+[`docs/config.example.toml`](docs/config.example.toml) lists every option
+with its default value and a comment. Copy it to your config path and keep
+only the lines you change. The `.deb`, `.rpm` and Arch packages also
+install it as `/usr/share/doc/jotty/config.example.toml`.
+
+`jotty config` opens a TUI that lists every option with its current value
+and lets you change it live. It never touches your config file: its changes
+go to `~/.local/state/jotty/overrides.toml`, which takes precedence over it.
+
+| Command | Does |
+| --- | --- |
+| `jotty config` | Change options in the TUI |
+| `jotty config export` | Print the overrides as TOML (`--merged` merges them with the config file, `--nix` prints Nix) |
+| `jotty config reset` | Remove all overrides |
+
+See [docs/configuration.md](docs/configuration.md) for every option, and
+[overrides](docs/configuration.md#overrides-and-jotty-config) for how
+`jotty config` works.
 
 ## Documentation
 
