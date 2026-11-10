@@ -38,7 +38,10 @@
               ./docs/config.example.toml
             ];
           };
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes."vte-0.15.0" = "sha256-3oRm/Mu9z8AvLNp3WI+CNtBTRltWWOn7PRYb+Q8qOlk=";
+          };
 
           nativeBuildInputs = [
             pkgs.pkg-config
