@@ -27,7 +27,8 @@ on the CPU.
 | --- | --- | --- |
 | `main.rs` | Logging, CLI, config loading, error reporting | no |
 | `cli.rs` | Argument parsing | no |
-| `config.rs` | TOML config with defaults, validation and clamping | no |
+| `config.rs` | TOML config with defaults, validation and clamping; merges the overrides over the config file | no |
+| `settings/` | `jotty config`: the overrides file, the TUI (ratatui), the key schema it edits, and the TOML → Nix export | no |
 | `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty graphics | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
@@ -40,7 +41,7 @@ on the CPU.
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
 | `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications`. It connects on a thread of its own; once connected it is non-blocking, with a bounded write queue | no |
-| `watch.rs` | Reload triggers: inotify on the config's directory, a SIGUSR1 self-pipe | no |
+| `watch.rs` | Reload triggers: inotify on the directories of the config and the overrides, a SIGUSR1 self-pipe | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |

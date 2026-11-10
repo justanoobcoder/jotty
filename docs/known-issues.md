@@ -182,6 +182,23 @@ nothing surprises you.
 - A frame that fails to draw is retried every 200 ms; the window closes
   after 50 failures in a row (10 seconds).
 
+## `jotty config`
+
+- An override can only set a key, not unset one. If the config file sets
+  `terminal.shell` or an optional color, the TUI can't bring back the
+  default (`$SHELL`, or the derived color) over it. It can only remove its
+  own override. Edit the config file for that.
+- The TUI edits the `[files]` kinds that already exist. Add new kinds in the
+  config file (or by hand in `overrides.toml`); after that they show up in
+  the TUI.
+- `jotty config export --merged` loses the config file's comments and
+  ordering.
+- Saving replaces `overrides.toml` with a new file, so a symlink there
+  becomes a regular file.
+- If `~/.local/state/jotty/` is deleted while jotty runs, open windows stop
+  noticing changes to the overrides until they are restarted or reloaded
+  (Ctrl+Shift+R, `SIGUSR1`).
+
 ## Platform
 
 - Linux only: it uses `openpty`, `TIOCSCTTY`, `EIO` for detecting that the

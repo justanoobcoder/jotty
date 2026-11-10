@@ -1,4 +1,6 @@
-//! User configuration, loaded from `$XDG_CONFIG_HOME/jotty/config.toml`.
+//! User configuration, loaded from `$XDG_CONFIG_HOME/jotty/config.toml`,
+//! with the overrides `jotty config` writes to
+//! `$XDG_STATE_HOME/jotty/overrides.toml` merged over it.
 //!
 //! Every field has a default, so an empty or missing file is valid.
 
@@ -6,11 +8,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::keybinds::Keybinds;
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub font: FontConfig,
@@ -24,7 +26,7 @@ pub struct Config {
     pub files: Files,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UrlConfig {
     /// Command that opens a link; the link is appended as its last argument.
@@ -45,11 +47,11 @@ impl Default for UrlConfig {
 /// Kinds of files whose paths are links, by name: `image` and `video`
 /// built in, and any the user adds. A kind in the config only overrides
 /// the fields it sets.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FileKind {
     /// File name extensions, without the dot, matched case-insensitively.
     pub extensions: Vec<String>,
@@ -108,15 +110,17 @@ impl From<BTreeMap<String, FileKindOverride>> for Files {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FontConfig {
     /// Font family name, resolved through the system font configuration.
     pub family: String,
     /// Font size in points (at 96 DPI and a scale factor of 1).
+    #[serde(serialize_with = "short_f32")]
     pub size: f32,
     /// Points added or removed by `font_larger` and `font_smaller`, per
     /// key press or wheel notch.
+    #[serde(serialize_with = "short_f32")]
     pub size_step: f32,
     /// Families tried, in order, for characters the primary font lacks.
     pub fallback: Vec<String>,
@@ -133,7 +137,7 @@ impl Default for FontConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     pub title: String,
@@ -141,6 +145,7 @@ pub struct WindowConfig {
     /// Padding around the cell grid, in logical pixels.
     pub padding: u32,
     /// Background opacity, from 0.0 (transparent) to 1.0 (opaque).
+    #[serde(serialize_with = "short_f32")]
     pub opacity: f32,
     /// Also apply `opacity` to cells with an explicit background color.
     pub transparent_cell_backgrounds: bool,
@@ -185,7 +190,7 @@ impl Default for WindowConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererKind {
     /// OpenGL ES 3 through EGL. Cheap per frame at any size, but the GPU
@@ -195,10 +200,11 @@ pub enum RendererKind {
     Cpu,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     /// Value of `$TERM` for the child process. `"auto"` uses jotty's own
     /// terminfo entry when it is installed, `xterm-256color` otherwise.
@@ -220,20 +226,24 @@ impl Default for TerminalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorConfig {
     pub foreground: Rgb,
     pub background: Rgb,
     /// Cursor color; defaults to the foreground color.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Rgb>,
     /// Color of the character under a block cursor; defaults to the cell's
     /// background color.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_text: Option<Rgb>,
     /// Text color of selected cells; defaults to the cell's background
     /// (inverse video).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_foreground: Option<Rgb>,
     /// Background of selected cells; defaults to the cell's foreground.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_background: Option<Rgb>,
     /// Overrides for the 16 ANSI colors, in order (black, red, ..., bright white).
     /// May be shorter than 16 entries; the rest keep their defaults.
@@ -289,13 +299,19 @@ impl ColorConfig {
 }
 
 /// An sRGB color, written as `"#rrggbb"` in the config file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
     pub fn to_f32(self) -> [f32; 3] {
         [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
+    }
+}
+
+impl From<Rgb> for String {
+    fn from(color: Rgb) -> String {
+        color.to_string()
     }
 }
 
@@ -350,21 +366,76 @@ impl Config {
         Ok(config)
     }
 
-    /// Loads the config from `path`, or from the default location when `None`.
-    /// A missing file at the default location yields the default config.
+    /// Builds the config from a table of TOML values, as [`Config::parse`]
+    /// does from text. Errors carry no position.
+    pub fn from_table(table: toml::Table) -> Result<Self, toml::de::Error> {
+        let mut config: Config = toml::Value::Table(table).try_into()?;
+        config.sanitize();
+        Ok(config)
+    }
+
+    /// Loads the config from `path`, or from the default location when `None`,
+    /// with the overrides merged over it. A missing file at the default
+    /// location yields the default config.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let (path, required) = match path {
-            Some(p) => (p.to_path_buf(), true),
-            None => match default_path() {
-                Some(p) => (p, false),
-                None => return Ok(Self::default()),
-            },
+        let base = match path {
+            Some(p) => Some((p.to_path_buf(), true)),
+            None => default_path().map(|p| (p, false)),
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text).map_err(|e| ConfigError::Parse(path, e)),
-            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(ConfigError::Io(path, e)),
+        let base = base.as_ref().map(|(p, required)| (p.as_path(), *required));
+        Self::load_layers(base, overrides_path().as_deref())
+    }
+
+    /// Loads the base file (`required` makes a missing one an error), then
+    /// merges `overlay` over it. A broken overlay is logged and ignored:
+    /// it must never cost the user the config they wrote.
+    fn load_layers(
+        base: Option<(&Path, bool)>,
+        overlay: Option<&Path>,
+    ) -> Result<Self, ConfigError> {
+        let text = match base {
+            Some((path, required)) => match read_optional(path) {
+                Ok(Some(text)) => text,
+                Ok(None) if !required => String::new(),
+                Ok(None) => {
+                    let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+                    return Err(ConfigError::Io(path.to_path_buf(), e));
+                }
+                Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
+            },
+            None => String::new(),
+        };
+        let base_path = base.map_or_else(PathBuf::new, |b| b.0.into());
+        // Parsed from text, not from the table, so errors say where they are.
+        let config = Self::parse(&text).map_err(|e| ConfigError::Parse(base_path.clone(), e))?;
+        let Some(overlay) = overlay else {
+            return Ok(config);
+        };
+        let base = toml::from_str(&text).map_err(|e| ConfigError::Parse(base_path, e))?;
+        match Self::merge_overlay(base, overlay) {
+            Ok(Some(merged)) => Ok(merged),
+            Ok(None) => Ok(config),
+            Err(e) => {
+                log::error!("{e}; ignoring the overrides");
+                Ok(config)
+            }
         }
+    }
+
+    /// The config from `base` (already known to be valid) with the file
+    /// `overlay` merged over it, or `None` without an overlay file.
+    fn merge_overlay(mut base: toml::Table, overlay: &Path) -> Result<Option<Self>, ConfigError> {
+        let parse_error = |e| ConfigError::Parse(overlay.to_path_buf(), e);
+        let text = read_optional(overlay).map_err(|e| ConfigError::Io(overlay.to_path_buf(), e))?;
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        merge(&mut base, toml::from_str(&text).map_err(parse_error)?);
+        Self::from_table(base).map(Some).map_err(|e| {
+            // Values in a table have no position; the overlay's own text
+            // does, and is where the mistake almost always is.
+            parse_error(Self::parse(&text).err().unwrap_or(e))
+        })
     }
 
     /// Clamps values that would otherwise break rendering.
@@ -382,12 +453,52 @@ impl Config {
     }
 }
 
+/// Writes an `f32` as the shortest decimal that reads back as it, so 12.4
+/// stays 12.4 rather than widening to 12.399999618530273 (TOML floats
+/// are 64-bit).
+fn short_f32<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    let shortest = value.to_string().parse().unwrap_or(f64::from(*value));
+    serializer.serialize_f64(shortest)
+}
+
 pub fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("jotty").join("config.toml"))
+}
+
+/// Where `jotty config` keeps its overrides, which take precedence over
+/// the config file.
+pub fn overrides_path() -> Option<PathBuf> {
+    xdg_dir("XDG_STATE_HOME", ".local/state").map(|dir| dir.join("jotty").join("overrides.toml"))
+}
+
+/// `$var` when set and not empty, else `fallback` under `$HOME`.
+fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("jotty").join("config.toml"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
+}
+
+/// A file's contents, or `None` when it doesn't exist.
+pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Merges `over` into `base`: tables present in both are merged key by
+/// key, and any other value in `over`, lists included, replaces `base`'s.
+pub fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(base)), toml::Value::Table(over)) => merge(base, over),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,5 +665,90 @@ mod tests {
     fn missing_explicit_file_is_an_error() {
         let err = Config::load(Some(Path::new("/nonexistent/jotty.toml"))).unwrap_err();
         assert!(matches!(err, ConfigError::Io(..)));
+    }
+
+    /// A scratch directory for one test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jotty-config-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn merge_is_deep_and_replaces_lists() {
+        let mut base: toml::Table = toml::from_str(
+            "[font]\nfamily = \"A\"\nfallback = [\"x\", \"y\"]\n[keybinds]\ncopy = [\"ctrl+c\"]",
+        )
+        .unwrap();
+        let over: toml::Table =
+            toml::from_str("[font]\nsize = 14.0\nfallback = [\"z\"]\n[keybinds]\npaste = []")
+                .unwrap();
+        merge(&mut base, over);
+        let config = Config::from_table(base).unwrap();
+        assert_eq!(config.font.family, "A");
+        assert_eq!(config.font.size, 14.0);
+        assert_eq!(config.font.fallback, ["z"]);
+        let both = Config::parse("[keybinds]\ncopy = [\"ctrl+c\"]\npaste = []").unwrap();
+        assert_eq!(config.keybinds, both.keybinds);
+    }
+
+    #[test]
+    fn overlay_takes_precedence() {
+        let dir = scratch("overlay");
+        let (base, overlay) = (dir.join("config.toml"), dir.join("overrides.toml"));
+        std::fs::write(&base, "[font]\nfamily = \"A\"\nsize = 10.0").unwrap();
+        let load = || Config::load_layers(Some((&base, true)), Some(&overlay)).unwrap();
+        // No overlay file: the base alone.
+        assert_eq!(
+            load(),
+            Config::parse("[font]\nfamily = \"A\"\nsize = 10.0").unwrap()
+        );
+        std::fs::write(&overlay, "[font]\nsize = 13.0").unwrap();
+        assert_eq!((load().font.family.as_str(), load().font.size), ("A", 13.0));
+        // A broken overlay is ignored.
+        std::fs::write(&overlay, "[font]\nsiez = 13.0").unwrap();
+        assert_eq!(load().font.size, 10.0);
+        std::fs::write(&overlay, "not toml").unwrap();
+        assert_eq!(load().font.size, 10.0);
+        // A broken base is still an error.
+        std::fs::write(&base, "[font]\nsiez = 1").unwrap();
+        assert!(Config::load_layers(Some((&base, true)), Some(&overlay)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn overlay_without_base_file() {
+        let dir = scratch("nobase");
+        let overlay = dir.join("overrides.toml");
+        std::fs::write(&overlay, "[window]\npadding = 9").unwrap();
+        let missing = dir.join("config.toml");
+        let config = Config::load_layers(Some((&missing, false)), Some(&overlay)).unwrap();
+        assert_eq!(config.window.padding, 9);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn floats_serialize_as_written() {
+        let config =
+            Config::parse("[font]\nsize = 12.4\nsize_step = 0.1\n[window]\nopacity = 0.8").unwrap();
+        let table = toml::Table::try_from(&config).unwrap();
+        assert_eq!(table["font"]["size"].as_float(), Some(12.4));
+        assert_eq!(table["font"]["size_step"].as_float(), Some(0.1));
+        assert_eq!(table["window"]["opacity"].as_float(), Some(0.8));
+    }
+
+    #[test]
+    fn serializes_to_a_config_that_parses_back() {
+        let mut config = Config::parse(
+            "[terminal]\nshell = \"fish\"\n[colors]\ncursor = \"#102030\"\n\
+             [keybinds]\ncopy = [\"ctrl+insert\", \"ctrl++\"]\npaste = []\n\
+             [files.pdf]\nextensions = [\"pdf\"]\nlauncher = [\"zathura\"]",
+        )
+        .unwrap();
+        config.window.renderer = RendererKind::Gpu;
+        for config in [Config::default(), config] {
+            let text = toml::to_string(&config).unwrap();
+            assert_eq!(Config::parse(&text).unwrap(), config, "{text}");
+        }
     }
 }

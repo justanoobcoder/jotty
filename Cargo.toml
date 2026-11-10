@@ -17,6 +17,7 @@ log = "0.4.34"
 memchr = "2.8.3"
 miniz_oxide = "0.9.1"
 png = "0.18"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 smithay-client-toolkit = "0.21.1"

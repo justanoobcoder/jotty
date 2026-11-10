@@ -6,13 +6,23 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "\
 Usage: jotty [OPTIONS] [-e COMMAND [ARGS...]]
+       jotty [-c PATH] config [export [--merged] [--nix]]
+       jotty config reset
 
 Options:
   -c, --config PATH    Use this config file instead of the default
-                       ($XDG_CONFIG_HOME/jotty/config.toml)
+                       ($XDG_CONFIG_HOME/jotty/config.toml); the
+                       overrides still apply over it
   -e, --command CMD..  Run CMD with its arguments instead of the shell
   -h, --help           Print this help
   -V, --version        Print the version
+
+Config commands (overrides in $XDG_STATE_HOME/jotty/overrides.toml):
+  config               Edit the overrides in a TUI
+  config export        Print the overrides as TOML
+         --merged      Print the config file merged with the overrides
+         --nix         Print a Nix attrset for programs.jotty.settings
+  config reset         Remove all overrides
 ";
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -25,8 +35,49 @@ pub struct Options {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     Run(Options),
+    /// `jotty config ...`, with the `--config` file given before it.
+    Config(Option<PathBuf>, ConfigCommand),
     Help,
     Version,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigCommand {
+    /// Edit the overrides in the TUI.
+    Edit,
+    /// Print the overrides, or with `merged` the config file merged with
+    /// them, as TOML or as Nix.
+    Export { merged: bool, nix: bool },
+    /// Remove the overrides.
+    Reset,
+}
+
+fn parse_config_command(args: impl Iterator<Item = OsString>) -> Result<ConfigCommand, String> {
+    let args: Vec<OsString> = args.collect();
+    let args: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
+    match args.split_first() {
+        Some((&b"export", flags)) => {
+            let (mut merged, mut nix) = (false, false);
+            for flag in flags {
+                match *flag {
+                    b"--merged" => merged = true,
+                    b"--nix" => nix = true,
+                    _ => {
+                        let flag = String::from_utf8_lossy(flag);
+                        return Err(format!("unknown argument {flag:?} for config export"));
+                    }
+                }
+            }
+            Ok(ConfigCommand::Export { merged, nix })
+        }
+        Some((&b"reset", [])) => Ok(ConfigCommand::Reset),
+        Some((&b"reset", _)) => Err("config reset takes no arguments".into()),
+        Some((other, _)) => Err(format!(
+            "unknown config command {:?}",
+            String::from_utf8_lossy(other)
+        )),
+        None => Ok(ConfigCommand::Edit),
+    }
 }
 
 /// Parses the arguments, which needn't be UTF-8: paths and commands are
@@ -41,6 +92,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
             b"-c" | b"--config" => {
                 let path = args.next().ok_or("--config needs a path")?;
                 options.config = Some(path.into());
+            }
+            b"config" => {
+                let command = parse_config_command(args)?;
+                return Ok(Parsed::Config(options.config, command));
             }
             b"-e" | b"--command" => {
                 let command: Vec<OsString> = args.by_ref().collect();
@@ -117,5 +172,31 @@ mod tests {
     #[test]
     fn unknown_argument() {
         assert!(run(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn config_commands() {
+        let export = |merged, nix| Ok(Parsed::Config(None, ConfigCommand::Export { merged, nix }));
+        assert_eq!(run(&["config", "export"]), export(false, false));
+        assert_eq!(
+            run(&["config", "export", "--nix", "--merged"]),
+            export(true, true)
+        );
+        assert_eq!(
+            run(&["-c", "/a.toml", "config", "reset"]),
+            Ok(Parsed::Config(Some("/a.toml".into()), ConfigCommand::Reset))
+        );
+        assert_eq!(
+            run(&["config"]),
+            Ok(Parsed::Config(None, ConfigCommand::Edit))
+        );
+        assert!(run(&["config", "reset", "now"]).is_err());
+        assert!(run(&["config", "export", "--json"]).is_err());
+        assert!(run(&["config", "frobnicate"]).is_err());
+        // After -e, `config` is the program's.
+        let Ok(Parsed::Run(options)) = run(&["-e", "config"]) else {
+            panic!()
+        };
+        assert_eq!(options.command.unwrap(), ["config"]);
     }
 }

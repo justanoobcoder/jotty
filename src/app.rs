@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
@@ -1320,15 +1320,45 @@ impl App {
         self.request_redraw();
     }
 
-    /// Reloads the config when its file changes or on SIGUSR1.
+    /// Reloads the config when its file or the overrides change, or on
+    /// SIGUSR1.
     fn watch_config(&mut self) {
         let path = self
             .config_path
             .clone()
             .or_else(crate::config::default_path);
-        if let Some(path) = path
-            && let Some(name) = path.file_name().map(|n| n.to_owned())
+        let overrides = crate::config::overrides_path();
+        // Created up front: inotify can't watch a directory that doesn't
+        // exist yet, and `jotty config` would otherwise go unnoticed until
+        // the next window.
+        if let Some(dir) = overrides.as_deref().and_then(Path::parent)
+            && let Err(e) = std::fs::create_dir_all(dir)
         {
+            log::info!("cannot create {}: {e}", dir.display());
+        }
+        for path in path.into_iter().chain(overrides) {
+            self.watch_config_file(path);
+        }
+        match watch::sigusr1() {
+            Ok(file) => {
+                let source = Generic::new(file, Interest::READ, Mode::Level);
+                let inserted = self.loop_handle.insert_source(source, |_, file, app| {
+                    // SAFETY: the file is only read, never closed or replaced.
+                    watch::drain(unsafe { file.get_mut() });
+                    app.reload_config();
+                    Ok(PostAction::Continue)
+                });
+                if let Err(e) = inserted {
+                    log::warn!("cannot handle SIGUSR1: {e}");
+                }
+            }
+            Err(e) => log::warn!("cannot handle SIGUSR1: {e}"),
+        }
+    }
+
+    /// Schedules a reload whenever the file at `path` changes.
+    fn watch_config_file(&mut self, path: PathBuf) {
+        if let Some(name) = path.file_name().map(|n| n.to_owned()) {
             match watch::watch_file(&path) {
                 Ok(file) => {
                     let source = Generic::new(file, Interest::READ, Mode::Level);
@@ -1346,21 +1376,6 @@ impl App {
                 // Typically: no config directory yet.
                 Err(e) => log::info!("not watching {} for changes: {e}", path.display()),
             }
-        }
-        match watch::sigusr1() {
-            Ok(file) => {
-                let source = Generic::new(file, Interest::READ, Mode::Level);
-                let inserted = self.loop_handle.insert_source(source, |_, file, app| {
-                    // SAFETY: as above.
-                    watch::drain(unsafe { file.get_mut() });
-                    app.reload_config();
-                    Ok(PostAction::Continue)
-                });
-                if let Err(e) = inserted {
-                    log::warn!("cannot handle SIGUSR1: {e}");
-                }
-            }
-            Err(e) => log::warn!("cannot handle SIGUSR1: {e}"),
         }
     }
 
