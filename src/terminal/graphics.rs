@@ -989,7 +989,7 @@ mod tests {
         // SAFETY: `c` is a valid C string.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let (done, wait) = std::sync::mpsc::channel();
-        let path = fifo.clone();
+        let path = fifo;
         std::thread::spawn(move || done.send(read_file(&path, 0, 0)).unwrap());
         let result = wait.recv_timeout(std::time::Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).unwrap();

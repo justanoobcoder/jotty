@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn limit_keeps_cursor_region() {
         let mut s = Surrounding {
-            text: "a".repeat(5000) + "é" + &"b".repeat(5000),
+            text: format!("{}é{}", "a".repeat(5000), "b".repeat(5000)),
             cursor: 5000,
         };
         s.limit(100);
