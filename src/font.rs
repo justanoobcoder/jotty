@@ -1048,7 +1048,7 @@ fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
             // down: the outer cells hold twelfths of the large one, the
             // inner cells quarters of the small one.
             '\u{1CC30}'..='\u{1CC3F}' => {
-                let i = c as u32 - 0x1CC30;
+                let i = c as u32 - 0x1cc30;
                 let (col, row) = ((i % 4) as f32, (i / 4) as f32);
                 let inner = (1.0..=2.0).contains(&col) && (1.0..=2.0).contains(&row);
                 let (wf, hf, t) = (w as f32, h as f32, s as f32);
@@ -1224,11 +1224,11 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
     let (w, h) = (canvas.width, canvas.height);
     let eighth_h = |n: u32| (h * n + 4) / 8;
     let eighth_w = |n: u32| (w * n + 4) / 8;
-    let i = (c as u32).wrapping_sub(0x1FB00);
+    let i = (c as u32).wrapping_sub(0x1fb00);
     match i {
         // Sextants: a 2×3 grid, numbered across then down, without the
         // left and right halves, which are ▌ and ▐.
-        0x00..=0x3B => {
+        0x00..=0x3b => {
             let mut bits = i + 1;
             if bits >= 21 {
                 bits += 1;
@@ -1248,27 +1248,27 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 }
             }
         }
-        0x3C..=0x67 => {
-            let [x1, y1, x2, y2, cx, cy] = MOSAICS[(i - 0x3C) as usize].map(f32::from);
+        0x3c..=0x67 => {
+            let [x1, y1, x2, y2, cx, cy] = MOSAICS[(i - 0x3c) as usize].map(f32::from);
             let side = |x: f32, y: f32| (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
             let corner = side(cx, cy) > 0.0;
             canvas.shape(255, |u, v| (side(u * 2.0, v * 3.0) > 0.0) == corner);
         }
         // Triangles from the center to an edge: all but one, then one.
-        0x68..=0x6F => canvas.shape(255, |u, v| in_quarter(i % 4, u, v) != (i < 0x6C)),
+        0x68..=0x6f => canvas.shape(255, |u, v| in_quarter(i % 4, u, v) != (i < 0x6c)),
         // One-eighth columns and rows 2 to 7.
         0x70..=0x75 => canvas.fill(eighth_w(i - 0x70 + 1), 0, eighth_w(i - 0x70 + 2), h, 255),
-        0x76..=0x7B => canvas.fill(0, eighth_h(i - 0x76 + 1), w, eighth_h(i - 0x76 + 2), 255),
+        0x76..=0x7b => canvas.fill(0, eighth_h(i - 0x76 + 1), w, eighth_h(i - 0x76 + 2), 255),
         // Pairs of one-eighth edges: left and lower, left and upper, right
         // and upper, right and lower, upper and lower.
-        0x7C..=0x80 => {
+        0x7c..=0x80 => {
             let (left, right, upper, lower) = [
                 (true, false, false, true),
                 (true, false, true, false),
                 (false, true, true, false),
                 (false, true, false, true),
                 (false, false, true, true),
-            ][(i - 0x7C) as usize];
+            ][(i - 0x7c) as usize];
             if left {
                 canvas.fill(0, 0, eighth_w(1), h, 255);
             }
@@ -1289,7 +1289,7 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             }
         }
         // Upper and right blocks of 2, 3, 5, 6 and 7 eighths.
-        0x82..=0x8B => {
+        0x82..=0x8b => {
             let n = [2, 3, 5, 6, 7][((i - 0x82) % 5) as usize];
             if i < 0x87 {
                 canvas.fill(0, 0, w, eighth_h(n), 255);
@@ -1298,10 +1298,10 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             }
         }
         // Half shades, and halves of a shade and a block.
-        0x8C => canvas.fill(0, 0, eighth_w(4), h, SHADE),
-        0x8D => canvas.fill(w - eighth_w(4), 0, w, h, SHADE),
-        0x8E => canvas.fill(0, 0, w, eighth_h(4), SHADE),
-        0x8F => canvas.fill(0, h - eighth_h(4), w, h, SHADE),
+        0x8c => canvas.fill(0, 0, eighth_w(4), h, SHADE),
+        0x8d => canvas.fill(w - eighth_w(4), 0, w, h, SHADE),
+        0x8e => canvas.fill(0, 0, w, eighth_h(4), SHADE),
+        0x8f => canvas.fill(0, h - eighth_h(4), w, h, SHADE),
         0x90 => canvas.fill(0, 0, w, h, SHADE),
         0x91 => {
             canvas.fill(0, 0, w, eighth_h(4), 255);
@@ -1340,18 +1340,18 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
         // continue across cells.
         0x98 => canvas.shape(255, |u, v| (u - v).rem_euclid(0.25) < 0.125),
         0x99 => canvas.shape(255, |u, v| (u + v).rem_euclid(0.25) < 0.125),
-        0x9A => canvas.shape(255, |u, v| in_quarter(1, u, v) || in_quarter(3, u, v)),
-        0x9B => canvas.shape(255, |u, v| in_quarter(0, u, v) || in_quarter(2, u, v)),
+        0x9a => canvas.shape(255, |u, v| in_quarter(1, u, v) || in_quarter(3, u, v)),
+        0x9b => canvas.shape(255, |u, v| in_quarter(0, u, v) || in_quarter(2, u, v)),
         // Shaded triangles: upper left, upper right, lower right, lower left.
-        0x9C => canvas.shape(SHADE, |u, v| u + v < 1.0),
-        0x9D => canvas.shape(SHADE, |u, v| v < u),
-        0x9E => canvas.shape(SHADE, |u, v| u + v > 1.0),
-        0x9F => canvas.shape(SHADE, |u, v| v > u),
+        0x9c => canvas.shape(SHADE, |u, v| u + v < 1.0),
+        0x9d => canvas.shape(SHADE, |u, v| v < u),
+        0x9e => canvas.shape(SHADE, |u, v| u + v > 1.0),
+        0x9f => canvas.shape(SHADE, |u, v| v > u),
         // Lines between the middles of the edges, meeting the lines of
         // box-drawing characters next to them. Bits: upper to left 1, upper
         // to right 2, left to lower 4, right to lower 8.
-        0xA0..=0xAE => {
-            let bits = [1, 2, 4, 8, 5, 10, 12, 3, 9, 6, 14, 13, 11, 7, 15][(i - 0xA0) as usize];
+        0xa0..=0xae => {
+            let bits = [1, 2, 4, 8, 5, 10, 12, 3, 9, 6, 14, 13, 11, 7, 15][(i - 0xa0) as usize];
             let s = stroke as f32;
             let mx = band_start(stroke, w) as f32 + s / 2.0;
             let my = band_start(stroke, h) as f32 + s / 2.0;
@@ -1368,14 +1368,14 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
             });
         }
         // A horizontal line crossed by a short vertical stroke.
-        0xAF => {
+        0xaf => {
             draw_arms(canvas, stroke, [0, 0, 1, 1]);
             let x = band_start(stroke, w);
             canvas.fill(x, h / 3, x + stroke, h - h / 3, 255);
         }
         // Light diagonals between corners, edge middles and the center,
         // as points numbered across then down a 3×3 grid.
-        0xD0..=0xDF => {
+        0xd0..=0xdf => {
             let points: &[usize] = [
                 &[5, 6][..],
                 &[2, 3],
@@ -1393,12 +1393,12 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 &[2, 3, 8],
                 &[6, 1, 8],
                 &[0, 5, 6],
-            ][(i - 0xD0) as usize];
+            ][(i - 0xd0) as usize];
             draw_polyline(canvas, stroke, points, (0.0, 0.0));
         }
         // Half circles centered on the top, right, bottom or left edge, so
         // two cells make a circle a cell wide: white, then black.
-        0xE0..=0xE3 | 0xE8..=0xEB => {
+        0xe0..=0xe3 | 0xe8..=0xeb => {
             let (w, h) = (w as f32, h as f32);
             let center = [(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)];
             draw_circles(
@@ -1406,18 +1406,18 @@ fn draw_legacy(canvas: &mut Canvas, c: char, stroke: u32) -> bool {
                 stroke,
                 &[center[(i % 4) as usize]],
                 w / 2.0,
-                i >= 0xE8,
+                i >= 0xe8,
             );
         }
         // Black quarter circles centered on the top right, bottom left,
         // bottom right or top left corner: four make a circle a cell wide.
-        0xEC..=0xEF => {
+        0xec..=0xef => {
             let (w, h) = (w as f32, h as f32);
             let center = [(w, 0.0), (0.0, h), (w, h), (0.0, 0.0)];
             draw_circles(
                 canvas,
                 stroke,
-                &[center[(i - 0xEC) as usize]],
+                &[center[(i - 0xec) as usize]],
                 w / 2.0,
                 true,
             );
@@ -1758,7 +1758,7 @@ mod tests {
 
         // Each smooth mosaic fills its corner and leaves the opposite one.
         for (i, &[.., cx, cy]) in MOSAICS.iter().enumerate() {
-            let c = char::from_u32(0x1FB3C + i as u32).unwrap();
+            let c = char::from_u32(0x1fb3c + i as u32).unwrap();
             let glyph = box_glyph(c, m).unwrap();
             let (x, y) = (
                 if cx == 0 { 0 } else { w - 1 },

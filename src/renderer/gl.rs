@@ -12,7 +12,7 @@ use super::atlas::Atlas;
 use super::{Batch, Frame, Theme, VERTEX_FLOATS};
 use crate::font::{CellMetrics, Fonts, Glyph};
 
-const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31D8;
+const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31d8;
 const ATLAS_SIZE: u32 = 2048;
 /// The color emoji atlas (RGBA).
 const COLOR_ATLAS_SIZE: u32 = 1024;
