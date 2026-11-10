@@ -14,6 +14,8 @@ use strings::{StringTable, Table};
 use unicode_segmentation::GraphemeCursor;
 use vte::{Params, Perform};
 
+use crate::color::Rgb;
+
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
 /// The longest OSC string kept (vte drops the rest): room for long
@@ -297,9 +299,9 @@ pub struct Screen {
     /// Scratch text for `continues_cluster`.
     cluster_scratch: String,
     /// Cursor color set by the program (OSC 12), overriding the configured one.
-    cursor_color: Option<(u8, u8, u8)>,
+    cursor_color: Option<Rgb>,
     /// The configured cursor color, reported by OSC 12 queries.
-    default_cursor_color: (u8, u8, u8),
+    default_cursor_color: Rgb,
     /// Colors set by the program with OSC 4, 10 and 11.
     colors: ColorOverrides,
     /// Hyperlink targets (OSC 8), by `Extra::link`.
@@ -352,9 +354,6 @@ struct KeyboardFlags {
 /// How many pushed keyboard flags a screen keeps.
 const KEYBOARD_STACK: usize = 16;
 
-/// A color as red, green and blue.
-pub type Rgb = (u8, u8, u8);
-
 /// Colors a program changed with OSC 4 (palette), 10 (foreground) and 11
 /// (background), until it resets them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,10 +392,10 @@ pub struct DefaultColors {
 impl Default for DefaultColors {
     fn default() -> Self {
         DefaultColors {
-            foreground: (255, 255, 255),
-            background: (0, 0, 0),
-            cursor: (255, 255, 255),
-            palette: [(0, 0, 0); 256],
+            foreground: Rgb::new(255, 255, 255),
+            background: Rgb::new(0, 0, 0),
+            cursor: Rgb::new(255, 255, 255),
+            palette: [Rgb::new(0, 0, 0); 256],
         }
     }
 }
@@ -456,7 +455,7 @@ impl Screen {
             last_char: None,
             cluster_scratch: String::new(),
             cursor_color: None,
-            default_cursor_color: (255, 255, 255),
+            default_cursor_color: Rgb::new(255, 255, 255),
             colors: ColorOverrides::default(),
             links: StringTable::default(),
             clusters: StringTable::default(),
@@ -677,7 +676,7 @@ impl Screen {
     }
 
     /// The cursor color requested by the program with OSC 12, if any.
-    pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
+    pub fn cursor_color(&self) -> Option<Rgb> {
         self.cursor_color
     }
 
@@ -1763,7 +1762,7 @@ impl Screen {
 
     /// Replies to a color query with the request's terminator, as xterm
     /// does. `code` is the OSC number with any index, such as `"4;1"`.
-    fn report_color(&mut self, code: &str, (r, g, b): Rgb, bell_terminated: bool) {
+    fn report_color(&mut self, code: &str, Rgb { r, g, b }: Rgb, bell_terminated: bool) {
         let end = if bell_terminated { "\x07" } else { "\x1b\\" };
         let reply = format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}");
         self.responses.extend_from_slice(reply.as_bytes());
@@ -2001,7 +2000,7 @@ impl Screen {
 
 /// Parses an X11 color specification as used by OSC color sequences:
 /// `#rgb`, `#rrggbb`, or `rgb:r/g/b` with 1–4 hex digits per component.
-fn parse_color(spec: &[u8]) -> Result<(u8, u8, u8), &'static str> {
+fn parse_color(spec: &[u8]) -> Result<Rgb, &'static str> {
     const BAD_COMPONENT: &str = "a component is not 1-4 hex digits";
     let spec = std::str::from_utf8(spec).map_err(|_| "not UTF-8")?;
     let scale = |hex: &str| -> Result<u8, &'static str> {
@@ -2017,7 +2016,7 @@ fn parse_color(spec: &[u8]) -> Result<(u8, u8, u8), &'static str> {
             return Err("expected 3 or 6 hex digits after #");
         }
         let n = hex.len() / 3;
-        return Ok((
+        return Ok(Rgb::new(
             scale(&hex[..n])?,
             scale(&hex[n..2 * n])?,
             scale(&hex[2 * n..])?,
@@ -2028,7 +2027,7 @@ fn parse_color(spec: &[u8]) -> Result<(u8, u8, u8), &'static str> {
         .ok_or("expected #rgb, #rrggbb or rgb:r/g/b")?
         .split('/');
     let mut component = || scale(parts.next().ok_or("expected three components")?);
-    let rgb = (component()?, component()?, component()?);
+    let rgb = Rgb::new(component()?, component()?, component()?);
     match parts.next() {
         None => Ok(rgb),
         Some(_) => Err("expected three components"),

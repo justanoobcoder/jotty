@@ -4,6 +4,7 @@ use super::{
     Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_OSC_BYTES,
     MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
 };
+use crate::color::Rgb;
 
 fn term(cols: usize, rows: usize) -> Terminal {
     Terminal::new(cols, rows, 100)
@@ -923,9 +924,9 @@ fn osc_12_sets_and_resets_cursor_color() {
     let mut t = term(10, 1);
     assert_eq!(t.screen().cursor_color(), None);
     t.feed(b"\x1b]12;#ff8000\x07");
-    assert_eq!(t.screen().cursor_color(), Some((255, 128, 0)));
+    assert_eq!(t.screen().cursor_color(), Some(Rgb::new(255, 128, 0)));
     t.feed(b"\x1b]12;rgb:00/80/ff\x1b\\");
-    assert_eq!(t.screen().cursor_color(), Some((0, 128, 255)));
+    assert_eq!(t.screen().cursor_color(), Some(Rgb::new(0, 128, 255)));
     t.feed(b"\x1b]112\x07");
     assert_eq!(t.screen().cursor_color(), None);
     // Invalid specifications are ignored.
@@ -937,7 +938,7 @@ fn osc_12_sets_and_resets_cursor_color() {
 fn osc_12_query_reports_current_color() {
     let mut t = term(10, 1);
     t.screen_mut().set_default_colors(DefaultColors {
-        cursor: (0x12, 0x34, 0x56),
+        cursor: Rgb::new(0x12, 0x34, 0x56),
         ..DefaultColors::default()
     });
     t.feed(b"\x1b]12;?\x07");
@@ -956,7 +957,7 @@ fn osc_12_query_reports_current_color() {
 fn full_reset_restores_cursor_color() {
     let mut t = term(10, 1);
     t.screen_mut().set_default_colors(DefaultColors {
-        cursor: (1, 2, 3),
+        cursor: Rgb::new(1, 2, 3),
         ..DefaultColors::default()
     });
     t.feed(b"\x1b]12;#ffffff\x07\x1bc\x1b]12;?\x07");
@@ -968,12 +969,12 @@ fn full_reset_restores_cursor_color() {
 }
 
 fn colors() -> DefaultColors {
-    let mut palette = [(0, 0, 0); 256];
-    palette[1] = (0xaa, 0, 0);
+    let mut palette = [Rgb::new(0, 0, 0); 256];
+    palette[1] = Rgb::new(0xaa, 0, 0);
     DefaultColors {
-        foreground: (0xdc, 0xdc, 0xdc),
-        background: (0x18, 0x18, 0x18),
-        cursor: (0xff, 0xff, 0xff),
+        foreground: Rgb::new(0xdc, 0xdc, 0xdc),
+        background: Rgb::new(0x18, 0x18, 0x18),
+        cursor: Rgb::new(0xff, 0xff, 0xff),
         palette,
     }
 }
@@ -990,8 +991,8 @@ fn osc_10_11_query_and_set() {
     // OSC 10 with two colors also sets the background.
     t.feed(b"\x1b]10;#ffffff;#000000\x07");
     let o = t.screen().color_overrides();
-    assert_eq!(o.foreground, Some((255, 255, 255)));
-    assert_eq!(o.background, Some((0, 0, 0)));
+    assert_eq!(o.foreground, Some(Rgb::new(255, 255, 255)));
+    assert_eq!(o.background, Some(Rgb::new(0, 0, 0)));
     t.feed(b"\x1b]11;?\x07");
     assert_eq!(
         t.screen_mut().take_responses(),
@@ -1012,21 +1013,30 @@ fn osc_4_palette_query_set_and_reset() {
     );
     t.feed(b"\x1b]4;1;#00ff00;200;#0000ff\x07");
     let o = t.screen().color_overrides();
-    assert_eq!(o.palette[1], Some((0, 255, 0)));
-    assert_eq!(o.palette[200], Some((0, 0, 255)));
+    assert_eq!(o.palette[1], Some(Rgb::new(0, 255, 0)));
+    assert_eq!(o.palette[200], Some(Rgb::new(0, 0, 255)));
     t.feed(b"\x1b]104;1\x07");
     assert_eq!(t.screen().color_overrides().palette[1], None);
-    assert_eq!(t.screen().color_overrides().palette[200], Some((0, 0, 255)));
+    assert_eq!(
+        t.screen().color_overrides().palette[200],
+        Some(Rgb::new(0, 0, 255))
+    );
     t.feed(b"\x1b]104\x07");
     assert!(t.screen().color_overrides().is_empty());
 }
 
 #[test]
 fn color_specifications() {
-    assert_eq!(super::parse_color(b"#fff"), Ok((255, 255, 255)));
-    assert_eq!(super::parse_color(b"#102030"), Ok((0x10, 0x20, 0x30)));
-    assert_eq!(super::parse_color(b"rgb:f/0/8"), Ok((255, 0, 136)));
-    assert_eq!(super::parse_color(b"rgb:ffff/0000/8080"), Ok((255, 0, 128)));
+    assert_eq!(super::parse_color(b"#fff"), Ok(Rgb::new(255, 255, 255)));
+    assert_eq!(
+        super::parse_color(b"#102030"),
+        Ok(Rgb::new(0x10, 0x20, 0x30))
+    );
+    assert_eq!(super::parse_color(b"rgb:f/0/8"), Ok(Rgb::new(255, 0, 136)));
+    assert_eq!(
+        super::parse_color(b"rgb:ffff/0000/8080"),
+        Ok(Rgb::new(255, 0, 128))
+    );
     assert!(super::parse_color(b"rgb:1/2").is_err());
     assert!(super::parse_color(b"rgb:1/2/3/4").is_err());
     assert!(super::parse_color(b"#12345").is_err());

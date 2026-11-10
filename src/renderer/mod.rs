@@ -114,12 +114,11 @@ impl Theme {
 
     /// The configured colors, as color queries report them.
     pub fn default_colors(&self) -> DefaultColors {
-        let rgb = |c: Rgb| (c.r, c.g, c.b);
         DefaultColors {
-            foreground: rgb(self.foreground),
-            background: rgb(self.background),
-            cursor: rgb(self.cursor),
-            palette: std::array::from_fn(|i| rgb(self.indexed(i as u8))),
+            foreground: self.foreground,
+            background: self.background,
+            cursor: self.cursor,
+            palette: std::array::from_fn(|i| self.indexed(i as u8)),
         }
     }
 
@@ -129,15 +128,14 @@ impl Theme {
         if colors.is_empty() {
             return Cow::Borrowed(self);
         }
-        let rgb = |(r, g, b): (u8, u8, u8)| Rgb::new(r, g, b);
         let mut theme = self.clone();
         if let Some(c) = colors.foreground {
-            theme.foreground = rgb(c);
+            theme.foreground = c;
         }
         if let Some(c) = colors.background {
-            theme.background = rgb(c);
+            theme.background = c;
         }
-        theme.overrides = colors.palette.map(|c| c.map(rgb));
+        theme.overrides = colors.palette;
         Cow::Owned(theme)
     }
 
@@ -484,9 +482,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         screen.cursor_visible() && frame.preedit.is_none() && frame.vi_cursor.is_none();
     let (cursor_row, cursor_col) = screen.cursor();
     let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
-    let cursor_color = screen
-        .cursor_color()
-        .map_or(theme.cursor, |(r, g, b)| Rgb::new(r, g, b));
+    let cursor_color = screen.cursor_color().unwrap_or(theme.cursor);
     let offset = screen.display_offset() as isize;
     let mut images = Vec::new();
     if !screen.graphics().is_empty() {
