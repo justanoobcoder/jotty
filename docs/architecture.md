@@ -30,7 +30,7 @@ on the CPU.
 | `color.rs` | `Rgb`, the color type the config, the terminal and the renderers share | no |
 | `config.rs` | TOML config with defaults, validation and clamping; merges the overrides over the config file | no |
 | `settings/` | `jotty config`: the overrides file, the TUI (ratatui), the key schema it edits, and the TOML → Nix export | no |
-| `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty graphics | no |
+| `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty and sixel graphics | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
 | `input.rs` | Key → bytes encoding (xterm and the kitty keyboard protocol), mouse reports, paste encoding | xkb keysyms only |
@@ -136,6 +136,17 @@ U+10EEEE: its foreground color gives the image id, its underline color the
 placement, and combining diacritics the image row and column. The screen
 also answers `CSI 14/16/18 t`, and the pty's window size carries the grid's
 size in pixels, from which programs compute the cell size.
+
+**Sixel (`terminal/sixel.rs`).** A sixel image (`DCS q … ST`) is decoded
+as vte passes its bytes (`hook`, `put`, `unhook`) onto an RGBA canvas that
+grows with it, and then placed at the cursor like a kitty image, flagged as
+a sixel. The cursor ends on the image's last row, in the column it started
+at, as in xterm and foot. Text written over a sixel image, and a sixel image
+placed over another, cuts the cells it covers out of it: the placement is
+replaced by up to four pieces that show parts of the image (`Placement::crop`).
+Printing checks a flag first, so it costs next to nothing while no sixel image is on
+screen. Primary device attributes (DA1) report sixel support (`4`), and
+XTSMGRAPHICS answers the number of color registers and the largest size.
 
 When a row scrolls off the top of the full-screen region on the primary
 screen, it moves into history. If the user is looking at history at that

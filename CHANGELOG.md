@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+- Display sixel images
+
 ## 2.0.0
 
 - Add `jotty config`, a TUI to try settings live; its changes are saved to

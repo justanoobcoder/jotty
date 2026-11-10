@@ -6,6 +6,7 @@
 
 pub mod graphics;
 pub mod grid;
+mod sixel;
 mod strings;
 
 use graphics::Graphics;
@@ -327,6 +328,8 @@ pub struct Screen {
     responses: Vec<u8>,
     /// Data of a DECRQSS request (`DCS $ q … ST`) being received.
     decrqss: Option<Vec<u8>>,
+    /// The sixel image (`DCS q … ST`) being received.
+    sixel: Option<Box<sixel::Decoder>>,
     bell: bool,
     /// Desktop notifications programs asked for (OSC 9, OSC 777), oldest
     /// first.
@@ -472,6 +475,7 @@ impl Screen {
             synchronized_updates: 0,
             responses: Vec::new(),
             decrqss: None,
+            sixel: None,
             bell: false,
             notifications: Vec::new(),
             dirty: true,
@@ -1086,36 +1090,67 @@ impl Screen {
         let Some(command) = body.strip_prefix(b"G") else {
             return;
         };
-        let top = self.top_line();
-        let ctx = graphics::Context {
-            top,
-            rows: self.rows,
-            cursor: (
-                top + self.cursor.row as i64,
-                self.cursor.col.min(self.cols - 1),
-            ),
-        };
+        let ctx = self.graphics_context();
         let outcome = self.graphics_mut().command(command, &ctx);
         if let Some(response) = outcome.response {
             self.responses.extend_from_slice(response.as_bytes());
         }
         if let Some((cols, rows)) = outcome.moved {
             // Past the image: after its last column, on its last row.
-            let mut col = self.cursor.col + cols as usize;
-            let mut row = self.cursor.row + rows as usize - 1;
+            let col = self.cursor.col + cols as usize;
+            let row = self.cursor.row + rows as usize - 1;
             if col >= self.cols {
-                col = 0;
-                row += 1;
+                self.move_past_image(row + 1, 0);
+            } else {
+                self.move_past_image(row, col);
             }
-            if self.cursor.row <= self.scroll_bottom && row > self.scroll_bottom {
-                self.scroll_up(row - self.scroll_bottom);
-                row = self.scroll_bottom;
-            }
-            self.cursor.row = row.min(self.rows - 1);
-            self.cursor.col = col;
-            self.cursor.pending_wrap = false;
         }
         self.dirty = true;
+    }
+
+    /// Shows a finished sixel image at the cursor and moves the cursor to
+    /// its last row, in the column it started at, as xterm and foot do.
+    fn place_sixel(&mut self, image: sixel::Image) {
+        let ctx = self.graphics_context();
+        let (_, rows) = self.graphics_mut().place_sixel(image, &ctx);
+        self.move_past_image(self.cursor.row + rows as usize - 1, ctx.cursor.1);
+        self.dirty = true;
+    }
+
+    /// The screen and the cursor, for placing images.
+    fn graphics_context(&self) -> graphics::Context {
+        let top = self.top_line();
+        graphics::Context {
+            top,
+            rows: self.rows,
+            cursor: (
+                top + self.cursor.row as i64,
+                self.cursor.col.min(self.cols - 1),
+            ),
+        }
+    }
+
+    /// Moves the cursor to `row` and `col` past an image, scrolling the
+    /// region up when `row` is below it.
+    fn move_past_image(&mut self, mut row: usize, col: usize) {
+        if self.cursor.row <= self.scroll_bottom && row > self.scroll_bottom {
+            self.scroll_up(row - self.scroll_bottom);
+            row = self.scroll_bottom;
+        }
+        self.cursor.row = row.min(self.rows - 1);
+        self.cursor.col = col;
+        self.cursor.pending_wrap = false;
+    }
+
+    /// Text written to columns `start..end` of `row` replaces the sixel
+    /// images there.
+    fn erase_sixels(&mut self, row: usize, start: usize, end: usize) {
+        // Printing runs this for every character.
+        if !self.graphics().may_have_sixels() {
+            return;
+        }
+        let line = self.top_line() + row as i64;
+        self.graphics_mut().erase_sixels(line..line + 1, start..end);
     }
 
     // ---- Resizing -------------------------------------------------------
@@ -1393,6 +1428,7 @@ impl Screen {
         }
         self.split_wide(row, start);
         self.split_wide(row, end - 1);
+        self.erase_sixels(row, start, end);
         let blank = Cell::blank(&self.cursor.template);
         self.grid_mut().rows[row].cells_in(start..end).fill(blank);
         self.dirty = true;
@@ -1521,6 +1557,7 @@ impl Screen {
             let (row, col) = (self.cursor.row, self.cursor.col);
             let (chunk, rest) = run.split_at(run.len().min(self.cols - col));
             run = rest;
+            self.erase_sixels(row, col, col + chunk.len());
             let template = self.cursor.template;
             let cells = self.grid_mut().rows[row].cells_in(col..col + chunk.len());
             // Branchless, so that it vectorizes.
@@ -1587,6 +1624,7 @@ impl Screen {
         if width == 2 {
             self.split_wide(row, col + 1);
         }
+        self.erase_sixels(row, col, col + width);
         let mut cell = self.cursor.template;
         cell.c = c;
         cell.flags.insert(flags);
@@ -1822,6 +1860,26 @@ impl Screen {
             _ => self.cursor_color = Some(rgb),
         }
         self.dirty = true;
+    }
+
+    /// Answers XTSMGRAPHICS (`CSI ? Pi ; Pa ; Pv S`) for sixel graphics:
+    /// reads of the number of color registers (`Pi = 1`) and of the image
+    /// size (`Pi = 2`), current (`Pa = 1`) or largest (`Pa = 4`). Changing
+    /// them fails.
+    fn report_graphics_attribute(&mut self, item: u16, action: u16) {
+        let reply = match (item, action) {
+            (1, 1 | 4) => format!("\x1b[?1;0;{}S", sixel::REGISTERS),
+            (2, 1) => {
+                let max = sixel::MAX_SIDE as u32;
+                let width = (self.cols as u32 * self.cell_size.0).min(max);
+                let height = (self.rows as u32 * self.cell_size.1).min(max);
+                format!("\x1b[?2;0;{width};{height}S")
+            }
+            (2, 4) => format!("\x1b[?2;0;{0};{0}S", sixel::MAX_SIDE),
+            (1 | 2, _) => format!("\x1b[?{item};3;0S"),
+            _ => format!("\x1b[?{item};1;0S"),
+        };
+        self.responses.extend_from_slice(reply.as_bytes());
     }
 
     /// Answers DECRQM (`CSI ? Ps $ p` or `CSI Ps $ p`).
@@ -2233,7 +2291,8 @@ impl Perform for Screen {
                     }
                 }
             }
-            ([], 'c') if raw(0) == 0 => self.responses.extend_from_slice(b"\x1b[?62;22c"),
+            ([], 'c') if raw(0) == 0 => self.responses.extend_from_slice(b"\x1b[?62;4;22c"),
+            ([b'?'], 'S') => self.report_graphics_attribute(raw(0), raw(1)),
             ([b'>'], 'c') if raw(0) == 0 => self.responses.extend_from_slice(b"\x1b[>1;10;0c"),
             ([], 'n') => match raw(0) {
                 5 => self.responses.extend_from_slice(b"\x1b[0n"),
@@ -2365,19 +2424,32 @@ impl Perform for Screen {
         self.dirty = true;
     }
 
-    fn hook(&mut self, _params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
         if ignore {
             return;
         }
         self.last_printed = None;
         self.cluster_start = None;
-        if intermediates == b"$" && action == 'q' {
-            self.decrqss = Some(Vec::new());
+        match (intermediates, action) {
+            (b"$", 'q') => self.decrqss = Some(Vec::new()),
+            (b"", 'q') => {
+                // P2 = 1 leaves the pixels the image doesn't set transparent.
+                let transparent = params.iter().nth(1).and_then(|p| p.first()) == Some(&1);
+                let Rgb { r, g, b } = self
+                    .colors
+                    .background
+                    .unwrap_or(self.default_colors.background);
+                let decoder = sixel::Decoder::new(transparent, [r, g, b]);
+                self.sixel = Some(Box::new(decoder));
+            }
+            _ => {}
         }
     }
 
     fn put(&mut self, byte: u8) {
-        if let Some(data) = &mut self.decrqss
+        if let Some(decoder) = &mut self.sixel {
+            decoder.put(byte);
+        } else if let Some(data) = &mut self.decrqss
             && data.len() < 16
         {
             data.push(byte);
@@ -2387,6 +2459,9 @@ impl Perform for Screen {
     fn unhook(&mut self) {
         if let Some(request) = self.decrqss.take() {
             self.report_setting(&request);
+        }
+        if let Some(image) = self.sixel.take().and_then(|d| d.finish()) {
+            self.place_sixel(image);
         }
     }
 

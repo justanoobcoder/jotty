@@ -63,7 +63,7 @@ nothing surprises you.
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
 - Not implemented: `modifyOtherKeys`, OSC 52
-  clipboard access, grapheme cluster mode (2027), sixel graphics,
+  clipboard access, grapheme cluster mode (2027),
   blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
   (logged at `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
@@ -72,6 +72,20 @@ nothing surprises you.
   evicted. Images are decoded on the event loop, so a very large one stalls
   the window while it decodes. Images in the history move with
   the cursor's line when a width change reflows the text.
+- **Sixel graphics**: images are at most 4096 pixels per side (the rest is
+  cut off) and are drawn at their pixel size, whatever the font size. The
+  pixel aspect ratio is taken as 1:1. Color registers are private to each
+  image. Sixel display mode (DECSDM, mode 80) and the cursor-right-of-image
+  mode (8452) are not supported, nor is changing the number of color
+  registers or the image size with XTSMGRAPHICS. Cells a sixel image covers
+  are cut out of it at the cell size it was placed with; after a font size
+  change the cut is off. An image may allocate and paint 16384 pixels per
+  byte it is sent in (a real image needs at most about 7000); what it draws
+  past that is dropped, so a few bytes can't cost a full canvas. Still,
+  heavily repeated sixels make a few megabytes of output slow to decode.
+  An image cut short by CAN or SUB is shown as far as it got, where xterm
+  drops it. Cutting images into pieces counts toward the 4096 placements,
+  past which the oldest pieces go.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and
