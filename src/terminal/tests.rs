@@ -68,7 +68,7 @@ fn ascii_runs_wrap_across_rows_and_scroll() {
 }
 
 #[test]
-fn queued_ascii_is_written_before_the_next_sequence() {
+fn ascii_runs_are_written_before_the_next_sequence() {
     let mut t = term(10, 2);
     // Across feeds, before a report, and before an attribute change.
     t.feed(b"ab");
