@@ -128,7 +128,7 @@ jobs:
       - name: Install build tools and libraries
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust wayland libxkbcommon \
-            libglvnd fontconfig ncurses
+            libglvnd fontconfig hicolor-icon-theme ncurses
       - uses: actions/checkout@v7
       - name: Build with makepkg
         run: |
