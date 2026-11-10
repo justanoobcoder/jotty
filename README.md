@@ -164,4 +164,5 @@ ends (OSC 133). See [Shell integration](docs/configuration.md#shell-integration)
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE). The licenses of the crates compiled into jotty
+are in [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).
