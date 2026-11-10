@@ -112,7 +112,7 @@ pub struct Cell {
     pub extra: u16,
 }
 
-const _: () = assert!(std::mem::size_of::<Cell>() == 16);
+const _: () = assert!(std::mem::size_of::<Cell>() == 16, "a Cell must stay 16 bytes");
 
 impl Default for Cell {
     fn default() -> Self {
