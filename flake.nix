@@ -33,6 +33,8 @@
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
+              ./LICENSE
+              ./THIRD-PARTY-LICENSES
               ./src
               ./extra
               ./docs/config.example.toml
@@ -51,6 +53,7 @@
 
           # jotty finds the entry next to its executable and sets TERM=jotty.
           postInstall = ''
+            install -Dm644 LICENSE THIRD-PARTY-LICENSES -t $out/share/licenses/jotty
             install -Dm644 extra/jotty.desktop -t $out/share/applications
             install -Dm644 extra/jotty.svg -t $out/share/icons/hicolor/scalable/apps
             mkdir -p $out/share/terminfo
@@ -119,6 +122,7 @@
             clippy
             rustfmt
             rust-analyzer
+            cargo-about # scripts/third-party-licenses.sh
             pkg-config
             ncurses
           ];

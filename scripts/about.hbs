@@ -1,0 +1,17 @@
+Third-party licenses of jotty
+
+The crates compiled into jotty, grouped by license text. When a crate ships
+no usable license file, the standard text of its declared license is used:
+its copyright holders are then the authors named here and in its repository.
+{{#each licenses}}
+
+================================================================================
+{{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}{{#if crate.repository}} <{{crate.repository}}>{{/if}}{{#if crate.authors}} [{{#each crate.authors}}{{#if @index}}, {{/if}}{{{this}}}{{/each}}]{{/if}}
+{{/each}}
+
+{{{text}}}
+{{/each}}
