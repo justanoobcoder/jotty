@@ -26,7 +26,7 @@ pub struct Config {
     pub files: Files,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UrlConfig {
     /// Command that opens a link; the link is appended as its last argument.
@@ -51,7 +51,7 @@ impl Default for UrlConfig {
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileKind {
     /// File name extensions, without the dot, matched case-insensitively.
     pub extensions: Vec<String>,
@@ -200,7 +200,7 @@ pub enum RendererKind {
     Cpu,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
@@ -226,7 +226,7 @@ impl Default for TerminalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorConfig {
     pub foreground: Rgb,
