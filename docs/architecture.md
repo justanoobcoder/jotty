@@ -27,6 +27,7 @@ on the CPU.
 | --- | --- | --- |
 | `main.rs` | Logging, CLI, config loading, error reporting | no |
 | `cli.rs` | Argument parsing | no |
+| `color.rs` | `Rgb`, the color type the config, the terminal and the renderers share | no |
 | `config.rs` | TOML config with defaults, validation and clamping; merges the overrides over the config file | no |
 | `settings/` | `jotty config`: the overrides file, the TUI (ratatui), the key schema it edits, and the TOML → Nix export | no |
 | `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty graphics | no |
