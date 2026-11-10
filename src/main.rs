@@ -14,6 +14,7 @@ mod pty;
 mod renderer;
 mod search;
 mod selection;
+mod settings;
 mod terminal;
 mod terminfo;
 mod text;
@@ -30,6 +31,7 @@ fn main() -> ExitCode {
 
     let options = match cli::parse(std::env::args_os().skip(1)) {
         Ok(Parsed::Run(options)) => options,
+        Ok(Parsed::Config(config, command)) => return settings::run(command, config.as_deref()),
         Ok(Parsed::Help) => {
             print!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
