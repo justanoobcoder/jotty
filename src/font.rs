@@ -124,10 +124,14 @@ struct FontFile {
 struct Fontconfig(*mut fc::FcConfig);
 
 impl Fontconfig {
-    fn new() -> Option<Fontconfig> {
+    fn try_new() -> Result<Fontconfig, &'static str> {
         // SAFETY: returns an owned config or null.
         let config = unsafe { fc::FcInitLoadConfigAndFonts() };
-        (!config.is_null()).then_some(Fontconfig(config))
+        if config.is_null() {
+            Err("fontconfig cannot load its configuration")
+        } else {
+            Ok(Fontconfig(config))
+        }
     }
 
     /// Finds the best font file for `family` in `style`, optionally
@@ -222,16 +226,17 @@ impl Fontconfig {
 
 /// Finds and loads the system's color emoji font.
 pub fn load_emoji_font() -> Option<EmojiFont> {
-    let file = Fontconfig::new()?.find_color_emoji()?;
-    let font = EmojiFont::new(map_file(&file.path).ok()?, file.index & 0xffff);
-    match &font {
-        Some(_) => log::info!("loading emoji font {}", file.path.display()),
-        None => log::info!(
-            "{}: no color bitmaps, emoji stay monochrome",
-            file.path.display()
-        ),
+    let file = Fontconfig::try_new().ok()?.find_color_emoji()?;
+    match EmojiFont::try_new(map_file(&file.path).ok()?, file.index & 0xffff) {
+        Ok(font) => {
+            log::info!("loading emoji font {}", file.path.display());
+            Some(font)
+        }
+        Err(e) => {
+            log::info!("{}: {e}, emoji stay monochrome", file.path.display());
+            None
+        }
     }
-    font
 }
 
 impl Drop for Fontconfig {
@@ -267,7 +272,7 @@ pub struct Fonts {
 impl Fonts {
     /// Loads `family` in all four styles at `px` pixels per em.
     pub fn new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
-        let fontconfig = Fontconfig::new().ok_or_else(|| FontError::NotFound(family.into()))?;
+        let fontconfig = Fontconfig::try_new().map_err(|_| FontError::NotFound(family.into()))?;
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),

@@ -10,11 +10,15 @@ pub struct EmojiFont {
 }
 
 impl EmojiFont {
-    /// Parses face `index` of `data`; `None` unless it has color bitmaps.
-    pub fn new(data: &'static [u8], index: u32) -> Option<EmojiFont> {
-        let face = Face::parse(data, index).ok()?;
+    /// Parses face `index` of `data`. Fails unless it has color bitmaps.
+    pub fn try_new(data: &'static [u8], index: u32) -> Result<EmojiFont, &'static str> {
+        let face = Face::parse(data, index).map_err(|_| "not a font file")?;
         let tables = face.tables();
-        (tables.cbdt.is_some() || tables.sbix.is_some()).then_some(EmojiFont { face })
+        if tables.cbdt.is_some() || tables.sbix.is_some() {
+            Ok(EmojiFont { face })
+        } else {
+            Err("no color bitmaps")
+        }
     }
 
     /// The glyph showing `text` (a character or emoji sequence), after the
@@ -44,7 +48,7 @@ impl EmojiFont {
     ) -> Option<(u32, u32, Vec<u8>)> {
         let image = self.face.glyph_raster_image(glyph, height.max(1) as u16)?;
         let (src_w, src_h, rgba) = match image.format {
-            RasterImageFormat::PNG => decode_png(image.data)?,
+            RasterImageFormat::PNG => decode_png(image.data).ok()?,
             RasterImageFormat::BitmapPremulBgra32 => {
                 let (w, h) = (u32::from(image.width), u32::from(image.height));
                 // Not in u32: the sides come from the font file, up to 65535.
@@ -104,14 +108,15 @@ fn apply_ligatures(face: &Face, glyphs: &mut Vec<GlyphId>) {
 }
 
 /// Decodes a PNG into premultiplied RGBA.
-fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), &'static str> {
+    const BAD_PNG: &str = "not a valid PNG";
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(
         png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
     );
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()?];
-    let info = reader.next_frame(&mut buf).ok()?;
+    let mut reader = decoder.read_info().map_err(|_| BAD_PNG)?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("the PNG is too large")?];
+    let info = reader.next_frame(&mut buf).map_err(|_| BAD_PNG)?;
     let pixels = &buf[..info.buffer_size()];
     let rgba: Vec<u8> = match info.color_type {
         png::ColorType::Rgba => pixels.to_vec(),
@@ -121,7 +126,7 @@ fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             .iter()
             .flat_map(|&[v, a]| [v, v, v, a])
             .collect(),
-        _ => return None,
+        _ => return Err("unsupported PNG color type"),
     };
     let mut rgba = rgba;
     for px in rgba.as_chunks_mut::<4>().0 {
@@ -130,7 +135,7 @@ fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             *c = ((u32::from(*c) * a + 127) / 255) as u8;
         }
     }
-    Some((info.width, info.height, rgba))
+    Ok((info.width, info.height, rgba))
 }
 
 /// Resizes premultiplied RGBA pixels by averaging the source area under
