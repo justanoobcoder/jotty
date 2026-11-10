@@ -271,7 +271,7 @@ pub struct Fonts {
 
 impl Fonts {
     /// Loads `family` in all four styles at `px` pixels per em.
-    pub fn new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
+    pub fn try_new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
         let fontconfig = Fontconfig::try_new().map_err(|_| FontError::NotFound(family.into()))?;
         let mut fonts = Fonts {
             fontconfig,
@@ -1551,7 +1551,7 @@ mod tests {
 
     #[test]
     fn vs15_asks_for_the_text_form_in_a_cluster() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             return;
         };
         let glyph =
@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn marks_are_not_combined_with_a_color_glyph() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             return;
         };
         // A color bitmap has four bytes per pixel, which must stay intact.
@@ -1974,7 +1974,7 @@ mod tests {
     /// such as the Nix build sandbox.
     #[test]
     fn loads_system_monospace() {
-        let Ok(mut fonts) = Fonts::new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
             eprintln!("no system fonts, skipping");
             return;
         };

@@ -45,7 +45,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(
+    pub fn try_new(
         shm: &Shm,
         surface: WlSurface,
         size: (u32, u32),

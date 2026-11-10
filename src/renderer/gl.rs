@@ -78,7 +78,7 @@ impl Egl {
     /// # Safety
     /// `display_ptr` must be a live `wl_display` and `surface` a live
     /// `wl_surface` on it, both outliving the returned value.
-    unsafe fn new(
+    unsafe fn try_new(
         display_ptr: *mut c_void,
         surface: ObjectId,
         width: i32,
@@ -287,7 +287,7 @@ impl Renderer {
     /// # Safety
     /// `display_ptr` must be the connection's live `wl_display` and
     /// `surface` a live `wl_surface`, both outliving the renderer.
-    pub unsafe fn new(
+    pub unsafe fn try_new(
         display_ptr: *mut c_void,
         surface: ObjectId,
         size: (u32, u32),
@@ -295,7 +295,7 @@ impl Renderer {
         theme: Theme,
     ) -> Result<Renderer, String> {
         // SAFETY: this function's caller promises what `Egl::new` requires.
-        let egl = unsafe { Egl::new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
+        let egl = unsafe { Egl::try_new(display_ptr, surface, size.0 as i32, size.1 as i32)? };
         // SAFETY: the context `egl` made is current, so its loader returns its functions.
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {

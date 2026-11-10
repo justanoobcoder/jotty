@@ -353,7 +353,7 @@ pub fn run(
         .ok();
 
     let load_fonts = || {
-        Fonts::new(
+        Fonts::try_new(
             &config.font.family,
             &config.font.fallback,
             font::points_to_px(config.font.size, 1.0),
@@ -403,9 +403,9 @@ pub fn run(
         .values()
         .map(|k| k.extensions.clone())
         .collect();
-    let links = Detector::new(&kinds, &config.url.regex).unwrap_or_else(|e| {
+    let links = Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
-        Detector::new(&kinds, &[]).expect("the built-in patterns are valid")
+        Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
     });
     let theme = Theme::from_config(&config);
     let mut fonts = Some(fonts);
@@ -414,7 +414,7 @@ pub fn run(
         // connection until after `App` is dropped), and `App` drops the
         // renderer before the window.
         RendererKind::Gpu => match unsafe {
-            gl::Renderer::new(
+            gl::Renderer::try_new(
                 conn.backend().display_ptr().cast(),
                 window.wl_surface().id(),
                 size,
@@ -432,7 +432,7 @@ pub fn run(
     };
     let renderer = match gpu {
         Some(renderer) => renderer,
-        None => Renderer::Cpu(Box::new(software::Renderer::new(
+        None => Renderer::Cpu(Box::new(software::Renderer::try_new(
             &shm,
             window.wl_surface().clone(),
             size,
@@ -1446,7 +1446,7 @@ impl App {
         let mut relayout = old.window.padding != new.window.padding;
         if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
             let px = font::points_to_px(self.font_points, self.scale as f32);
-            match Fonts::new(&new.font.family, &new.font.fallback, px) {
+            match Fonts::try_new(&new.font.family, &new.font.fallback, px) {
                 Ok(fonts) => {
                     self.renderer.set_fonts(fonts);
                     relayout = true;
@@ -1491,7 +1491,7 @@ impl App {
         if (&old.url, &old.files) != (&new.url, &new.files) {
             let kinds: Vec<Vec<String>> =
                 new.files.0.values().map(|k| k.extensions.clone()).collect();
-            match Detector::new(&kinds, &new.url.regex) {
+            match Detector::try_new(&kinds, &new.url.regex) {
                 Ok(links) => self.links = links,
                 Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
             }

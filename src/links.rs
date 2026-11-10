@@ -37,7 +37,7 @@ pub struct Detector {
 impl Detector {
     /// A detector for URLs, paths of files with the extensions of each of
     /// `kinds` (such as `png`), and the `extra` patterns from the config.
-    pub fn new(kinds: &[Vec<String>], extra: &[String]) -> Result<Detector, regex::Error> {
+    pub fn try_new(kinds: &[Vec<String>], extra: &[String]) -> Result<Detector, regex::Error> {
         let kinds: Vec<Vec<String>> = kinds
             .iter()
             .map(|k| {
@@ -229,7 +229,7 @@ mod tests {
     fn finds_urls_under_the_pointer() {
         let mut t = Terminal::new(60, 1, 0);
         t.feed(b"see https://example.org/a_(b)?q=1, or mailto:me@x.org.");
-        let d = Detector::new(&[], &[]).unwrap();
+        let d = Detector::try_new(&[], &[]).unwrap();
         let link = d.link_at(t.screen(), p(0, 10), |_| None).unwrap();
         assert_eq!(link.target, "https://example.org/a_(b)?q=1");
         assert_eq!((link.start, link.end), (p(0, 4), p(0, 32)));
@@ -250,7 +250,7 @@ mod tests {
     fn urls_continue_on_wrapped_rows() {
         let mut t = Terminal::new(10, 3, 0);
         t.feed(b"x https://example.org y");
-        let d = Detector::new(&[], &[]).unwrap();
+        let d = Detector::try_new(&[], &[]).unwrap();
         let link = d.link_at(t.screen(), p(1, 3), |_| None).unwrap();
         assert_eq!(link.target, "https://example.org");
         assert_eq!((link.start, link.end), (p(0, 2), p(2, 0)));
@@ -260,7 +260,7 @@ mod tests {
     fn hyperlinks_take_precedence() {
         let mut t = Terminal::new(40, 1, 0);
         t.feed(b"\x1b]8;;https://a.org\x1b\\click here\x1b]8;;\x1b\\ https://b.org");
-        let d = Detector::new(&[], &[]).unwrap();
+        let d = Detector::try_new(&[], &[]).unwrap();
         let link = d.link_at(t.screen(), p(0, 3), |_| None).unwrap();
         assert_eq!(link.target, "https://a.org");
         assert_eq!((link.start, link.end), (p(0, 0), p(0, 9)));
@@ -271,15 +271,15 @@ mod tests {
     fn configured_patterns() {
         let mut t = Terminal::new(40, 1, 0);
         t.feed(b"fixes JOT-123 and #45");
-        let d = Detector::new(&[], &[r"JOT-\d+".into()]).unwrap();
+        let d = Detector::try_new(&[], &[r"JOT-\d+".into()]).unwrap();
         assert_eq!(target(&d, &t, p(0, 8)).as_deref(), Some("JOT-123"));
         assert_eq!(target(&d, &t, p(0, 19)), None);
-        assert!(Detector::new(&[], &["(".into()]).is_err());
+        assert!(Detector::try_new(&[], &["(".into()]).is_err());
     }
 
     fn media() -> Detector {
         let kinds = [vec!["png".into(), "JPG".into()], vec![".mp4".into()]];
-        Detector::new(&kinds, &[]).unwrap()
+        Detector::try_new(&kinds, &[]).unwrap()
     }
 
     /// Resolves paths as if every file existed under `/home/u`.
@@ -333,7 +333,7 @@ mod tests {
     fn wide_characters_map_to_their_cells() {
         let mut t = Terminal::new(40, 1, 0);
         t.feed("中文 https://例え.jp/パス end".as_bytes());
-        let d = Detector::new(&[], &[]).unwrap();
+        let d = Detector::try_new(&[], &[]).unwrap();
         let link = d.link_at(t.screen(), p(0, 12), |_| None).unwrap();
         assert_eq!(link.target, "https://例え.jp/パス");
         assert_eq!((link.start, link.end), (p(0, 5), p(0, 23)));
