@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_OSC_BYTES,
+    MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
+};
 
 fn term(cols: usize, rows: usize) -> Terminal {
     Terminal::new(cols, rows, 100)
@@ -1018,14 +1021,17 @@ fn osc_4_palette_query_set_and_reset() {
 
 #[test]
 fn color_specifications() {
-    assert_eq!(parse_color(b"#fff"), Some((255, 255, 255)));
-    assert_eq!(parse_color(b"#102030"), Some((0x10, 0x20, 0x30)));
-    assert_eq!(parse_color(b"rgb:f/0/8"), Some((255, 0, 136)));
-    assert_eq!(parse_color(b"rgb:ffff/0000/8080"), Some((255, 0, 128)));
-    assert_eq!(parse_color(b"rgb:1/2"), None);
-    assert_eq!(parse_color(b"rgb:1/2/3/4"), None);
-    assert_eq!(parse_color(b"#12345"), None);
-    assert_eq!(parse_color(b"red"), None);
+    assert_eq!(super::parse_color(b"#fff"), Some((255, 255, 255)));
+    assert_eq!(super::parse_color(b"#102030"), Some((0x10, 0x20, 0x30)));
+    assert_eq!(super::parse_color(b"rgb:f/0/8"), Some((255, 0, 136)));
+    assert_eq!(
+        super::parse_color(b"rgb:ffff/0000/8080"),
+        Some((255, 0, 128))
+    );
+    assert_eq!(super::parse_color(b"rgb:1/2"), None);
+    assert_eq!(super::parse_color(b"rgb:1/2/3/4"), None);
+    assert_eq!(super::parse_color(b"#12345"), None);
+    assert_eq!(super::parse_color(b"red"), None);
 }
 
 #[test]
