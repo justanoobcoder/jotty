@@ -1476,7 +1476,10 @@ fn map_file(path: &Path) -> io::Result<&'static [u8]> {
     let metadata = file.metadata()?;
     // By file, not by name: an update replaces the file under the same name.
     let key = (metadata.dev(), metadata.ino());
-    let mut mappings = MAPPINGS.lock().unwrap_or_else(|e| e.into_inner());
+    // A panic while the lock was held may have left the map half updated.
+    let mut mappings = MAPPINGS
+        .lock()
+        .map_err(|_| io::Error::other("the font mappings lock is poisoned"))?;
     let mappings = mappings.get_or_insert_default();
     if let Some(&data) = mappings.get(&key) {
         return Ok(data);
