@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::terminfo::Term;
@@ -211,7 +212,7 @@ impl Pty {
 
     /// The current directory of the program in the foreground (the shell,
     /// or what it runs), for resolving relative paths it printed.
-    pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+    pub fn foreground_cwd(&self) -> Option<PathBuf> {
         // SAFETY: tcgetpgrp only reads the terminal's foreground group.
         let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
         // The group's leader may be gone while the group lives on.
@@ -272,8 +273,9 @@ pub fn default_shell() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::{Duration, Instant};
+
+    use super::*;
 
     const SIZE: WindowSize = WindowSize {
         cols: 80,

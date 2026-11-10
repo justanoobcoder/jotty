@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn both_forms_of_a_marked_letter_match() {
-        let mut t = crate::terminal::Terminal::new(20, 1, 0);
+        let mut t = Terminal::new(20, 1, 0);
         t.feed("cafe\u{301} ha\u{300} ha".as_bytes());
         let from = Point { line: 0, col: 19 };
         for query in ["caf\u{e9}", "cafe\u{301}", "h\u{e0}"] {

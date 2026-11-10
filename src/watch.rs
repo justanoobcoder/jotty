@@ -143,8 +143,9 @@ pub fn drain(file: &mut File) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::{Duration, Instant};
+
+    use super::*;
 
     /// Waits up to a second for `ready`.
     fn eventually(mut ready: impl FnMut() -> bool) -> bool {

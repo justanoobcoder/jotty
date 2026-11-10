@@ -8,13 +8,12 @@ pub mod graphics;
 pub mod grid;
 mod strings;
 
-use unicode_segmentation::GraphemeCursor;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use vte::{Params, Perform};
-
 use graphics::Graphics;
 pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
 use strings::{StringTable, Table};
+use unicode_segmentation::GraphemeCursor;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use vte::{Params, Perform};
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;

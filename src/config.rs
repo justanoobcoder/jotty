@@ -5,10 +5,11 @@
 //! Every field has a default, so an empty or missing file is valid.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::{fmt, io};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::keybinds::Keybinds;
 
@@ -323,7 +324,7 @@ impl TryFrom<String> for Rgb {
     }
 }
 
-impl std::str::FromStr for Rgb {
+impl FromStr for Rgb {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -345,7 +346,7 @@ impl fmt::Display for Rgb {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Io(PathBuf, std::io::Error),
+    Io(PathBuf, io::Error),
     Parse(PathBuf, toml::de::Error),
 }
 
@@ -399,7 +400,7 @@ impl Config {
                 Ok(Some(text)) => text,
                 Ok(None) if !required => String::new(),
                 Ok(None) => {
-                    let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+                    let e = io::Error::from(io::ErrorKind::NotFound);
                     return Err(ConfigError::Io(path.to_path_buf(), e));
                 }
                 Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
@@ -457,7 +458,7 @@ impl Config {
 /// Writes an `f32` as the shortest decimal that reads back as it, so 12.4
 /// stays 12.4 rather than widening to 12.399999618530273 (TOML floats
 /// are 64-bit).
-fn short_f32<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+fn short_f32<S: Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
     let shortest = value.to_string().parse().unwrap_or(f64::from(*value));
     serializer.serialize_f64(shortest)
 }
@@ -481,10 +482,10 @@ fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
 }
 
 /// A file's contents, or `None` when it doesn't exist.
-pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
+pub fn read_optional(path: &Path) -> io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }

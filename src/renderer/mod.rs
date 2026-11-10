@@ -19,7 +19,7 @@ use crate::font::{self, CellMetrics, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
-use crate::terminal::{Cell, Color, CursorShape, Flags, Screen, Underline};
+use crate::terminal::{Cell, Color, CursorShape, DefaultColors, Flags, Screen, Underline};
 
 /// One of the two backends, which draw the same [`Batch`].
 pub enum Renderer {
@@ -111,9 +111,9 @@ impl Theme {
     }
 
     /// The configured colors, as color queries report them.
-    pub fn default_colors(&self) -> crate::terminal::DefaultColors {
+    pub fn default_colors(&self) -> DefaultColors {
         let rgb = |c: Rgb| (c.0, c.1, c.2);
-        crate::terminal::DefaultColors {
+        DefaultColors {
             foreground: rgb(self.foreground),
             background: rgb(self.background),
             cursor: rgb(self.cursor),

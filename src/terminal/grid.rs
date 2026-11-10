@@ -1,7 +1,7 @@
 //! Cells, rows and the screen grid with its scrollback history.
 
 use std::collections::VecDeque;
-use std::ops::Range;
+use std::ops::{BitOr, Range};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
@@ -77,7 +77,7 @@ impl Flags {
     const UNDERLINE_MASK: u16 = 0b111 << Self::UNDERLINE_SHIFT;
 }
 
-impl std::ops::BitOr for Flags {
+impl BitOr for Flags {
     type Output = Flags;
 
     fn bitor(self, rhs: Flags) -> Flags {

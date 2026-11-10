@@ -2,23 +2,23 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::fmt;
+use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-use unicode_normalization::UnicodeNormalization;
-use unicode_width::UnicodeWidthChar;
+use std::{fmt, io};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont};
 use fontconfig_sys as fc;
-
-use crate::emoji::{self, EmojiFont};
-use crate::terminal::Underline;
 use fontconfig_sys::constants::{
     FC_CHARSET, FC_COLOR, FC_FAMILY, FC_FILE, FC_INDEX, FC_SLANT, FC_SLANT_ITALIC, FC_SLANT_ROMAN,
     FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
 };
+use unicode_normalization::UnicodeNormalization;
+use unicode_width::UnicodeWidthChar;
+
+use crate::emoji::{self, EmojiFont};
+use crate::terminal::Underline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Style {
@@ -1465,11 +1465,11 @@ pub fn is_icon(c: char) -> bool {
 /// and reclaim them; that matters for fallback fonts such as Noto CJK,
 /// which are tens of megabytes. Mappings are never unmapped, as faces keep
 /// them, so a file gets one mapping however often the config is reloaded.
-fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
+fn map_file(path: &Path) -> io::Result<&'static [u8]> {
     // By device and inode.
     type Mappings = HashMap<(u64, u64), &'static [u8]>;
     static MAPPINGS: Mutex<Option<Mappings>> = Mutex::new(None);
-    let file = std::fs::File::open(path)?;
+    let file = File::open(path)?;
     let metadata = file.metadata()?;
     // By file, not by name: an update replaces the file under the same name.
     let key = (metadata.dev(), metadata.ino());
@@ -1483,10 +1483,10 @@ fn map_file(path: &Path) -> std::io::Result<&'static [u8]> {
     Ok(data)
 }
 
-fn map_new_file(file: &std::fs::File, len: u64) -> std::io::Result<&'static [u8]> {
-    let len = usize::try_from(len).map_err(std::io::Error::other)?;
+fn map_new_file(file: &File, len: u64) -> io::Result<&'static [u8]> {
+    let len = usize::try_from(len).map_err(io::Error::other)?;
     if len == 0 {
-        return Err(std::io::Error::other("empty file"));
+        return Err(io::Error::other("empty file"));
     }
     // SAFETY: a private read-only mapping of an open file, which stays valid
     // after the descriptor is closed. Font files are not modified in place
@@ -1503,7 +1503,7 @@ fn map_new_file(file: &std::fs::File, len: u64) -> std::io::Result<&'static [u8]
         )
     };
     if ptr == libc::MAP_FAILED {
-        return Err(std::io::Error::last_os_error());
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: the mapping is `len` readable bytes and is never unmapped.
     Ok(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })

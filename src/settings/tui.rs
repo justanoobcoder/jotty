@@ -2,6 +2,7 @@
 //! overrides file right away, so running windows show it as you go.
 
 use std::io;
+use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{
@@ -13,12 +14,12 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use super::Layers;
 use super::schema::{self, Key, SECTIONS};
 use crate::config::{Config, DEFAULT_PALETTE, Rgb};
 use crate::settings;
-use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -851,8 +852,8 @@ fn edit_window(buffer: &str, cursor: usize, room: usize) -> (usize, usize, usize
 }
 
 /// `path` with the home directory written as `~`.
-fn tilde(path: &std::path::Path) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+fn tilde(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     match home
         .as_deref()
         .and_then(|home| path.strip_prefix(home).ok())
@@ -888,7 +889,7 @@ pub fn run(layers: Layers) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    fn state(base: &str, overrides: &str) -> (State, std::path::PathBuf) {
+    fn state(base: &str, overrides: &str) -> (State, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "jotty-tui-{}-{}",
             std::process::id(),
@@ -924,7 +925,7 @@ mod tests {
         state.handle(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
-    fn saved(dir: &std::path::Path) -> Option<toml::Table> {
+    fn saved(dir: &Path) -> Option<toml::Table> {
         std::fs::read_to_string(dir.join("overrides.toml"))
             .ok()
             .map(|t| toml::from_str(&t).unwrap())

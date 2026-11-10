@@ -70,7 +70,7 @@ use xkbcommon::xkb;
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::wl_data_source::WlDataSource;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface};
+use wayland_client::protocol::wl_output;
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -91,6 +91,14 @@ use crate::selection::{Point, Selection, Unit};
 use crate::terminal::{MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
+use smithay_client_toolkit::seat::pointer::AxisScroll;
+use std::process::{Command, Stdio};
+use wayland_client::protocol::wl_keyboard::WlKeyboard;
+use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_client::protocol::wl_region::WlRegion;
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_surface::WlSurface;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -244,7 +252,7 @@ pub struct App {
     /// The child's side of the pty is gone.
     pty_closed: bool,
 
-    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard: Option<WlKeyboard>,
     modifiers: Modifiers,
     /// Our own copy of the keyboard's keymap, to find what a key produces
     /// without modifiers (for key bindings), and the active layout.
@@ -1290,7 +1298,7 @@ impl App {
                 let path = match path.strip_prefix("~/") {
                     Some(rest) => std::env::home_dir()?.join(rest),
                     None => {
-                        let path = std::path::Path::new(path);
+                        let path = Path::new(path);
                         cwd.get_or_init(|| self.pty.foreground_cwd())
                             .as_ref()
                             .map_or(path.to_path_buf(), |dir| dir.join(path))
@@ -1503,7 +1511,7 @@ impl App {
             Ok(program) => program,
             Err(e) => return log::warn!("cannot find jotty's executable: {e}"),
         };
-        let mut command = std::process::Command::new(program);
+        let mut command = Command::new(program);
         if let Some(path) = &self.config_path {
             // The new window starts elsewhere; a relative path would break.
             let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
@@ -1516,7 +1524,7 @@ impl App {
         // Its own process group: a hangup sent to ours (when the terminal
         // that started this jotty closes) must not take it down.
         use std::os::unix::process::CommandExt;
-        command.process_group(0).stdin(std::process::Stdio::null());
+        command.process_group(0).stdin(Stdio::null());
         match command.spawn() {
             // Reap it when it exits so it doesn't linger as a zombie.
             Ok(mut child) => {
@@ -1546,12 +1554,12 @@ impl App {
         log::info!("opening {target}");
         // Browsers print noise on startup (Chromium's "zygote" errors when
         // an instance is already running); only the exit status matters.
-        let child = std::process::Command::new(program)
+        let child = Command::new(program)
             .args(args)
             .arg(target)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn();
         match child {
             // Reap it in the background so it doesn't linger as a zombie.
@@ -1595,12 +1603,7 @@ impl App {
 
     /// Converts a scroll event into whole steps, `per_notch` per wheel notch
     /// (touchpads scroll by pixels: one step per cell height).
-    fn scroll_steps(
-        &mut self,
-        axis: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        direction: Axis,
-        per_notch: f64,
-    ) -> isize {
+    fn scroll_steps(&mut self, axis: &AxisScroll, direction: Axis, per_notch: f64) -> isize {
         let cell_height = f64::from(self.renderer.cell().height) / self.scale;
         let accum = match direction {
             Axis::Vertical => &mut self.scroll_accum.vertical,
@@ -1624,12 +1627,7 @@ impl App {
 
     /// Runs the actions bound to the wheel with the held modifiers, or else
     /// reports it to the program or scrolls.
-    fn wheel(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        pos: (f64, f64),
-    ) {
+    fn wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
         if self.run_wheel_bindings(vertical, horizontal) {
             return;
         }
@@ -1642,11 +1640,7 @@ impl App {
 
     /// Runs the action bound to each direction the wheel turned in, once per
     /// notch. Returns whether any was bound.
-    fn run_wheel_bindings(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-    ) -> bool {
+    fn run_wheel_bindings(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll) -> bool {
         let mut bound = false;
         for (axis, direction_of_axis, back, forward) in [
             (vertical, Axis::Vertical, Wheel::Up, Wheel::Down),
@@ -1675,12 +1669,7 @@ impl App {
     }
 
     /// Reports wheel movement as button 64–67 presses, one per notch.
-    fn report_wheel(
-        &mut self,
-        vertical: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        horizontal: &smithay_client_toolkit::seat::pointer::AxisScroll,
-        pos: (f64, f64),
-    ) {
+    fn report_wheel(&mut self, vertical: &AxisScroll, horizontal: &AxisScroll, pos: (f64, f64)) {
         for (axis, direction, back, forward) in [
             (
                 vertical,
@@ -1707,7 +1696,7 @@ impl App {
         }
     }
 
-    fn scroll(&mut self, axis: &smithay_client_toolkit::seat::pointer::AxisScroll) {
+    fn scroll(&mut self, axis: &AxisScroll) {
         let lines = self.scroll_steps(axis, Axis::Vertical, 3.0);
         if lines == 0 {
             return;
@@ -2168,7 +2157,7 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
         factor: i32,
     ) {
         // wp-fractional-scale reports the exact scale instead.
@@ -2181,12 +2170,12 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
         _: wl_output::Transform,
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {
         self.frame_pending = false;
         if self.dirty {
             self.request_redraw();
@@ -2197,8 +2186,8 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        _: &WlSurface,
+        _: &WlOutput,
     ) {
     }
 
@@ -2206,8 +2195,8 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        _: &WlSurface,
+        _: &WlOutput,
     ) {
     }
 }
@@ -2217,11 +2206,11 @@ impl OutputHandler for App {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 }
 
 impl WindowHandler for App {
@@ -2260,7 +2249,7 @@ impl SeatHandler for App {
         &mut self.seat_state
     }
 
-    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
         // Created before the window gets focus, so the compositor's focus
         // change reaches it as an `enter` event.
         if let (None, Some(manager)) = (&self.text_input, &self.text_input_manager) {
@@ -2272,7 +2261,7 @@ impl SeatHandler for App {
         &mut self,
         _: &Connection,
         qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
+        seat: WlSeat,
         capability: Capability,
     ) {
         match capability {
@@ -2319,7 +2308,7 @@ impl SeatHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
+        _: WlSeat,
         capability: Capability,
     ) {
         match capability {
@@ -2341,7 +2330,7 @@ impl SeatHandler for App {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 }
 
 impl KeyboardHandler for App {
@@ -2349,8 +2338,8 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        surface: &wl_surface::WlSurface,
+        _: &WlKeyboard,
+        surface: &WlSurface,
         serial: u32,
         _: &[u32],
         _: &[Keysym],
@@ -2369,8 +2358,8 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        surface: &wl_surface::WlSurface,
+        _: &WlKeyboard,
+        surface: &WlSurface,
         _: u32,
     ) {
         if surface == self.window.wl_surface() {
@@ -2386,7 +2375,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         serial: u32,
         event: KeyEvent,
     ) {
@@ -2398,7 +2387,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
@@ -2409,7 +2398,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
@@ -2420,7 +2409,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
@@ -2435,7 +2424,7 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _: &WlKeyboard,
         keymap: Keymap<'_>,
     ) {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
@@ -2456,7 +2445,7 @@ impl PointerHandler for App {
         &mut self,
         conn: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_pointer::WlPointer,
+        _: &WlPointer,
         events: &[PointerEvent],
     ) {
         for event in events {
@@ -2627,10 +2616,7 @@ impl PointerHandler for App {
 
 /// Calls `apply` with a region covering any surface size; compositors clip
 /// it to the surface, so it never needs updating on resize.
-fn set_whole_region(
-    compositor: &CompositorState,
-    apply: impl FnOnce(Option<&wl_region::WlRegion>),
-) {
+fn set_whole_region(compositor: &CompositorState, apply: impl FnOnce(Option<&WlRegion>)) {
     match Region::new(compositor) {
         Ok(region) => {
             region.add(0, 0, i32::MAX, i32::MAX);
@@ -2697,7 +2683,7 @@ impl DataDeviceHandler for App {
         _: &WlDataDevice,
         _: f64,
         _: f64,
-        _: &wl_surface::WlSurface,
+        _: &WlSurface,
     ) {
     }
 

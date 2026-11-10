@@ -11,7 +11,9 @@
 use std::collections::HashSet;
 use std::ffi::{CString, OsString};
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::FromRawFd;
@@ -153,7 +155,7 @@ impl Placement {
             && (self.col..self.col + cols as usize).contains(&col)
     }
 
-    fn lines(&self, cell: (u32, u32)) -> std::ops::Range<i64> {
+    fn lines(&self, cell: (u32, u32)) -> Range<i64> {
         self.line..self.line + i64::from(self.size_in_cells(cell).1)
     }
 }
@@ -794,7 +796,7 @@ fn is_temp_file(path: &Path) -> bool {
 
 /// Reads `size` bytes (all when 0) at `offset` from a regular file.
 fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String> {
-    let error = |e: std::io::Error| format!("EBADF: {e}");
+    let error = |e: io::Error| format!("EBADF: {e}");
     if !file.metadata().map_err(error)?.is_file() {
         return Err("EBADF: not a regular file".into());
     }
@@ -828,7 +830,7 @@ fn read_shm(name: &[u8], offset: u64, size: usize) -> Result<Vec<u8>, String> {
     // SAFETY: `name` is a valid C string; the result is checked.
     let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
     if fd < 0 {
-        return Err(format!("EBADF: {}", std::io::Error::last_os_error()));
+        return Err(format!("EBADF: {}", io::Error::last_os_error()));
     }
     // SAFETY: `fd` was just opened and is owned by nothing else.
     let file = unsafe { File::from_raw_fd(fd) };
@@ -966,6 +968,8 @@ pub fn decode_placeholder(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn ctx() -> Context {
@@ -991,7 +995,7 @@ mod tests {
         let (done, wait) = std::sync::mpsc::channel();
         let path = fifo;
         std::thread::spawn(move || done.send(read_file(&path, 0, 0)).unwrap());
-        let result = wait.recv_timeout(std::time::Duration::from_secs(5));
+        let result = wait.recv_timeout(Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(result.expect("read_file blocked on a FIFO").is_err());
     }

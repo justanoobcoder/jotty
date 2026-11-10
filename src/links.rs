@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn long_lines_are_searched_only_around_the_pointer() {
-        let mut t = crate::terminal::Terminal::new(10, 5, 1000);
+        let mut t = Terminal::new(10, 5, 1000);
         t.feed("x".repeat(5000).as_bytes());
         let at = Point { line: -100, col: 0 };
         let line = LineText::around(t.screen(), at, LINK_REACH).unwrap();

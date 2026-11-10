@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use super::{
     Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_OSC_BYTES,
     MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
@@ -1312,9 +1314,9 @@ fn combining_mark_floods_take_linear_time() {
     for _ in 0..200_000 {
         input.extend_from_slice("\u{301}".as_bytes());
     }
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     t.feed(&input);
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(5));
     let tail = t.screen().cluster(&cell(&t, 0, 0));
     assert_eq!(tail.chars().count(), MAX_CLUSTER_CHARS);
     assert_eq!(t.screen().cursor(), (0, 1));
@@ -1735,7 +1737,7 @@ fn feed_throughput() {
         let mut best = f64::MAX;
         for _ in 0..3 {
             let mut t = Terminal::new(200, 50, 10_000);
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             for chunk in data.chunks(4096) {
                 t.feed(chunk);
             }

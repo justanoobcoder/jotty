@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 
-use glow::HasContext;
+use glow::{HasContext, PixelUnpackData, Texture};
 use khronos_egl as egl;
 use wayland_client::backend::ObjectId;
 use wayland_egl::WlEglSurface;
@@ -183,10 +183,10 @@ pub struct Renderer {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     viewport_uniform: Option<glow::UniformLocation>,
-    texture: glow::Texture,
-    color_texture: glow::Texture,
+    texture: Texture,
+    color_texture: Texture,
     /// Textures of the images drawn so far, by uid.
-    images: HashMap<u64, glow::Texture>,
+    images: HashMap<u64, Texture>,
     max_texture_size: u32,
     /// Images too big for a texture, already reported.
     oversized_images: HashSet<u64>,
@@ -219,7 +219,7 @@ unsafe fn create_texture(
     internal_format: u32,
     format: u32,
     size: u32,
-) -> Result<glow::Texture, String> {
+) -> Result<Texture, String> {
     // SAFETY: the caller's GL context is current, and only objects made here are used.
     unsafe {
         let texture = gl.create_texture()?;
@@ -234,7 +234,7 @@ unsafe fn create_texture(
             0,
             format,
             glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(None),
+            PixelUnpackData::Slice(None),
         );
         for (param, value) in [
             (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
@@ -253,7 +253,7 @@ unsafe fn create_texture(
 unsafe fn upload_image(
     gl: &glow::Context,
     image: &crate::terminal::graphics::Image,
-) -> Result<glow::Texture, String> {
+) -> Result<Texture, String> {
     // SAFETY: the caller's GL context is current; `image.pixels` holds width × height RGBA
     // pixels, which `decode` checked.
     unsafe {
@@ -269,7 +269,7 @@ unsafe fn upload_image(
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&image.pixels)),
+            PixelUnpackData::Slice(Some(&image.pixels)),
         );
         for (param, value) in [
             (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
@@ -422,7 +422,7 @@ impl Renderer {
                 glyph.height as i32,
                 format,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&glyph.data)),
+                PixelUnpackData::Slice(Some(&glyph.data)),
             );
         };
         let batch: Batch = super::build(
