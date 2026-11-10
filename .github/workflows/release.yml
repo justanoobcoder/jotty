@@ -20,7 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         name: The tag must match Cargo.toml
         run: |
@@ -48,7 +48,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native libraries
         run: |
           sudo apt-get update
@@ -90,7 +90,7 @@ jobs:
         run: |
           cargo generate-rpm
           cp target/generate-rpm/*.rpm dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: dist/*
@@ -108,7 +108,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust wayland libxkbcommon \
             libglvnd fontconfig ncurses
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build with makepkg
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -123,7 +123,7 @@ jobs:
           su builder -c "makepkg --noconfirm"
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp ./*.pkg.tar.zst "$GITHUB_WORKSPACE/dist/"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arch-x86_64
           path: dist/*
@@ -136,14 +136,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           files: dist/*
