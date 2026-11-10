@@ -1,13 +1,10 @@
 # Maintainer: Nguyen Hong Hiep <syaorancode@gmail.com>
-#
-# Pre-built: repackages the release tarballs. The release workflow pushes it
-# to the AUR on each release, with pkgver and the checksums filled in.
 
 pkgname=jotty-bin
 _pkgname=jotty
 pkgver=2.0.0
 pkgrel=1
-pkgdesc='An opinionated, Wayland-native terminal emulator (pre-built)'
+pkgdesc='An opinionated, Wayland-native terminal emulator that supports both CPU and GPU renderer'
 arch=('x86_64' 'aarch64')
 url='https://github.com/justanoobcoder/jotty'
 license=('MIT')

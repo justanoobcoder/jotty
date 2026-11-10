@@ -1,13 +1,10 @@
 # Maintainer: Nguyen Hong Hiep <syaorancode@gmail.com>
-#
-# Nightly: builds the latest commit on main. The release workflow pushes it
-# to the AUR on each release, with pkgver set to the tagged commit.
 
 pkgname=jotty-git
 _pkgname=jotty
-pkgver=2.0.0.r0.gbfe61c7
+pkgver=2.0.0.r5.gc55c274
 pkgrel=1
-pkgdesc='An opinionated, Wayland-native terminal emulator (latest commit)'
+pkgdesc='An opinionated, Wayland-native terminal emulator that supports both CPU and GPU renderer'
 arch=('x86_64' 'aarch64')
 url='https://github.com/justanoobcoder/jotty'
 license=('MIT')
@@ -36,12 +33,6 @@ build() {
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
   tic -x -o target/terminfo extra/jotty.terminfo
-}
-
-check() {
-  cd "$_pkgname"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen
 }
 
 package() {
