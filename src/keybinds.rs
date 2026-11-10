@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 use xkbcommon::xkb;
 
@@ -246,6 +246,17 @@ impl TryFrom<BTreeMap<String, Vec<String>>> for Keybinds {
     }
 }
 
+/// Every action with its combos, in the form the config takes.
+impl Serialize for Keybinds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let map: BTreeMap<&str, Vec<String>> = Action::ALL
+            .iter()
+            .map(|&(name, action)| (name, self.combos(action)))
+            .collect();
+        map.serialize(serializer)
+    }
+}
+
 impl Keybinds {
     /// Builds the bindings, taking each action's combos from `overrides`
     /// when present (an empty list unbinds it) and the defaults otherwise.
@@ -309,8 +320,7 @@ impl Keybinds {
             .map(|&(_, a)| a)
     }
 
-    /// The combos bound to `action`, for messages and tests.
-    #[cfg(test)]
+    /// The combos bound to `action`, in the form the config takes.
     fn combos(&self, action: Action) -> Vec<String> {
         self.bindings
             .iter()

@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::keybinds::Keybinds;
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub font: FontConfig,
@@ -26,7 +26,7 @@ pub struct Config {
     pub files: Files,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UrlConfig {
     /// Command that opens a link; the link is appended as its last argument.
@@ -47,11 +47,11 @@ impl Default for UrlConfig {
 /// Kinds of files whose paths are links, by name: `image` and `video`
 /// built in, and any the user adds. A kind in the config only overrides
 /// the fields it sets.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FileKind {
     /// File name extensions, without the dot, matched case-insensitively.
     pub extensions: Vec<String>,
@@ -110,7 +110,7 @@ impl From<BTreeMap<String, FileKindOverride>> for Files {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FontConfig {
     /// Font family name, resolved through the system font configuration.
@@ -135,7 +135,7 @@ impl Default for FontConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     pub title: String,
@@ -187,7 +187,7 @@ impl Default for WindowConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererKind {
     /// OpenGL ES 3 through EGL. Cheap per frame at any size, but the GPU
@@ -197,10 +197,11 @@ pub enum RendererKind {
     Cpu,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     /// Program to run; defaults to `$SHELL`, then `/bin/sh`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     /// Value of `$TERM` for the child process. `"auto"` uses jotty's own
     /// terminfo entry when it is installed, `xterm-256color` otherwise.
@@ -222,20 +223,24 @@ impl Default for TerminalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorConfig {
     pub foreground: Rgb,
     pub background: Rgb,
     /// Cursor color; defaults to the foreground color.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Rgb>,
     /// Color of the character under a block cursor; defaults to the cell's
     /// background color.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_text: Option<Rgb>,
     /// Text color of selected cells; defaults to the cell's background
     /// (inverse video).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_foreground: Option<Rgb>,
     /// Background of selected cells; defaults to the cell's foreground.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_background: Option<Rgb>,
     /// Overrides for the 16 ANSI colors, in order (black, red, ..., bright white).
     /// May be shorter than 16 entries; the rest keep their defaults.
@@ -291,13 +296,19 @@ impl ColorConfig {
 }
 
 /// An sRGB color, written as `"#rrggbb"` in the config file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
     pub fn to_f32(self) -> [f32; 3] {
         [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
+    }
+}
+
+impl From<Rgb> for String {
+    fn from(color: Rgb) -> String {
+        color.to_string()
     }
 }
 
@@ -700,5 +711,20 @@ mod tests {
         let config = Config::load_layers(Some((&missing, false)), Some(&overlay)).unwrap();
         assert_eq!(config.window.padding, 9);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn serializes_to_a_config_that_parses_back() {
+        let mut config = Config::parse(
+            "[terminal]\nshell = \"fish\"\n[colors]\ncursor = \"#102030\"\n\
+             [keybinds]\ncopy = [\"ctrl+insert\", \"ctrl++\"]\npaste = []\n\
+             [files.pdf]\nextensions = [\"pdf\"]\nlauncher = [\"zathura\"]",
+        )
+        .unwrap();
+        config.window.renderer = RendererKind::Gpu;
+        for config in [Config::default(), config] {
+            let text = toml::to_string(&config).unwrap();
+            assert_eq!(Config::parse(&text).unwrap(), config, "{text}");
+        }
     }
 }
