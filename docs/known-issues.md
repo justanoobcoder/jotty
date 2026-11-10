@@ -140,6 +140,20 @@ nothing surprises you.
 
 ## Wayland integration
 
+- **The windows of a process go down together.** Ctrl+Shift+N, and every
+  window of a single instance, run in one process, so a crash closes all
+  of them.
+- With `--single-instance`, the jotty that hands its window over exits at
+  once: it doesn't wait for the window, and its exit status isn't the
+  program's. Run it without single instance to wait (`jotty -e cmd` in a
+  script).
+- A window from Ctrl+Shift+N gets jotty's own environment, the one the
+  first window started with, not the shell's: variables exported in the
+  shell since then (or by `nix develop` in it) are missing. Windows handed
+  over by `--single-instance` do get the environment of the command that
+  asked.
+- The notification limit (a burst of 4, then one every 2 seconds) counts
+  the notifications of all windows of a process together.
 - **No client-side decorations.** jotty asks for server-side decorations. On
   compositors that don't provide them (GNOME/Mutter), the window has no title
   bar or border.
@@ -195,6 +209,8 @@ nothing surprises you.
   holds, the glyphs that don't fit are left out of that frame.
 - A frame that fails to draw is retried every 200 ms; the window closes
   after 50 failures in a row (10 seconds).
+- Windows of the same process don't share fonts or glyph atlases: each
+  loads its own.
 
 ## `jotty config`
 

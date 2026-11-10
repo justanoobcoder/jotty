@@ -29,6 +29,9 @@
 - **Live config reload:** Saving the config file reloads every running
   window, with no restart.
 - **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
+- **Single instance:** With `--single-instance`, new windows open in the
+  jotty already running, as in kitty, instead of starting another process.
+  See [Single instance](docs/configuration.md#single-instance).
 
 ## Keybinds
 
