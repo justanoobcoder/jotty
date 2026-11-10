@@ -3,19 +3,16 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{fmt, io};
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, VariableFont};
+use ab_glyph::{Font, FontRef, PxScale};
 use fontconfig_sys as fc;
 use fontconfig_sys::constants::{
     FC_CHARSET, FC_COLOR, FC_FAMILY, FC_FILE, FC_INDEX, FC_SLANT, FC_SLANT_ITALIC, FC_SLANT_ROMAN,
     FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
 };
-use unicode_normalization::UnicodeNormalization;
-use unicode_width::UnicodeWidthChar;
 
 use crate::emoji::{self, EmojiFont};
 use crate::terminal::Underline;
@@ -312,6 +309,7 @@ impl Fonts {
     }
 
     fn load(&mut self, file: FontFile, style: Style) -> Result<usize, FontError> {
+        use ab_glyph::VariableFont;
         if let Some(&face) = self.loaded.get(&(file.clone(), style)) {
             return Ok(face);
         }
@@ -348,6 +346,7 @@ impl Fonts {
     }
 
     pub fn set_size(&mut self, px: f32) {
+        use ab_glyph::ScaleFont;
         self.px = px;
         let face = &self.faces[self.styles[0]];
         let scaled = face.as_scaled(px_scale(face, px));
@@ -430,6 +429,7 @@ impl Fonts {
     /// Like `rasterize`, always in the text font: a coverage bitmap, never
     /// a color emoji.
     fn rasterize_text(&mut self, c: char, style: Style, wide: bool) -> Option<Glyph> {
+        use unicode_width::UnicodeWidthChar;
         if c == ' ' {
             return None;
         }
@@ -546,6 +546,8 @@ impl Fonts {
     /// the marks are drawn centered over the character they follow, and
     /// spacing characters in their own cells.
     pub fn rasterize_cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<Glyph> {
+        use unicode_normalization::UnicodeNormalization;
+        use unicode_width::UnicodeWidthChar;
         if let Some(glyph) = self.rasterize_color(text, wide) {
             return Some(glyph);
         }
@@ -1466,6 +1468,7 @@ pub fn is_icon(c: char) -> bool {
 /// which are tens of megabytes. Mappings are never unmapped, as faces keep
 /// them, so a file gets one mapping however often the config is reloaded.
 fn map_file(path: &Path) -> io::Result<&'static [u8]> {
+    use std::os::unix::fs::MetadataExt;
     // By device and inode.
     type Mappings = HashMap<(u64, u64), &'static [u8]>;
     static MAPPINGS: Mutex<Option<Mappings>> = Mutex::new(None);
@@ -1484,6 +1487,7 @@ fn map_file(path: &Path) -> io::Result<&'static [u8]> {
 }
 
 fn map_new_file(file: &File, len: u64) -> io::Result<&'static [u8]> {
+    use std::os::fd::AsRawFd;
     let len = usize::try_from(len).map_err(io::Error::other)?;
     if len == 0 {
         return Err(io::Error::other("empty file"));
@@ -1498,7 +1502,7 @@ fn map_new_file(file: &File, len: u64) -> io::Result<&'static [u8]> {
             len,
             libc::PROT_READ,
             libc::MAP_PRIVATE,
-            std::os::fd::AsRawFd::as_raw_fd(file),
+            file.as_raw_fd(),
             0,
         )
     };

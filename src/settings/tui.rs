@@ -14,7 +14,6 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use unicode_width::UnicodeWidthChar;
 
 use super::Layers;
 use super::schema::{self, Key, SECTIONS};
@@ -823,12 +822,14 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
 
 /// Columns `s` takes on screen.
 fn text_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
     s.chars().map(|c| c.width().unwrap_or(0)).sum()
 }
 
 /// The part of `buffer` to show in `room` columns so that the char at
 /// `cursor` is visible: its byte range, and the cursor's column in it.
 fn edit_window(buffer: &str, cursor: usize, room: usize) -> (usize, usize, usize) {
+    use unicode_width::UnicodeWidthChar;
     let chars: Vec<(usize, char)> = buffer.char_indices().collect();
     let cursor = cursor.min(chars.len());
     let width = |range: &[(usize, char)]| {

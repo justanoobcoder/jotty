@@ -3,9 +3,7 @@
 
 use std::ffi::{CString, OsStr};
 use std::fs::File;
-use std::io::{self, Read};
-use std::os::fd::FromRawFd;
-use std::os::unix::ffi::OsStrExt;
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -22,6 +20,8 @@ fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
 /// descriptor is non-blocking and becomes readable on any change there;
 /// [`changed`] tells whether it was about the file.
 pub fn watch_file(path: &Path) -> io::Result<File> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
     // A bare file name has an empty parent, which inotify refuses.
     let dir = match path.parent() {
         Some(dir) if dir.as_os_str().is_empty() => Path::new("."),
@@ -47,6 +47,8 @@ pub fn watch_file(path: &Path) -> io::Result<File> {
 /// Reads the pending inotify events; whether one was about the file
 /// `name` in the watched directory.
 pub fn changed(file: &mut File, name: &OsStr) -> bool {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
     let mut buf = [0u8; 4096];
     let mut found = false;
     while let Ok(n) = file.read(&mut buf) {
@@ -111,6 +113,7 @@ extern "C" fn on_signal(_: libc::c_int) {
 /// receives SIGUSR1 (read it empty with [`drain`]). Only the first call
 /// installs the handler.
 pub fn sigusr1() -> io::Result<File> {
+    use std::os::fd::FromRawFd;
     let mut fds = [0; 2];
     // SAFETY: pipe2 fills two new descriptors; the read end goes to the
     // File, the write end lives for the rest of the process in SIGNAL_PIPE.
@@ -137,6 +140,7 @@ pub fn sigusr1() -> io::Result<File> {
 
 /// Reads everything available from a non-blocking descriptor.
 pub fn drain(file: &mut File) {
+    use std::io::Read;
     let mut buf = [0u8; 64];
     while matches!(file.read(&mut buf), Ok(n) if n > 0) {}
 }

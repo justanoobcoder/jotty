@@ -11,9 +11,6 @@ pub mod software;
 
 use std::borrow::Cow;
 
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
 use crate::config::{Config, Rgb};
 use crate::font::{self, CellMetrics, Style};
 use crate::ime::Preedit;
@@ -653,6 +650,7 @@ fn draw_label(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_width::UnicodeWidthChar;
     let cols = frame.screen.cols();
     let width: usize = text.chars().filter_map(|c| c.width()).sum();
     // A cell of padding on each side.
@@ -693,6 +691,7 @@ fn draw_search_bar(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_width::UnicodeWidthChar;
     let screen = frame.screen;
     let (cw, ch) = (m.width as f32, m.height as f32);
     let x = |col: usize| frame.origin.0 as f32 + col as f32 * cw;
@@ -730,6 +729,8 @@ fn draw_preedit(
     m: CellMetrics,
     glyphs: &mut impl GlyphCache,
 ) {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let screen = frame.screen;
     let (row, start) = screen.cursor();
     let (cw, ch) = (m.width as f32, m.height as f32);

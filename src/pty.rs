@@ -3,9 +3,8 @@
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::io;
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
@@ -72,6 +71,8 @@ impl Pty {
         term: &Term,
         size: WindowSize,
     ) -> io::Result<Pty> {
+        use std::os::fd::{AsFd, FromRawFd};
+        use std::os::unix::process::CommandExt;
         let (mut master, mut slave) = (0, 0);
         let winsize = size.to_winsize();
         // SAFETY: openpty writes two descriptors into the provided pointers.
@@ -151,12 +152,14 @@ impl Pty {
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
+        use std::os::fd::AsFd;
         self.master.as_fd()
     }
 
     /// Reads child output. Returns `WouldBlock` when nothing is available.
     /// Once the child has exited, Linux reports `EIO`.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
         self.master.read(buf)
     }
 
@@ -185,6 +188,7 @@ impl Pty {
 
     /// Writes queued input. Leaves the rest queued if the pty is full.
     pub fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
         while !self.pending.is_empty() {
             let (chunk, _) = self.pending.as_slices();
             match self.master.write(chunk) {

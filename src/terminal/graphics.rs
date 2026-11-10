@@ -12,11 +12,8 @@ use std::collections::HashSet;
 use std::ffi::{CString, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::SeekFrom;
 use std::ops::Range;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -759,6 +756,7 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
 
 /// Gets the image data from where the transmission medium (`t`) says.
 fn read_medium(cmd: &Command, data: Vec<u8>) -> Result<Vec<u8>, String> {
+    use std::os::unix::ffi::OsStringExt;
     let (offset, size) = (u64::from(cmd.offset), cmd.size as usize);
     match cmd.medium {
         b'd' => Ok(data),
@@ -796,6 +794,7 @@ fn is_temp_file(path: &Path) -> bool {
 
 /// Reads `size` bytes (all when 0) at `offset` from a regular file.
 fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek};
     let error = |e: io::Error| format!("EBADF: {e}");
     if !file.metadata().map_err(error)?.is_file() {
         return Err("EBADF: not a regular file".into());
@@ -814,6 +813,7 @@ fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String
 }
 
 fn read_file(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
     // Without O_NONBLOCK, opening a FIFO waits for a writer, forever if
     // there is none, and the whole terminal hangs. Regular files ignore it.
     let file = OpenOptions::new()
@@ -826,6 +826,7 @@ fn read_file(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, String> {
 
 /// Reads and unlinks the POSIX shared memory object named by `name`.
 fn read_shm(name: &[u8], offset: u64, size: usize) -> Result<Vec<u8>, String> {
+    use std::os::unix::io::FromRawFd;
     let name = CString::new(name).map_err(|_| "EINVAL: bad shared memory name")?;
     // SAFETY: `name` is a valid C string; the result is checked.
     let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };

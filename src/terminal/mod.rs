@@ -12,7 +12,6 @@ use graphics::Graphics;
 pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
 use strings::{StringTable, Table};
 use unicode_segmentation::GraphemeCursor;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
 /// The longest APC string kept; the rest of a longer one is dropped.
@@ -1444,6 +1443,7 @@ impl Screen {
     }
 
     fn print_char(&mut self, c: char) {
+        use unicode_width::UnicodeWidthChar;
         let c = self.cursor.charsets[self.cursor.active_charset].map(c);
         let width = c.width().unwrap_or(0).min(2);
         if self.join_cluster(c, width) || width == 0 {
@@ -1582,6 +1582,7 @@ impl Screen {
     /// `☀`): the pair is two cells wide, as in other terminals and in the
     /// width calculations of programs such as starship.
     fn apply_emoji_presentation(&mut self) {
+        use unicode_width::UnicodeWidthStr;
         let Some((row, col)) = self.last_printed else {
             return;
         };

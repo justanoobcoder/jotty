@@ -10,8 +10,7 @@
 //! the window.
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
-use std::os::linux::net::SocketAddrExt;
+use std::io;
 use std::os::unix::net::{SocketAddr, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -136,6 +135,7 @@ impl Bus {
     /// Writes queued messages, as far as the socket takes them. An error
     /// means the connection is gone.
     pub fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
         while !self.outgoing.is_empty() {
             let (chunk, _) = self.outgoing.as_slices();
             match self.stream.write(chunk) {
@@ -188,6 +188,7 @@ impl Bus {
     /// Reads what the bus sent, when the socket is readable. An error means
     /// the connection is gone.
     pub fn read(&mut self) -> io::Result<Vec<Event>> {
+        use std::io::Read;
         let mut chunk = [0; 4096];
         match self.stream.read(&mut chunk) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
@@ -311,6 +312,7 @@ enum Address {
 }
 
 fn connect_session() -> io::Result<UnixStream> {
+    use std::os::linux::net::SocketAddrExt;
     let mut addresses = std::env::var("DBUS_SESSION_BUS_ADDRESS")
         .map(|value| parse_addresses(&value))
         .unwrap_or_default();
@@ -376,6 +378,7 @@ fn unescape(value: &str) -> Option<Vec<u8>> {
 
 /// SASL EXTERNAL: the bus checks our uid on the socket.
 fn authenticate(stream: &mut UnixStream) -> io::Result<()> {
+    use std::io::{Read, Write};
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     let hex: String = uid

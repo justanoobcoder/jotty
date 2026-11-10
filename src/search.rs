@@ -1,8 +1,5 @@
 //! Searching the scrollback and the screen.
 
-use unicode_normalization::UnicodeNormalization;
-use unicode_width::UnicodeWidthChar;
-
 use crate::selection::Point;
 use crate::terminal::Screen;
 use crate::text::LineText;
@@ -61,6 +58,8 @@ pub fn find(
     direction: Direction,
     inclusive: bool,
 ) -> Option<(Point, Point)> {
+    use unicode_normalization::UnicodeNormalization;
+    use unicode_width::UnicodeWidthChar;
     if query.is_empty() {
         return None;
     }
@@ -115,6 +114,7 @@ pub fn find(
 /// The character cell `i` stands for in a search: the one its cluster
 /// composes into, or else its first.
 fn cell_char(text: &LineText, i: usize) -> char {
+    use unicode_normalization::UnicodeNormalization;
     let cell = &text.cells[i];
     let end = text.cells.get(i + 1).map_or(text.text.len(), |c| c.offset);
     let cluster = &text.text[cell.offset..end];

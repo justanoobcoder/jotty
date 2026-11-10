@@ -5,9 +5,8 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
@@ -576,6 +575,7 @@ pub fn run(
 
 /// The exit code that reports how the child ended, as a shell would.
 fn exit_code(status: ExitStatus) -> u8 {
+    use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
         (Some(code), _) => code as u8,
         (None, Some(signal)) => 128u8.wrapping_add(signal as u8),
@@ -1810,6 +1810,7 @@ impl App {
 
     /// Reads pasted text from another client without blocking, then sends it.
     fn paste_from(&mut self, pipe: ReadPipe) {
+        use std::io::Read;
         let mut data = Vec::new();
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
             // SAFETY: the file is only read, never closed or replaced.
@@ -2985,6 +2986,7 @@ mod tests {
 
     #[test]
     fn a_reader_that_keeps_reading_gets_everything() {
+        use std::io::Read;
         let (mut reader, mut writer) = io::pipe().unwrap();
         let data = vec![7; 1 << 20];
         let thread = std::thread::spawn(move || {
@@ -2999,6 +3001,7 @@ mod tests {
 
     #[test]
     fn exit_codes_follow_the_shell() {
+        use std::os::unix::process::ExitStatusExt;
         assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
         // Killed by SIGTERM.
         assert_eq!(exit_code(ExitStatus::from_raw(15)), 143);

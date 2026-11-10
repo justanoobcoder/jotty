@@ -165,6 +165,7 @@ pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
 }
 
 fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(), String> {
+    use std::io::IsTerminal;
     // Before reading anything: reset is how a broken file is recovered from.
     if command == ConfigCommand::Reset {
         let path = config::overrides_path().ok_or("neither $XDG_STATE_HOME nor $HOME is set")?;
@@ -173,7 +174,7 @@ fn run_command(command: ConfigCommand, config_path: Option<&Path>) -> Result<(),
     let layers = Layers::load(config_path)?;
     match command {
         ConfigCommand::Edit => {
-            if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            if !io::stdout().is_terminal() {
                 return Err("jotty config needs a terminal; see jotty config export".into());
             }
             tui::run(layers).map_err(|e| e.to_string())
