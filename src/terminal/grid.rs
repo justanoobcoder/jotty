@@ -1,6 +1,7 @@
 //! Cells, rows and the screen grid with its scrollback history.
 
 use std::collections::VecDeque;
+use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
@@ -161,39 +162,87 @@ pub enum Mark {
     Output { col: usize },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Row {
-    pub cells: Vec<Cell>,
+    cells: Vec<Cell>,
+    /// The cells from here on are all alike: nothing wrote them since the
+    /// row was made blank. A blank row is reset by writing only the cells
+    /// before it, which matters because scrolling resets a row per line
+    /// of output, and the row it reuses, from the far end of the history,
+    /// is no longer in the cache.
+    occupied: usize,
     /// The line continues on the next row (it was soft-wrapped).
     pub wrapped: bool,
     /// The last shell-integration mark set on this row.
     pub mark: Option<Mark>,
 }
 
+impl PartialEq for Row {
+    fn eq(&self, other: &Row) -> bool {
+        // `occupied` only says how much a reset has to write.
+        self.cells == other.cells && self.wrapped == other.wrapped && self.mark == other.mark
+    }
+}
+
+impl Eq for Row {}
+
 impl Row {
     pub fn new(cols: usize, template: &Cell) -> Self {
         Row {
             cells: vec![Cell::blank(template); cols],
+            occupied: 0,
             wrapped: false,
             mark: None,
         }
+    }
+
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// All the cells, to change any of them.
+    pub fn cells_mut(&mut self) -> &mut [Cell] {
+        self.occupied = self.cells.len();
+        &mut self.cells
+    }
+
+    /// The cells in `range`, to write them. Cheaper than `cells_mut` for
+    /// the next reset when the range ends before the last column.
+    pub fn cells_in(&mut self, range: Range<usize>) -> &mut [Cell] {
+        self.occupied = self.occupied.max(range.end);
+        &mut self.cells[range]
+    }
+
+    /// The cell at `col`, to write it.
+    pub fn cell_mut(&mut self, col: usize) -> &mut Cell {
+        self.occupied = self.occupied.max(col + 1);
+        &mut self.cells[col]
     }
 
     /// Makes this a blank row of `cols` cells, keeping its allocation.
     fn reset(&mut self, cols: usize, template: &Cell) {
         let blank = Cell::blank(template);
         if self.cells.len() == cols {
-            self.cells.fill(blank);
+            // The cells after `occupied` are alike, so the last one tells
+            // whether they are blank already.
+            let end = if self.cells.last() == Some(&blank) {
+                self.occupied
+            } else {
+                cols
+            };
+            self.cells[..end].fill(blank);
         } else {
             self.cells.clear();
             self.cells.resize(cols, blank);
         }
+        self.occupied = 0;
         self.wrapped = false;
         self.mark = None;
     }
 
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
+        self.occupied = cols;
         if let Some(last) = self.cells.last_mut()
             && last.flags.contains(Flags::WIDE)
         {
@@ -219,7 +268,7 @@ impl Row {
 /// One screen buffer: the visible rows plus scrollback history.
 #[derive(Debug, Clone)]
 pub struct Grid {
-    pub rows: Vec<Row>,
+    pub rows: VecDeque<Row>,
     pub history: VecDeque<Row>,
     pub max_history: usize,
     /// Rows scrolled off the top so far (kept in history or not), so that
@@ -288,7 +337,9 @@ impl Grid {
         for _ in 0..n {
             // Every line of output scrolls the screen once it is full, so
             // the row that leaves is reused instead of freed and allocated.
-            let row = self.rows.remove(top);
+            // At the top of the screen, as nearly always, this takes no
+            // shifting: the rows are a ring.
+            let row = self.rows.remove(top).expect("the region is on screen");
             let spare = if keep {
                 self.push_history(row)
             } else {
@@ -304,7 +355,7 @@ impl Grid {
     pub fn scroll_down(&mut self, top: usize, bottom: usize, n: usize, template: &Cell) {
         let n = n.min(bottom + 1 - top);
         for _ in 0..n {
-            let row = self.rows.remove(bottom);
+            let row = self.rows.remove(bottom).expect("the region is on screen");
             let blank = self.blank_row(Some(row), template);
             self.rows.insert(top, blank);
         }
@@ -337,7 +388,7 @@ impl Grid {
                     self.scrolled = self.scrolled.saturating_sub(1);
                     moved += 1;
                 }
-                None => self.rows.push(Row::new(cols, &Cell::default())),
+                None => self.rows.push_back(Row::new(cols, &Cell::default())),
             }
         }
         moved
@@ -444,11 +495,12 @@ impl Grid {
             for (cell, &pos) in line.cells.iter().zip(&layout.positions) {
                 if pos > next {
                     let gap = pos - 1;
-                    out[first + gap / cols].cells[gap % cols]
+                    out[first + gap / cols]
+                        .cell_mut(gap % cols)
                         .flags
                         .insert(Flags::WRAP_GAP);
                 }
-                out[first + pos / cols].cells[pos % cols] = *cell;
+                *out[first + pos / cols].cell_mut(pos % cols) = *cell;
                 next = pos + 1;
             }
             for &(offset, mark) in &line.marks {
@@ -484,7 +536,7 @@ impl Grid {
         }
         let drop = out.len().saturating_sub(self.max_history);
         self.history = out.into_iter().skip(drop).collect();
-        self.rows = screen;
+        self.rows = screen.into();
         self.cols = cols;
     }
 }
@@ -544,7 +596,7 @@ mod tests {
     fn grid_with_lines(lines: &[&str], cols: usize) -> Grid {
         let mut grid = Grid::new(cols, lines.len(), 100);
         for (row, line) in grid.rows.iter_mut().zip(lines) {
-            for (cell, c) in row.cells.iter_mut().zip(line.chars()) {
+            for (cell, c) in row.cells_mut().iter_mut().zip(line.chars()) {
                 cell.c = c;
             }
         }
@@ -578,7 +630,7 @@ mod tests {
     fn history_is_bounded() {
         let mut grid = Grid::new(2, 1, 2);
         for c in ['a', 'b', 'c'] {
-            grid.rows[0].cells[0].c = c;
+            grid.rows[0].cell_mut(0).c = c;
             grid.scroll_up(0, 0, 1, &Cell::default(), true);
         }
         let history: Vec<_> = grid.history.iter().map(Row::text).collect();
@@ -596,8 +648,8 @@ mod tests {
             let mut grid = Grid::new(3, 1, max_history);
             for c in ['a', 'b', 'c'] {
                 let row = &mut grid.rows[0];
-                row.cells[0].c = c;
-                row.cells[1].extra = 1;
+                row.cell_mut(0).c = c;
+                row.cell_mut(1).extra = 1;
                 row.wrapped = true;
                 row.mark = Some(Mark::Prompt);
                 grid.scroll_up(0, 0, 1, &template, true);
@@ -612,6 +664,37 @@ mod tests {
         grid.scroll_down(0, 1, 1, &template);
         assert_eq!(grid.rows[0].cells, [Cell::blank(&template); 3]);
         assert!(!grid.rows[0].wrapped);
+    }
+
+    #[test]
+    fn reset_blanks_whatever_was_written() {
+        let red = Cell {
+            bg: Color::Indexed(1),
+            ..Cell::default()
+        };
+        let blank = Cell::default();
+        let mut row = Row::new(6, &blank);
+        // Text at the start, then the rest erased in another color.
+        row.cells_in(0..2).fill(Cell { c: 'x', ..blank });
+        row.cells_in(2..6).fill(Cell::blank(&red));
+        row.reset(6, &blank);
+        assert_eq!(row.cells(), [blank; 6]);
+        // A cell changed through `cells_mut`, past what was written.
+        row.cells_in(0..1)[0].c = 'a';
+        row.cells_mut()[4].c = 'b';
+        row.reset(6, &blank);
+        assert_eq!(row.cells(), [blank; 6]);
+        // Blank in another color: every cell changes.
+        row.cell_mut(0).c = 'c';
+        row.reset(6, &red);
+        assert_eq!(row.cells(), [Cell::blank(&red); 6]);
+        row.reset(6, &blank);
+        assert_eq!(row.cells(), [blank; 6]);
+        // Resizing adds default cells after whatever the row held.
+        let mut row = Row::new(2, &red);
+        row.resize(4);
+        row.reset(4, &red);
+        assert_eq!(row.cells(), [Cell::blank(&red); 4]);
     }
 
     #[test]
@@ -630,10 +713,10 @@ mod tests {
     #[test]
     fn row_text_skips_spacers() {
         let mut row = Row::new(4, &Cell::default());
-        row.cells[0].c = '中';
-        row.cells[0].flags.insert(Flags::WIDE);
-        row.cells[1].flags.insert(Flags::WIDE_SPACER);
-        row.cells[2].c = 'x';
+        row.cell_mut(0).c = '中';
+        row.cell_mut(0).flags.insert(Flags::WIDE);
+        row.cell_mut(1).flags.insert(Flags::WIDE_SPACER);
+        row.cell_mut(2).c = 'x';
         assert_eq!(row.text(), "中x");
     }
 

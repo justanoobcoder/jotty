@@ -1241,7 +1241,7 @@ impl App {
             .term
             .screen()
             .row_at(p.line)
-            .and_then(|r| r.cells.get(p.col))
+            .and_then(|r| r.cells().get(p.col))
             .is_some_and(|c| c.flags.contains(crate::terminal::Flags::WIDE_SPACER));
         Point {
             col: if spacer {
@@ -1267,7 +1267,7 @@ impl App {
     fn output_selection(&self, point: Point) -> Option<Selection> {
         let screen = self.term.screen();
         let (first, last) = screen.command_output(point.line)?;
-        let end = screen.row_at(last)?.cells.len().saturating_sub(1);
+        let end = screen.row_at(last)?.cells().len().saturating_sub(1);
         Some(Selection::span(
             Point {
                 line: first,

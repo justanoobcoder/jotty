@@ -25,7 +25,7 @@ impl Surrounding {
         let start = start.min(cursor_col);
         let mut text = String::new();
         let mut cursor = 0;
-        for (col, cell) in row.cells.iter().enumerate().skip(start) {
+        for (col, cell) in row.cells().iter().enumerate().skip(start) {
             if col == cursor_col {
                 cursor = text.len();
             }
@@ -38,7 +38,7 @@ impl Surrounding {
                 text.push(cell.c);
             }
         }
-        if cursor_col >= row.cells.len() {
+        if cursor_col >= row.cells().len() {
             cursor = text.len();
         }
         // Trailing blanks are just empty cells, unless they are before the cursor.

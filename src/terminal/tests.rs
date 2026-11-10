@@ -9,7 +9,7 @@ fn lines(t: &Terminal) -> Vec<String> {
 }
 
 fn cell(t: &Terminal, row: usize, col: usize) -> Cell {
-    t.screen().grid().rows[row].cells[col]
+    t.screen().grid().rows[row].cells()[col]
 }
 
 fn extra(t: &Terminal, row: usize, col: usize) -> Extra {
@@ -807,6 +807,16 @@ fn emoji_sequences_join_and_keep_their_width() {
 }
 
 #[test]
+fn hangul_jamo_join_into_one_syllable() {
+    let mut t = term(10, 1);
+    // A leading consonant (2 columns), then a vowel and a trailing
+    // consonant (none each), then a precomposed syllable of its own.
+    t.feed("\u{1100}\u{1161}\u{11a8}\u{ac00}".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "\u{1100}\u{1161}\u{11a8}");
+    assert_eq!(text_at(&t, 0, 2), "\u{ac00}");
+}
+
+#[test]
 fn clusters_end_at_controls_and_new_clusters() {
     let mut t = term(10, 2);
     // A second flag starts a new cluster; so does anything after a CR.
@@ -1576,7 +1586,7 @@ fn assert_grid_shape(t: &Terminal, seed: u64) {
     let grid = screen.grid();
     assert_eq!(grid.rows.len(), rows, "seed {seed}");
     for row in grid.rows.iter().chain(&grid.history) {
-        assert_eq!(row.cells.len(), cols, "seed {seed}");
+        assert_eq!(row.cells().len(), cols, "seed {seed}");
     }
     let (row, col) = screen.cursor();
     assert!(row < rows && col < cols, "seed {seed}");
@@ -1665,5 +1675,70 @@ fn random_sequences_keep_the_grid_consistent() {
             }
             assert_grid_shape(&t, seed);
         }
+    }
+}
+
+/// Output for `feed_throughput`: `lines` lines made by `line`, each ended
+/// with CR LF as the pty sends them.
+fn workload(lines: usize, line: impl Fn(usize) -> String) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..lines {
+        out.extend_from_slice(line(i).as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out
+}
+
+/// Parsing throughput, for comparing changes to the hot path. Run with
+/// `cargo test --release feed_throughput -- --ignored --nocapture`; set
+/// `FEED_WORKLOAD` to run only one workload (to profile it).
+#[test]
+#[ignore = "a benchmark"]
+fn feed_throughput() {
+    const WORDS: [&str; 8] = ["let", "mut", "screen", "=", "self.grid()", "{", "}", "rows"];
+    let ascii = workload(400_000, |i| {
+        let n = 4 + i % 9;
+        (0..n)
+            .map(|w| WORDS[(i + w) % 8])
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+    let colored = workload(400_000, |i| {
+        format!(
+            "\x1b[35msrc/terminal/mod.rs\x1b[0m:\x1b[32m{i}\x1b[0m:    \x1b[1;31mlet\x1b[0m screen = self.grid();"
+        )
+    });
+    let unicode = workload(300_000, |i| {
+        let text = [
+            "Tiếng Việt có dấu, ",
+            "chữ Hán 漢字 ",
+            "emoji 👍🏽 ",
+            "kết thúc dòng",
+        ];
+        (0..4).map(|w| text[(i + w) % 4]).collect()
+    });
+    let only = std::env::var("FEED_WORKLOAD").ok();
+    for (name, data) in [
+        ("ascii", &ascii),
+        ("colored", &colored),
+        ("unicode", &unicode),
+    ] {
+        if only.as_ref().is_some_and(|only| only != name) {
+            continue;
+        }
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let mut t = Terminal::new(200, 50, 10_000);
+            let start = std::time::Instant::now();
+            for chunk in data.chunks(4096) {
+                t.feed(chunk);
+            }
+            best = best.min(start.elapsed().as_secs_f64());
+        }
+        let mb = data.len() as f64 / 1e6;
+        eprintln!(
+            "{name:>8}: {mb:5.1} MB in {best:.3}s, {:6.0} MB/s",
+            mb / best
+        );
     }
 }

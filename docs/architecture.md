@@ -65,7 +65,8 @@ so it lands as if printed character by character.
 
 `Screen` holds:
 
-- two `Grid`s, primary and alternate. Each grid has visible `Row`s plus a
+- two `Grid`s, primary and alternate. Each grid has visible `Row`s, in a
+  `VecDeque` so that scrolling the whole screen shifts none of them, plus a
   bounded `VecDeque` of history rows; the alternate grid keeps no history.
 - the cursor: position, a template cell carrying the current attributes, the
   pending-wrap flag (set after writing the last column), and the G0/G1
@@ -136,6 +137,13 @@ size in pixels, from which programs compute the cell size.
 When a row scrolls off the top of the full-screen region on the primary
 screen, it moves into history. If the user is looking at history at that
 moment, the view offset grows by the same amount so the view stays put.
+
+Once the history is full, the row that falls off its far end becomes the
+new blank row at the bottom. That row is long out of the cache, so a `Row`
+remembers how far it was written since it was last blank (`occupied`), and
+blanking it again writes only that far. Code that writes cells goes
+through `Row::cells_in` or `Row::cell_mut`, which extend that mark, or
+`Row::cells_mut`, which gives up on it.
 
 ## PTY (`pty.rs`)
 

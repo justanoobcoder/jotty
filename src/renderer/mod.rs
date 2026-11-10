@@ -490,7 +490,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         // The placeholder cell to the left, which the next one continues.
         let mut placeholder: Option<PlaceholderCell> = None;
         for x in 0..screen.cols() {
-            let cell = row.cells.get(x).copied().unwrap_or_default();
+            let cell = row.cells().get(x).copied().unwrap_or_default();
             if cell.flags.contains(Flags::WIDE_SPACER) {
                 continue;
             }
@@ -551,7 +551,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 // Emoji sequences span several cells; draw them two wide.
                 let wide = span > 1.0
                     || row
-                        .cells
+                        .cells()
                         .get(x + 1)
                         .is_some_and(|c| c.flags.contains(Flags::CONTINUATION));
                 glyphs.cluster(&cluster_text, style_of(&cell), wide)
@@ -560,7 +560,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 // kitty and Ghostty; otherwise it is shrunk to fit its own.
                 let wide = span > 1.0
                     || is_icon(cell.c)
-                        && row.cells.get(x + 1).is_some_and(|next| {
+                        && row.cells().get(x + 1).is_some_and(|next| {
                             next.c == ' '
                                 && screen.cluster(next).is_empty()
                                 && !next.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)

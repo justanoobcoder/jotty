@@ -8,7 +8,7 @@ pub mod graphics;
 pub mod grid;
 mod strings;
 
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::GraphemeCursor;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
@@ -71,8 +71,8 @@ impl Terminal {
             match std::mem::take(&mut self.apc) {
                 Apc::Outside => {
                     // The first `ESC _`, or an `ESC` at the end.
-                    let start = (0..bytes.len())
-                        .find(|&i| bytes[i] == 0x1b && bytes.get(i + 1).is_none_or(|&b| b == b'_'));
+                    let start = memchr::memchr_iter(0x1b, bytes)
+                        .find(|&i| bytes.get(i + 1).is_none_or(|&b| b == b'_'));
                     let Some(i) = start else {
                         self.parser.advance(&mut self.screen, bytes);
                         return;
@@ -91,7 +91,7 @@ impl Terminal {
                 }
                 Apc::Escape => self.parser.advance(&mut self.screen, b"\x1b"),
                 Apc::Body(mut body) => {
-                    let end = bytes.iter().position(|&b| matches!(b, 0x1b | 0x18 | 0x1a));
+                    let end = memchr::memchr3(0x1b, 0x18, 0x1a, bytes);
                     let part = &bytes[..end.unwrap_or(bytes.len())];
                     if body
                         .as_ref()
@@ -299,6 +299,8 @@ pub struct Screen {
     /// Printable ASCII from `print` not written to the grid yet, so that
     /// it can be written a row at a time; see `flush_ascii`.
     ascii_run: Vec<u8>,
+    /// Scratch text for `continues_cluster`.
+    cluster_scratch: String,
     /// Cursor color set by the program (OSC 12), overriding the configured one.
     cursor_color: Option<(u8, u8, u8)>,
     /// The configured cursor color, reported by OSC 12 queries.
@@ -457,6 +459,7 @@ impl Screen {
             cursor_shape: CursorShape::default(),
             last_char: None,
             ascii_run: Vec::new(),
+            cluster_scratch: String::new(),
             cursor_color: None,
             default_cursor_color: (255, 255, 255),
             colors: ColorOverrides::default(),
@@ -580,7 +583,7 @@ impl Screen {
             .map_or(self.cursor.row as isize, |l| l - 1);
         let blank = |l: isize| {
             self.row_at(l)
-                .is_none_or(|r| r.cells.iter().all(|c| c.c == ' '))
+                .is_none_or(|r| r.cells().iter().all(|c| c.c == ' '))
         };
         while last >= first && blank(last) {
             last -= 1;
@@ -707,6 +710,22 @@ impl Screen {
         }
     }
 
+    /// Whether `c` continues the grapheme cluster that `start` begins,
+    /// rather than starting one of its own. Boundary rules look back but
+    /// never ahead, so only the boundary before `c` can be new.
+    fn continues_cluster(&mut self, start: &Cell, c: char) -> bool {
+        // Reused: this runs for most non-ASCII characters printed.
+        let mut text = std::mem::take(&mut self.cluster_scratch);
+        text.clear();
+        self.cell_text(start, &mut text);
+        let before = text.len();
+        text.push(c);
+        let boundary = GraphemeCursor::new(before, text.len(), true).is_boundary(&text, 0);
+        self.cluster_scratch = text;
+        // With the whole text given, no more context is ever asked for.
+        boundary == Ok(false)
+    }
+
     /// Whether `cell` is an ASCII character with nothing joined to it, which
     /// no ASCII character after it can join either (see `join_cluster`).
     fn is_lone_ascii(&self, cell: &Cell) -> bool {
@@ -801,7 +820,7 @@ impl Screen {
         let mut mark = |cell: &Cell| extras[usize::from(cell.extra)] = true;
         for grid in [&self.primary, &self.alternate] {
             for row in grid.rows.iter().chain(&grid.history) {
-                row.cells.iter().for_each(&mut mark);
+                row.cells().iter().for_each(&mut mark);
             }
         }
         mark(&self.cursor.template);
@@ -827,7 +846,7 @@ impl Screen {
         let remap = |cell: &mut Cell| cell.extra = extras[usize::from(cell.extra)];
         for grid in [&mut self.primary, &mut self.alternate] {
             for row in grid.rows.iter_mut().chain(&mut grid.history) {
-                row.cells.iter_mut().for_each(remap);
+                row.cells_mut().iter_mut().for_each(remap);
             }
         }
         remap(&mut self.cursor.template);
@@ -847,7 +866,7 @@ impl Screen {
         let Some((row, col)) = self.cluster_start else {
             return false;
         };
-        let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col)) else {
+        let Some(&start) = self.grid().rows.get(row).and_then(|r| r.cells().get(col)) else {
             return false;
         };
         // The cell must still hold the cluster's start: its text is what
@@ -861,13 +880,13 @@ impl Screen {
         if c.is_ascii() && self.is_lone_ascii(&start) {
             return false;
         }
+        if !self.continues_cluster(&start, c) {
+            return false;
+        }
         let mut text = String::new();
         self.cell_text(&start, &mut text);
         let base = start.c.len_utf8();
         text.push(c);
-        if text.graphemes(true).nth(1).is_some() {
-            return false;
-        }
         // Continuation cells must stay on the cluster's row, after its
         // first cell. Without autowrap the cursor stays on the last column,
         // which may be that cell; the character then overwrites it instead.
@@ -891,7 +910,7 @@ impl Screen {
             });
             let extra = match self.clusters.insert(tail) {
                 Some(cluster) => {
-                    let start = self.grid().rows[row].cells[col];
+                    let start = self.grid().rows[row].cells()[col];
                     let extra = Extra {
                         cluster,
                         ..self.extra(&start)
@@ -901,7 +920,7 @@ impl Screen {
                 None => None,
             };
             match extra {
-                Some(id) => self.grid_mut().rows[row].cells[col].extra = id,
+                Some(id) => self.grid_mut().rows[row].cell_mut(col).extra = id,
                 None => log::debug!("too many distinct grapheme clusters; dropping one"),
             }
         }
@@ -1326,15 +1345,14 @@ impl Screen {
     fn split_wide(&mut self, row: usize, col: usize) {
         let template = self.cursor.template;
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
-        if col >= cells.len() {
+        let row = &mut self.grid_mut().rows[row];
+        let Some(&cell) = row.cells().get(col) else {
             return;
-        }
-        let flags = cells[col].flags;
-        if flags.contains(Flags::WIDE_SPACER) && col > 0 {
-            cells[col - 1] = Cell::blank(&template);
-        } else if flags.contains(Flags::WIDE) && col + 1 < cols {
-            cells[col + 1] = Cell::blank(&template);
+        };
+        if cell.flags.contains(Flags::WIDE_SPACER) && col > 0 {
+            *row.cell_mut(col - 1) = Cell::blank(&template);
+        } else if cell.flags.contains(Flags::WIDE) && col + 1 < cols {
+            *row.cell_mut(col + 1) = Cell::blank(&template);
         }
     }
 
@@ -1347,7 +1365,7 @@ impl Screen {
         self.split_wide(row, start);
         self.split_wide(row, end - 1);
         let blank = Cell::blank(&self.cursor.template);
-        self.grid_mut().rows[row].cells[start..end].fill(blank);
+        self.grid_mut().rows[row].cells_in(start..end).fill(blank);
         self.dirty = true;
     }
 
@@ -1372,7 +1390,7 @@ impl Screen {
         let n = n.min(self.cols - col);
         // A wide character at `col` moves whole; one the insertion lands in
         // the middle of can't.
-        if self.grid().rows[row].cells[col]
+        if self.grid().rows[row].cells()[col]
             .flags
             .contains(Flags::WIDE_SPACER)
         {
@@ -1380,7 +1398,7 @@ impl Screen {
         }
         let blank = Cell::blank(&self.cursor.template);
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
+        let cells = self.grid_mut().rows[row].cells_mut();
         cells[col..].rotate_right(n);
         cells[col..col + n].fill(blank);
         if cells[cols - 1].flags.contains(Flags::WIDE) {
@@ -1397,7 +1415,7 @@ impl Screen {
         self.split_wide(row, col + n - 1);
         let blank = Cell::blank(&self.cursor.template);
         let cols = self.cols;
-        let cells = &mut self.grid_mut().rows[row].cells;
+        let cells = self.grid_mut().rows[row].cells_mut();
         cells[col..].rotate_left(n);
         cells[cols - n..].fill(blank);
         self.cursor.pending_wrap = false;
@@ -1470,7 +1488,7 @@ impl Screen {
         // Only a lone ASCII base can't take the first character into its
         // cluster (see `join_cluster`).
         if let Some((row, col)) = self.cluster_start
-            && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells.get(col))
+            && let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells().get(col))
             && !self.is_lone_ascii(start)
             && let Some((&first, rest)) = run.split_first()
         {
@@ -1487,7 +1505,7 @@ impl Screen {
             let (chunk, rest) = run.split_at(run.len().min(self.cols - col));
             run = rest;
             let template = self.cursor.template;
-            let cells = &mut self.grid_mut().rows[row].cells[col..col + chunk.len()];
+            let cells = self.grid_mut().rows[row].cells_in(col..col + chunk.len());
             // Branchless, so that it vectorizes.
             let wide = cells.iter().fold(false, |any, cell| {
                 any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
@@ -1532,7 +1550,8 @@ impl Screen {
             if self.modes.autowrap && self.cols >= 2 {
                 let (row, col) = (self.cursor.row, self.cursor.col);
                 self.erase_cells(row, col, self.cols);
-                self.grid_mut().rows[row].cells[col]
+                self.grid_mut().rows[row]
+                    .cell_mut(col)
                     .flags
                     .insert(Flags::WRAP_GAP);
                 self.wrap_line();
@@ -1557,15 +1576,15 @@ impl Screen {
         if width == 2 {
             cell.flags.insert(Flags::WIDE);
         }
-        let cells = &mut self.grid_mut().rows[row].cells;
-        cells[col] = cell;
+        let cells = self.grid_mut().rows[row].cells_in(col..col + width);
+        cells[0] = cell;
         if width == 2 {
-            cells[col + 1] = Cell {
+            cells[1] = Cell {
                 c: ' ',
                 flags: cell.flags | Flags::WIDE_SPACER,
                 ..cell
             };
-            cells[col + 1].flags.remove(Flags::WIDE);
+            cells[1].flags.remove(Flags::WIDE);
         }
 
         if col + width >= self.cols {
@@ -1587,7 +1606,7 @@ impl Screen {
         let Some((row, col)) = self.last_printed else {
             return;
         };
-        let cell = self.grid().rows[row].cells[col];
+        let cell = self.grid().rows[row].cells()[col];
         let pair: String = [cell.c, EMOJI_PRESENTATION].into_iter().collect();
         if row != self.cursor.row
             || col + 1 >= self.cols
@@ -1597,9 +1616,9 @@ impl Screen {
             return;
         }
         self.split_wide(row, col + 1);
-        let cells = &mut self.grid_mut().rows[row].cells;
-        cells[col].flags.insert(Flags::WIDE);
-        cells[col + 1] = Cell {
+        let cells = self.grid_mut().rows[row].cells_in(col..col + 2);
+        cells[0].flags.insert(Flags::WIDE);
+        cells[1] = Cell {
             c: ' ',
             flags: cell.flags | Flags::WIDE_SPACER,
             ..cell
@@ -2082,7 +2101,15 @@ impl Perform for Screen {
         }
         self.last_printed = None;
         self.cluster_start = None;
-        let args: Vec<u16> = params.iter().map(|p| p[0]).collect();
+        // On the stack: this runs for every escape sequence that colors
+        // output. vte keeps at most 32 parameters.
+        let mut buf = [0u16; 32];
+        let mut len = 0;
+        for (slot, param) in buf.iter_mut().zip(params.iter()) {
+            *slot = param[0];
+            len += 1;
+        }
+        let args = &buf[..len];
         // Argument `i`, where 0 or absent means `default`.
         let arg = |i: usize, default: usize| match args.get(i) {
             Some(&0) | None => default,
@@ -2225,7 +2252,7 @@ impl Perform for Screen {
             }
             ([], 's') => self.save_cursor(),
             ([], 'u') => self.restore_cursor(),
-            ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, &args),
+            ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, args),
             ([b' '], 'q') => {
                 self.cursor_shape = match raw(0) {
                     3 | 4 => CursorShape::Underline,
@@ -2268,7 +2295,7 @@ impl Perform for Screen {
             ([b'#'], b'8') => {
                 for row in &mut self.grid_mut().rows {
                     row.wrapped = false;
-                    for cell in &mut row.cells {
+                    for cell in row.cells_mut() {
                         *cell = Cell {
                             c: 'E',
                             ..Cell::default()
