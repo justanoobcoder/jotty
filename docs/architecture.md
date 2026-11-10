@@ -58,10 +58,11 @@ compositor or GPU.
 stream into printable characters and control functions, and calls the
 `vte::Perform` methods that `Screen` implements.
 
-vte calls `print` once per character. `Screen` queues printable ASCII and
-writes it to the grid a row at a time, which is most of what output is. Every
-other `Perform` call, and the end of `Terminal::feed`, writes the queue first,
-so it lands as if printed character by character.
+jotty uses its own fork of vte (`justanoobcoder/vte`, branch `print-ascii`),
+which adds `Perform::print_ascii`: vte passes each run of printable ASCII in
+one call instead of calling `print` per character. `Screen` writes such a run
+to the grid a row at a time, which is most of what output is. Everything else
+still comes through `print`, one character at a time.
 
 `Screen` holds:
 
