@@ -12,7 +12,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::schema::{self, Key, SECTIONS};
 use super::{Layers, get_path, read_table, remove_path, save, set_path};
@@ -35,6 +35,8 @@ enum Mode {
     },
     /// Typing the filter.
     Filter,
+    /// The key binding table, over everything else.
+    Help,
 }
 
 /// Everything the TUI shows, and the changes it makes, apart from drawing.
@@ -221,6 +223,8 @@ impl State {
             }
             Mode::Edit { buffer, cursor } => self.handle_edit(key, buffer, cursor),
             Mode::Filter => self.handle_filter(key),
+            // Any key closes the help; it does nothing else.
+            Mode::Help => {}
         }
     }
 
@@ -255,6 +259,9 @@ impl State {
             }
             KeyCode::Enter if self.focus == Focus::Sections => self.focus = Focus::Keys,
             KeyCode::Enter => self.edit_selected(),
+            KeyCode::Char(' ') if self.focus == Focus::Keys => self.toggle_selected(),
+            KeyCode::Char('i') if self.focus == Focus::Keys => self.start_edit(),
+            KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('r') if self.focus == Focus::Keys => {
                 if let Some(key) = self.selected_key() {
                     let result = self.set(&key, None);
@@ -295,21 +302,40 @@ impl State {
 
     /// Toggles a bool or an enum, or starts editing anything else.
     fn edit_selected(&mut self) {
+        match self.selected_key() {
+            Some(key) if key.kind.toggles() => self.toggle_selected(),
+            Some(_) => self.start_edit(),
+            None => {}
+        }
+    }
+
+    /// Flips a bool or moves a choice to its next value.
+    fn toggle_selected(&mut self) {
         let Some(key) = self.selected_key() else {
             return;
         };
-        let current = self.effective_of(&key);
-        if key.kind.toggles() {
-            let result = self.set(&key, key.kind.next(current.as_ref()));
-            let shown = self.effective_of(&key).as_ref().map(schema::format);
-            self.report(
-                result.map(|()| format!("{} = {}", key.dotted(), shown.unwrap_or_default())),
-            );
-        } else {
-            let buffer = current.as_ref().map(schema::format).unwrap_or_default();
-            let cursor = buffer.chars().count();
-            self.mode = Mode::Edit { buffer, cursor };
+        if !key.kind.toggles() {
+            return self.report(Err(
+                "Space toggles bools and choices; press i to edit".into()
+            ));
         }
+        let result = self.set(&key, key.kind.next(self.effective_of(&key).as_ref()));
+        let shown = self.effective_of(&key).as_ref().map(schema::format);
+        self.report(result.map(|()| format!("{} = {}", key.dotted(), shown.unwrap_or_default())));
+    }
+
+    /// Edits the selected value as text, whatever its kind.
+    fn start_edit(&mut self) {
+        let Some(key) = self.selected_key() else {
+            return;
+        };
+        let buffer = self
+            .effective_of(&key)
+            .as_ref()
+            .map(schema::format)
+            .unwrap_or_default();
+        let cursor = buffer.chars().count();
+        self.mode = Mode::Edit { buffer, cursor };
     }
 
     fn handle_edit(&mut self, key: KeyEvent, mut buffer: String, mut cursor: usize) {
@@ -413,7 +439,7 @@ impl State {
                 self.filter.push_str(&text);
                 self.selected = 0;
             }
-            Mode::Normal => {}
+            Mode::Normal | Mode::Help => {}
         }
     }
 
@@ -432,6 +458,9 @@ impl State {
         self.draw_keys(frame, keys);
         self.draw_help(frame, help);
         self.draw_footer(frame, footer);
+        if self.mode == Mode::Help {
+            draw_bindings(frame);
+        }
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
@@ -621,8 +650,9 @@ impl State {
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         let help = match self.mode {
             Mode::Normal => {
-                "Enter edit/toggle  r reset key  R reset section  / filter  Tab switch  q quit"
+                "Enter edit  Space toggle  i edit text  r reset  / filter  ? help  q quit"
             }
+            Mode::Help => "any key closes the help",
             Mode::Edit { .. } => {
                 "Enter save  Esc cancel  Ctrl+U clear  (empty resets optional keys)"
             }
@@ -635,6 +665,70 @@ impl State {
         spans.push(help.dark_gray());
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+/// The keys of the TUI, as `?` lists them: groups of (keys, what they do).
+const BINDINGS: [(&str, &[(&str, &str)]); 2] = [
+    (
+        "Browsing",
+        &[
+            ("↑ ↓  j k", "move"),
+            ("g G  Home End", "first, last"),
+            ("Tab  ← →  h l", "switch between sections and keys"),
+            ("Enter", "toggle or cycle, or edit anything else"),
+            ("Space", "toggle a bool, cycle a choice"),
+            ("i", "edit the value as text"),
+            ("r", "reset the key to the config file"),
+            ("R R", "reset the whole section"),
+            ("/", "filter keys in every section"),
+            ("Esc", "clear the filter, or quit"),
+            ("?", "show this help"),
+            ("q  Ctrl+C", "quit"),
+        ],
+    ),
+    (
+        "Editing",
+        &[
+            ("Enter", "save"),
+            ("Esc  Ctrl+C", "cancel"),
+            ("Ctrl+U", "clear"),
+            ("← →  Home End", "move the cursor"),
+        ],
+    ),
+];
+
+/// The key binding table, centered over the rest.
+fn draw_bindings(frame: &mut Frame) {
+    let width = BINDINGS
+        .iter()
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|(keys, _)| text_width(keys))
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
+    for (group, keys) in BINDINGS {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(group.bold()));
+        for (keys, what) in keys {
+            let pad = " ".repeat(width.saturating_sub(text_width(keys)));
+            lines.push(Line::from(vec![
+                format!("  {keys}{pad}  ").cyan(),
+                Span::raw(*what),
+            ]));
+        }
+    }
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let area = frame
+        .area()
+        .centered(Constraint::Length(60), Constraint::Length(height));
+    let block = Block::bordered()
+        .title(" keys ")
+        .title_bottom(Line::from(" any key closes ").right_aligned())
+        .border_style(Style::new().fg(Color::Cyan));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Marks the filter while it is typed, in the title and the footer.
@@ -1019,6 +1113,43 @@ mod tests {
         assert_eq!(saved(&dir), None);
         assert_eq!(state.palette[1], DEFAULT_PALETTE[1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn space_toggles_and_i_edits() {
+        let (mut state, dir) = state("", "");
+        let blur = key(&state, "window.blur");
+        state.focus = Focus::Keys;
+        state.section = 1;
+        state.selected = state.visible().iter().position(|k| **k == blur).unwrap();
+        press(&mut state, KeyCode::Char(' '));
+        assert_eq!(state.override_of(&blur), Some(toml::Value::Boolean(true)));
+        // i edits even a bool as text.
+        press(&mut state, KeyCode::Char('i'));
+        assert_eq!(
+            state.mode,
+            Mode::Edit {
+                buffer: "true".into(),
+                cursor: 4
+            }
+        );
+        press(&mut state, KeyCode::Esc);
+        // Space on text says what to do instead, and changes nothing.
+        state.selected = 0;
+        press(&mut state, KeyCode::Char(' '));
+        assert!(matches!(state.message, Some((_, true))));
+        assert_eq!(state.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn help_closes_on_any_key_without_acting() {
+        let (mut state, _dir) = state("", "");
+        press(&mut state, KeyCode::Char('?'));
+        assert_eq!(state.mode, Mode::Help);
+        press(&mut state, KeyCode::Char('q'));
+        assert_eq!(state.mode, Mode::Normal);
+        assert!(!state.quit);
     }
 
     #[test]

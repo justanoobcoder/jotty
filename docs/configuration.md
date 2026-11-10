@@ -51,6 +51,8 @@ then move them into Nix once they are settled.
   `jotty config` won't open such a file, so that it can't overwrite it.
 
 In the TUI, `Enter` toggles a bool, cycles a choice, or edits anything else.
+`Space` only toggles or cycles, and `i` edits any value as text. `?` shows
+every key.
 Lists are typed comma-separated, or as a TOML array (`["a,b", "c"]`) when an
 item contains a comma. `r` removes the override of a key, `R` removes those
 of a whole section, `/` filters keys across sections, and `q` quits. An
