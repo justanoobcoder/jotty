@@ -795,7 +795,7 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
         s.parse::<Rgb>()
             .ok()
             // Not reversed with a highlighted row, or it shows the row's color.
-            .map(|Rgb(r, g, b)| Span::raw("  ").bg(Color::Rgb(r, g, b)).not_reversed())
+            .map(|Rgb { r, g, b }| Span::raw("  ").bg(Color::Rgb(r, g, b)).not_reversed())
     };
     let mut spans = Vec::new();
     match value {
@@ -1153,8 +1153,8 @@ mod tests {
         state
             .set(&red, Some(toml::Value::String("#ff0000".into())))
             .unwrap();
-        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
-        assert_eq!(state.palette[0], Rgb(1, 1, 1));
+        assert_eq!(state.palette[1], Rgb::new(0xff, 0, 0));
+        assert_eq!(state.palette[0], Rgb::new(1, 1, 1));
         assert!(state.override_of(&red).is_some());
         // Saved as all 16, but only red counts as overridden.
         let saved_palette = saved(&dir).unwrap()["colors"]["palette"]
@@ -1221,8 +1221,8 @@ mod tests {
         state
             .set(&red, Some(toml::Value::String("#ff0000".into())))
             .unwrap();
-        assert_eq!(state.palette[1], Rgb(0xff, 0, 0));
-        assert_eq!(state.palette[4], Rgb(0, 0, 0xff));
+        assert_eq!(state.palette[1], Rgb::new(0xff, 0, 0));
+        assert_eq!(state.palette[4], Rgb::new(0, 0, 0xff));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

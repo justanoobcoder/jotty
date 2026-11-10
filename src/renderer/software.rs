@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn fills_clipped_rectangles() {
         let mut batch = Batch::default();
-        batch.rect(2.0, 1.0, 10.0, 1.0, Rgb(255, 0, 0));
+        batch.rect(2.0, 1.0, 10.0, 1.0, Rgb::new(255, 0, 0));
         let mut canvas = vec![0; 4 * 4 * 3];
         paint(
             &batch,
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn translucent_fill_blends() {
         let mut batch = Batch::default();
-        batch.fill(0.0, 0.0, 1.0, 1.0, Rgb(255, 255, 255), 0.5);
+        batch.fill(0.0, 0.0, 1.0, 1.0, Rgb::new(255, 255, 255), 0.5);
         let mut canvas = vec![0; 4];
         paint(
             &batch,
@@ -510,7 +510,7 @@ mod tests {
             color: false,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(255, 255, 255));
         let mut canvas = vec![0; 4 * 3];
         paint(
             &batch,
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn repaints_only_marked_rows() {
         let mut batch = Batch::default();
-        batch.rect(0.0, 0.0, 1.0, 3.0, Rgb(255, 0, 0));
+        batch.rect(0.0, 0.0, 1.0, 3.0, Rgb::new(255, 0, 0));
         let mut canvas = vec![7; 4 * 3];
         paint(
             &batch,
@@ -557,13 +557,13 @@ mod tests {
     fn only_changed_bands_are_reported() {
         let bands = bands(0, 10, 3, 30);
         let mut batch = Batch::default();
-        batch.rect(0.0, 10.0, 5.0, 10.0, Rgb(1, 2, 3));
+        batch.rect(0.0, 10.0, 5.0, 10.0, Rgb::new(1, 2, 3));
         let before = fingerprint(&batch, &bands, CLEAR, 0);
         // Unknown contents: everything.
         assert_eq!(changed(&bands, &before, &[]), [(0, 30)]);
         assert!(changed(&bands, &before, &before).is_empty());
         // A glyph overhanging from the second row into the third.
-        batch.rect(0.0, 18.0, 1.0, 4.0, Rgb(9, 9, 9));
+        batch.rect(0.0, 18.0, 1.0, 4.0, Rgb::new(9, 9, 9));
         let after = fingerprint(&batch, &bands, CLEAR, 0);
         assert_eq!(changed(&bands, &after, &before), [(10, 30)]);
         // A new background color changes every band.
@@ -589,7 +589,7 @@ mod tests {
             color: true,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(0, 255, 0));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(0, 255, 0));
         let mut canvas = vec![0; 8];
         let atlases = Atlases {
             coverage: &[],
@@ -653,7 +653,7 @@ mod tests {
             color: false,
         };
         let mut batch = Batch::default();
-        batch.glyph(0.0, 0.0, &glyph, Rgb(255, 255, 255));
+        batch.glyph(0.0, 0.0, &glyph, Rgb::new(255, 255, 255));
         let mut canvas = vec![0; 4];
         paint(
             &batch,

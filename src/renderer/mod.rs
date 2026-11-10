@@ -113,7 +113,7 @@ impl Theme {
 
     /// The configured colors, as color queries report them.
     pub fn default_colors(&self) -> DefaultColors {
-        let rgb = |c: Rgb| (c.0, c.1, c.2);
+        let rgb = |c: Rgb| (c.r, c.g, c.b);
         DefaultColors {
             foreground: rgb(self.foreground),
             background: rgb(self.background),
@@ -128,7 +128,7 @@ impl Theme {
         if colors.is_empty() {
             return Cow::Borrowed(self);
         }
-        let rgb = |(r, g, b): (u8, u8, u8)| Rgb(r, g, b);
+        let rgb = |(r, g, b): (u8, u8, u8)| Rgb::new(r, g, b);
         let mut theme = self.clone();
         if let Some(c) = colors.foreground {
             theme.foreground = rgb(c);
@@ -150,11 +150,11 @@ impl Theme {
             16..=231 => {
                 let i = i - 16;
                 let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
-                Rgb(level(i / 36), level(i / 6 % 6), level(i % 6))
+                Rgb::new(level(i / 36), level(i / 6 % 6), level(i % 6))
             }
             232..=255 => {
                 let v = 8 + (i - 232) * 10;
-                Rgb(v, v, v)
+                Rgb::new(v, v, v)
             }
         }
     }
@@ -175,12 +175,12 @@ impl Theme {
                 self.indexed(i + 8)
             }
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb(r, g, b),
+            Color::Rgb(r, g, b) => Rgb::new(r, g, b),
         };
         let mut bg = match cell.bg {
             Color::Default => self.background,
             Color::Indexed(i) => self.indexed(i),
-            Color::Rgb(r, g, b) => Rgb(r, g, b),
+            Color::Rgb(r, g, b) => Rgb::new(r, g, b),
         };
         if cell.flags.contains(Flags::DIM) {
             fg = blend(fg, bg, 0.66);
@@ -215,7 +215,7 @@ impl Theme {
 /// Mixes `a` into `b` with weight `t` for `a`.
 fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let mix = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
-    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+    Rgb::new(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b))
 }
 
 /// A glyph's location in the atlas and placement relative to its cell.
@@ -307,7 +307,7 @@ impl Batch {
     /// Part of an image: `uv` normalized within it, drawn into `rect`.
     fn image(&mut self, rect: [f32; 4], uv: [f32; 4], uid: u64) {
         self.images.push((self.vertices.len() / VERTEX_FLOATS, uid));
-        self.quad(rect, uv, Rgb(255, 255, 255), 1.0, 3.0);
+        self.quad(rect, uv, Rgb::new(255, 255, 255), 1.0, 3.0);
     }
 
     #[cfg(test)]
@@ -485,7 +485,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
     let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
     let cursor_color = screen
         .cursor_color()
-        .map_or(theme.cursor, |(r, g, b)| Rgb(r, g, b));
+        .map_or(theme.cursor, |(r, g, b)| Rgb::new(r, g, b));
     let offset = screen.display_offset() as isize;
     let mut images = Vec::new();
     if !screen.graphics().is_empty() {
@@ -590,7 +590,7 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
                 let color = match extra.underline_color {
                     Color::Default => fg,
                     Color::Indexed(i) => theme.indexed(i),
-                    Color::Rgb(r, g, b) => Rgb(r, g, b),
+                    Color::Rgb(r, g, b) => Rgb::new(r, g, b),
                 };
                 front.glyph(px, py, &glyph, color);
             }
@@ -897,10 +897,10 @@ mod tests {
         assert!(matches!(base.effective(t.screen()), Cow::Borrowed(_)));
         t.feed(b"\x1b]11;#010203\x07\x1b]4;1;#00ff00\x07\x1b]4;100;#0000ff\x07");
         let theme = base.effective(t.screen());
-        assert_eq!(theme.background, Rgb(1, 2, 3));
+        assert_eq!(theme.background, Rgb::new(1, 2, 3));
         assert_eq!(theme.foreground, base.foreground);
-        assert_eq!(theme.indexed(1), Rgb(0, 255, 0));
-        assert_eq!(theme.indexed(100), Rgb(0, 0, 255));
+        assert_eq!(theme.indexed(1), Rgb::new(0, 255, 0));
+        assert_eq!(theme.indexed(100), Rgb::new(0, 0, 255));
         assert_eq!(theme.indexed(2), base.indexed(2));
     }
 
@@ -934,11 +934,11 @@ mod tests {
     fn indexed_colors() {
         let t = theme();
         assert_eq!(t.indexed(3), t.palette[3]);
-        assert_eq!(t.indexed(16), Rgb(0, 0, 0));
-        assert_eq!(t.indexed(196), Rgb(255, 0, 0));
-        assert_eq!(t.indexed(231), Rgb(255, 255, 255));
-        assert_eq!(t.indexed(232), Rgb(8, 8, 8));
-        assert_eq!(t.indexed(255), Rgb(238, 238, 238));
+        assert_eq!(t.indexed(16), Rgb::new(0, 0, 0));
+        assert_eq!(t.indexed(196), Rgb::new(255, 0, 0));
+        assert_eq!(t.indexed(231), Rgb::new(255, 255, 255));
+        assert_eq!(t.indexed(232), Rgb::new(8, 8, 8));
+        assert_eq!(t.indexed(255), Rgb::new(238, 238, 238));
     }
 
     #[test]
@@ -984,15 +984,15 @@ mod tests {
             ..Cell::default()
         };
         // Only the background configured: the text is still inverted.
-        t.selection_background = Some(Rgb(1, 2, 3));
+        t.selection_background = Some(Rgb::new(1, 2, 3));
         assert_eq!(
             t.cell_colors(&red, /* selected= */ true, None),
-            (t.background, Rgb(1, 2, 3))
+            (t.background, Rgb::new(1, 2, 3))
         );
-        t.selection_foreground = Some(Rgb(4, 5, 6));
+        t.selection_foreground = Some(Rgb::new(4, 5, 6));
         assert_eq!(
             t.cell_colors(&red, /* selected= */ true, None),
-            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+            (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Inverse cells use the configured colors too.
         let inverse = Cell {
@@ -1001,7 +1001,7 @@ mod tests {
         };
         assert_eq!(
             t.cell_colors(&inverse, /* selected= */ true, None),
-            (Rgb(4, 5, 6), Rgb(1, 2, 3))
+            (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Unselected cells are unaffected.
         assert_eq!(
@@ -1021,14 +1021,14 @@ mod tests {
     #[test]
     fn cursor_text_color() {
         let mut t = theme();
-        t.cursor_text = Some(Rgb(1, 2, 3));
+        t.cursor_text = Some(Rgb::new(1, 2, 3));
         let cell = Cell {
             fg: Color::Indexed(2),
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, /* selected= */ false, Some(Rgb(9, 9, 9))),
-            (Rgb(1, 2, 3), Rgb(9, 9, 9))
+            t.cell_colors(&cell, /* selected= */ false, Some(Rgb::new(9, 9, 9))),
+            (Rgb::new(1, 2, 3), Rgb::new(9, 9, 9))
         );
     }
 
@@ -1042,7 +1042,7 @@ mod tests {
             METRICS,
             &mut FakeGlyphs::default(),
         );
-        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+        assert_eq!(quad_at(&batch, 0).1, Rgb::new(0, 255, 0).to_f32());
 
         // Other cursor shapes and the unfocused outline use it too.
         term.feed(b"\x1b[6 q");
@@ -1052,7 +1052,7 @@ mod tests {
             METRICS,
             &mut FakeGlyphs::default(),
         );
-        assert_eq!(quad_at(&batch, 0).1, Rgb(0, 255, 0).to_f32());
+        assert_eq!(quad_at(&batch, 0).1, Rgb::new(0, 255, 0).to_f32());
 
         term.feed(b"\x1b]112\x07");
         let batch = build(
@@ -1072,7 +1072,7 @@ mod tests {
             ..Cell::default()
         };
         let fg = t.cell_colors(&cell, /* selected= */ false, None).0;
-        assert!(fg.0 < t.foreground.0 && fg.0 > t.background.0);
+        assert!(fg.r < t.foreground.r && fg.r > t.background.r);
     }
 
     #[test]
@@ -1175,8 +1175,8 @@ mod tests {
         let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.1, [(Underline::Curly, 1), (Underline::Curly, 2)]);
         // Each cell: glyph, then its underline in red.
-        assert_eq!(quad_at(&batch, 1).1, Rgb(255, 0, 0).to_f32());
-        assert_eq!(quad_at(&batch, 3).1, Rgb(255, 0, 0).to_f32());
+        assert_eq!(quad_at(&batch, 1).1, Rgb::new(255, 0, 0).to_f32());
+        assert_eq!(quad_at(&batch, 3).1, Rgb::new(255, 0, 0).to_f32());
 
         // An indexed underline color resolves through the palette.
         let mut term = Terminal::new(6, 1, 0);
@@ -1223,7 +1223,7 @@ mod tests {
     fn explicit_background_matching_default_stays_opaque() {
         let mut theme = theme();
         theme.opacity = 0.5;
-        let Rgb(r, g, b) = theme.background;
+        let Rgb { r, g, b } = theme.background;
         // A theme painting the configured background color explicitly.
         let mut term = Terminal::new(4, 1, 0);
         term.feed(format!("\x1b[?25l\x1b[48;2;{r};{g};{b}m ").as_bytes());

@@ -262,8 +262,8 @@ pub struct ColorConfig {
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
-            foreground: Rgb(0xdc, 0xdc, 0xdc),
-            background: Rgb(0x18, 0x18, 0x18),
+            foreground: Rgb::new(0xdc, 0xdc, 0xdc),
+            background: Rgb::new(0x18, 0x18, 0x18),
             cursor: None,
             cursor_text: None,
             selection_foreground: None,
@@ -275,22 +275,22 @@ impl Default for ColorConfig {
 
 /// The 16 ANSI colors used where `colors.palette` sets none.
 pub const DEFAULT_PALETTE: [Rgb; 16] = [
-    Rgb(0x24, 0x24, 0x24),
-    Rgb(0xe0, 0x6c, 0x75),
-    Rgb(0x98, 0xc3, 0x79),
-    Rgb(0xe5, 0xc0, 0x7b),
-    Rgb(0x61, 0xaf, 0xef),
-    Rgb(0xc6, 0x78, 0xdd),
-    Rgb(0x56, 0xb6, 0xc2),
-    Rgb(0xc8, 0xc8, 0xc8),
-    Rgb(0x5c, 0x63, 0x70),
-    Rgb(0xff, 0x7a, 0x85),
-    Rgb(0xb5, 0xe8, 0x90),
-    Rgb(0xff, 0xd6, 0x8a),
-    Rgb(0x7e, 0xc7, 0xff),
-    Rgb(0xde, 0x93, 0xf2),
-    Rgb(0x6e, 0xd3, 0xdf),
-    Rgb(0xff, 0xff, 0xff),
+    Rgb::new(0x24, 0x24, 0x24),
+    Rgb::new(0xe0, 0x6c, 0x75),
+    Rgb::new(0x98, 0xc3, 0x79),
+    Rgb::new(0xe5, 0xc0, 0x7b),
+    Rgb::new(0x61, 0xaf, 0xef),
+    Rgb::new(0xc6, 0x78, 0xdd),
+    Rgb::new(0x56, 0xb6, 0xc2),
+    Rgb::new(0xc8, 0xc8, 0xc8),
+    Rgb::new(0x5c, 0x63, 0x70),
+    Rgb::new(0xff, 0x7a, 0x85),
+    Rgb::new(0xb5, 0xe8, 0x90),
+    Rgb::new(0xff, 0xd6, 0x8a),
+    Rgb::new(0x7e, 0xc7, 0xff),
+    Rgb::new(0xde, 0x93, 0xf2),
+    Rgb::new(0x6e, 0xd3, 0xdf),
+    Rgb::new(0xff, 0xff, 0xff),
 ];
 
 impl ColorConfig {
@@ -312,12 +312,20 @@ impl ColorConfig {
 /// An sRGB color, written as `"#rrggbb"` in the config file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Rgb(pub u8, pub u8, pub u8);
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
 
 impl Rgb {
+    pub const fn new(r: u8, g: u8, b: u8) -> Rgb {
+        Rgb { r, g, b }
+    }
+
     /// The channels scaled to 0.0–1.0.
     pub fn to_f32(self) -> [f32; 3] {
-        [self.0, self.1, self.2].map(|c| f32::from(c) / 255.0)
+        [self.r, self.g, self.b].map(|c| f32::from(c) / 255.0)
     }
 }
 
@@ -345,13 +353,13 @@ impl FromStr for Rgb {
         }
         let channel =
             |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("checked as hex digits above");
-        Ok(Rgb(channel(0), channel(2), channel(4)))
+        Ok(Rgb::new(channel(0), channel(2), channel(4)))
     }
 }
 
 impl fmt::Display for Rgb {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+        write!(f, "#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
     }
 }
 
@@ -601,13 +609,16 @@ mod tests {
         assert!(config.window.blur);
         assert_eq!(config.terminal.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.terminal.scrollback, 500);
-        assert_eq!(config.colors.cursor(), Rgb(255, 0, 0));
-        assert_eq!(config.colors.cursor_text, Some(Rgb(0, 255, 0)));
-        assert_eq!(config.colors.selection_foreground, Some(Rgb(0, 0, 1)));
-        assert_eq!(config.colors.selection_background, Some(Rgb(255, 255, 254)));
+        assert_eq!(config.colors.cursor(), Rgb::new(255, 0, 0));
+        assert_eq!(config.colors.cursor_text, Some(Rgb::new(0, 255, 0)));
+        assert_eq!(config.colors.selection_foreground, Some(Rgb::new(0, 0, 1)));
+        assert_eq!(
+            config.colors.selection_background,
+            Some(Rgb::new(255, 255, 254))
+        );
         let palette = config.colors.palette();
-        assert_eq!(palette[0], Rgb(1, 2, 3));
-        assert_eq!(palette[1], Rgb(0xaa, 0xbb, 0xcc));
+        assert_eq!(palette[0], Rgb::new(1, 2, 3));
+        assert_eq!(palette[1], Rgb::new(0xaa, 0xbb, 0xcc));
         assert_eq!(palette[2], DEFAULT_PALETTE[2]);
     }
 
@@ -633,7 +644,7 @@ mod tests {
     #[test]
     fn color_roundtrip() {
         let c: Rgb = "#1a2B3c".parse().unwrap();
-        assert_eq!(c, Rgb(0x1a, 0x2b, 0x3c));
+        assert_eq!(c, Rgb::new(0x1a, 0x2b, 0x3c));
         assert_eq!(c.to_string(), "#1a2b3c");
         assert_eq!("1a2b3c".parse::<Rgb>().unwrap(), c);
     }
