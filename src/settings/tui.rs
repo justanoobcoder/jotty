@@ -535,6 +535,9 @@ impl State {
             Mode::Edit { buffer, cursor } => Some(edit_window(buffer, *cursor, room)),
             _ => None,
         };
+        let highlight_row = |i: usize| {
+            i == self.selected && !editing && (self.focus == Focus::Keys || !self.filter.is_empty())
+        };
         let items = visible.iter().enumerate().map(|(i, key)| {
             let overridden = self.override_of(key).is_some();
             let mark = if overridden { "● " } else { "  " };
@@ -547,7 +550,14 @@ impl State {
             } else {
                 spans.extend(value_spans(value.as_ref()));
             }
-            ListItem::new(Line::from(spans))
+            // Highlighted as the row's own style, which the swatches can
+            // undo; a highlight style would be drawn over them.
+            let style = if highlight_row(i) {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            ListItem::new(Line::from(spans)).style(style)
         });
         let filtering = self.mode == Mode::Filter;
         let matches = format!("  {} found ", visible.len());
@@ -587,12 +597,7 @@ impl State {
         if self.focus == Focus::Keys || !self.filter.is_empty() {
             state.select(Some(self.selected));
         }
-        let highlight = if editing {
-            Style::new()
-        } else {
-            Style::new().add_modifier(Modifier::REVERSED)
-        };
-        let list = List::new(items).block(block).highlight_style(highlight);
+        let list = List::new(items).block(block);
         frame.render_stateful_widget(list, area, &mut state);
         if filtering {
             // After the badge and the space, at the end of the filter.
@@ -764,7 +769,8 @@ fn value_spans(value: Option<&toml::Value>) -> Vec<Span<'static>> {
     let swatch = |s: &str| {
         s.parse::<Rgb>()
             .ok()
-            .map(|Rgb(r, g, b)| Span::raw("  ").bg(Color::Rgb(r, g, b)))
+            // Not reversed with a highlighted row, or it shows the row's color.
+            .map(|Rgb(r, g, b)| Span::raw("  ").bg(Color::Rgb(r, g, b)).not_reversed())
     };
     let mut spans = Vec::new();
     match value {
