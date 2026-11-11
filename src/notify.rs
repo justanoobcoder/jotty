@@ -43,13 +43,21 @@ const NO_REPLY_EXPECTED: u8 = 1;
 /// Something the window should do after reading the bus.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A notification was clicked: focus the window, with the activation
-    /// token the daemon sent, if it sent one.
-    Activate(Option<String>),
+    /// A notification was clicked: focus the window it was shown for (by
+    /// the tag given to [`Bus::notify`]), with the activation token the
+    /// daemon sent, if it sent one.
+    Activate { tag: u32, token: Option<String> },
+}
+
+/// A `Notify` call whose reply (the notification's id) is due.
+struct Pending {
+    serial: u32,
+    tag: u32,
 }
 
 struct Shown {
     id: u32,
+    tag: u32,
     /// The daemon's unique bus name; only it may report on the notification.
     sender: String,
     token: Option<String>,
@@ -95,8 +103,7 @@ pub struct Bus {
     received: Vec<u8>,
     /// Messages the socket couldn't take yet.
     outgoing: VecDeque<u8>,
-    /// Serials of `Notify` calls whose reply (the notification's id) is due.
-    pending: VecDeque<u32>,
+    pending: VecDeque<Pending>,
     shown: VecDeque<Shown>,
 }
 
@@ -166,9 +173,10 @@ impl Bus {
         self.stream.try_clone()
     }
 
-    /// Shows a notification that focuses the window when clicked. It is
-    /// dropped when the bus isn't keeping up.
-    pub fn notify(&mut self, app_id: &str, summary: &str, body: &str) -> io::Result<()> {
+    /// Shows a notification that focuses the window when clicked; `tag`
+    /// comes back with the click to tell which. It is dropped when the bus
+    /// isn't keeping up.
+    pub fn notify(&mut self, tag: u32, app_id: &str, summary: &str, body: &str) -> io::Result<()> {
         if self.outgoing.len() >= MAX_OUTGOING {
             log::warn!("the session bus isn't reading; dropping a notification");
             return Ok(());
@@ -186,7 +194,7 @@ impl Bus {
         if self.pending.len() == MAX_SHOWN {
             self.pending.pop_front();
         }
-        self.pending.push_back(serial);
+        self.pending.push_back(Pending { serial, tag });
         Ok(())
     }
 
@@ -224,11 +232,13 @@ impl Bus {
                 let Some(i) = self
                     .pending
                     .iter()
-                    .position(|&s| Some(s) == message.reply_serial)
+                    .position(|p| Some(p.serial) == message.reply_serial)
                 else {
                     return;
                 };
-                self.pending.remove(i);
+                let Some(Pending { tag, .. }) = self.pending.remove(i) else {
+                    return;
+                };
                 let mut body = message.body();
                 if message.kind == ERROR {
                     let text = if message.signature.starts_with('s') {
@@ -250,6 +260,7 @@ impl Bus {
                     let sender = message.sender.unwrap_or_default();
                     self.shown.push_back(Shown {
                         id,
+                        tag,
                         sender,
                         token: None,
                     });
@@ -270,7 +281,11 @@ impl Bus {
                     // version 1.2 of the specification.
                     (Some("ActivationToken"), "us") => self.shown[i].token = body.str().ok(),
                     (Some("ActionInvoked"), "us") if body.str().as_deref() == Ok("default") => {
-                        events.push(Event::Activate(self.shown[i].token.take()));
+                        let shown = &mut self.shown[i];
+                        events.push(Event::Activate {
+                            tag: shown.tag,
+                            token: shown.token.take(),
+                        });
                     }
                     (Some("NotificationClosed"), _) => {
                         self.shown.remove(i);
@@ -754,7 +769,7 @@ mod tests {
     }
 
     /// Runs messages through `handle`, as `read` does.
-    fn feed(state: &mut (VecDeque<u32>, VecDeque<Shown>), messages: &[Vec<u8>]) -> Vec<Event> {
+    fn feed(state: &mut (VecDeque<Pending>, VecDeque<Shown>), messages: &[Vec<u8>]) -> Vec<Event> {
         let (a, _) = UnixStream::pair().unwrap();
         let mut bus = Bus {
             stream: a,
@@ -787,7 +802,7 @@ mod tests {
         };
         let body = "x".repeat(1024);
         for _ in 0..2000 {
-            bus.notify("jotty", "title", &body).unwrap();
+            bus.notify(0, "jotty", "title", &body).unwrap();
         }
         assert!(bus.has_outgoing());
         assert!(bus.outgoing.len() < MAX_OUTGOING + 2048);
@@ -866,7 +881,10 @@ mod tests {
 
     #[test]
     fn click_activates_with_token() {
-        let mut state = (VecDeque::from([5]), VecDeque::new());
+        let mut state = (
+            VecDeque::from([Pending { serial: 5, tag: 7 }]),
+            VecDeque::new(),
+        );
         let events = feed(
             &mut state,
             &[
@@ -875,14 +893,18 @@ mod tests {
                 signal("ActionInvoked", ":1.9", 42, "default"),
             ],
         );
-        assert_eq!(events, [Event::Activate(Some("tok".into()))]);
+        let activate = |token: Option<&str>| Event::Activate {
+            tag: 7,
+            token: token.map(String::from),
+        };
+        assert_eq!(events, [activate(Some("tok"))]);
         assert!(state.0.is_empty());
 
         let events = feed(
             &mut state,
             &[signal("ActionInvoked", ":1.9", 42, "default")],
         );
-        assert_eq!(events, [Event::Activate(None)]);
+        assert_eq!(events, [activate(None)]);
 
         let mut body = Writer::default();
         body.u32(42);
@@ -903,7 +925,10 @@ mod tests {
 
     #[test]
     fn ignores_other_notifications_and_senders() {
-        let mut state = (VecDeque::from([5]), VecDeque::new());
+        let mut state = (
+            VecDeque::from([Pending { serial: 5, tag: 7 }]),
+            VecDeque::new(),
+        );
         let events = feed(
             &mut state,
             &[

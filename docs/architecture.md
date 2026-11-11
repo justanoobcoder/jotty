@@ -43,13 +43,14 @@ on the CPU.
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
 | `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications`. It connects on a thread of its own; once connected it is non-blocking, with a bounded write queue | no |
 | `watch.rs` | Reload triggers: inotify on the directories of the config and the overrides, a SIGUSR1 self-pipe | no |
+| `instance.rs` | Single instance: the socket path, the lock that lets one jotty bind it, and the request a later jotty sends (directory, environment, command) | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |
 | `renderer/atlas.rs` | Glyph atlas: shelf packing and the on-demand glyph cache | no |
 | `renderer/gl.rs` | EGL context, shaders, atlas texture, draw and swap | yes |
 | `renderer/software.rs` | CPU drawing of the batch into `wl_shm` buffers | `wl_shm` only; drawing is unit-tested |
-| `app.rs` | Wayland objects and handlers, the event loop, gluing everything | yes |
+| `app.rs` | Wayland objects and handlers, the windows, the event loop, gluing everything | yes |
 
 Everything except `renderer/gl.rs` and `app.rs` is unit-tested without a
 compositor or GPU.
@@ -168,7 +169,7 @@ and `TERM_PROGRAM=jotty`. The master is non-blocking:
 
 - Reading happens when the fd is readable, up to 1 MiB per wake-up, so a
   flood of output can't starve input handling and drawing. `EIO` means the
-  child and all its descendants closed the pty; jotty then exits.
+  child and all its descendants closed the pty; the window then closes.
 - Writing goes through a queue. If the pty is full (for example when pasting
   a large text into a program that isn't reading), the remainder waits and a
   temporary writable-fd source drains it, so the loop never blocks.
@@ -336,6 +337,38 @@ most one frame per display refresh, and nothing is drawn while the window is
 hidden. `eglSwapBuffers` (or the CPU renderer's attach) also commits the
 surface.
 
+## Windows and single instance (`app.rs`, `instance.rs`)
+
+One process can have several windows. `App` holds what they share: the
+Wayland globals, the seat's keyboard, pointer, clipboard and text input,
+the config, the link patterns and the session bus. Each `TermWindow` holds
+its surface, renderer, terminal, pty and the input state that belongs to
+it (selection, search, vi mode, preedit). Events that name a surface
+(configure, frame callbacks, pointer events, keyboard and text-input
+`enter`) go to that surface's window; keys go to the window with keyboard
+focus, and input method events to the one the input method entered. Loop
+sources (the pty, timers, pastes) carry their window's id and remove
+themselves once it is gone. What a window asks of the whole application
+(a reload, a new window) is queued and done after the event, so no handler
+holds a window while the list changes. A window closes when its child hangs
+up or the compositor asks; jotty exits after the last one, with that
+window's exit status. Each window loads its own fonts and glyph atlas.
+
+**Single instance.** With `--single-instance`, `main.rs` calls
+`instance::start` before connecting to Wayland. Under a lock file
+(`flock`), so that two jottys starting at once take turns, it connects to
+`$XDG_RUNTIME_DIR/jotty-<display>-<config>.sock`, where `<config>` is an
+FNV-1a hash of the canonical `--config` path (or `default`). If a jotty
+answers, this one sends a request: a magic, a version, and length-prefixed
+byte strings for the directory, the environment and the command, so
+nothing needs to be UTF-8. The running jotty reads it from a non-blocking
+socket in its event loop, opens a window with that directory and
+environment (taking `XDG_ACTIVATION_TOKEN` from it to activate the window),
+and replies with a status byte. If no jotty answers (no socket, or one
+whose owner died), this one removes the stale file, binds the socket and
+serves. When it exits, it removes the socket only if the file is still
+the one it created.
+
 ## Window and scaling (`app.rs`)
 
 The window is an `xdg_toplevel` that asks for server-side decorations. The
@@ -359,9 +392,9 @@ Notifications (OSC 9, OSC 777) go to the notification daemon through
 to the session bus (SASL `EXTERNAL`), says `Hello`, subscribes to the
 daemon's signals with `AddMatch`, and adds the socket to the event loop. It
 then sends `Notify` with a `default` action and remembers the id the reply
-carries. When that notification is clicked, the daemon sends
-`ActivationToken` and `ActionInvoked`, and jotty activates its surface with
-the token, which moves focus because the token came from the click. A
+carries, with the window that asked for it. When that notification is
+clicked, the daemon sends `ActivationToken` and `ActionInvoked`, and jotty
+activates that window's surface with the token, which moves focus because the token came from the click. A
 daemon without activation tokens gets the urgency request instead. Signals
 are accepted only from the bus name that answered the `Notify` call. If the
 bus goes away, jotty connects again on the next notification.
@@ -395,14 +428,16 @@ can't end bracketed mode early.
 
 The `unsafe` code is confined to:
 
-- `pty.rs`: `openpty`, `fcntl`, `ioctl`, `kill`, and the `pre_exec` hook,
-  which only makes async-signal-safe calls;
+- `pty.rs`: `openpty`, `fcntl`, `ioctl`, `kill`, the `pre_exec` hook,
+  which only makes async-signal-safe calls, and `waitpid` on a thread for
+  the child of a closed window, which nothing else waits for;
 - `font.rs`: the fontconfig FFI calls, each a create/use/destroy sequence
   inside one function, and `mmap` of font files, which are never unmapped
   (so the `&'static` slices that faces borrow stay valid);
 - `watch.rs`: `inotify_init1`/`inotify_add_watch`, and the SIGUSR1
   handler, which only writes a byte to a pipe the event loop reads;
 - `renderer/gl.rs`: EGL and GL calls. The `Renderer` must not outlive the
-  `wl_display` or the `wl_surface`. `App` declares `renderer` before `window`,
-  so it is dropped first, and the event loop holding the connection outlives
-  `App`.
+  `wl_display` or the `wl_surface`. `TermWindow` declares `renderer` before
+  `window`, so it is dropped first, and the event loop holding the
+  connection outlives `App` and its windows;
+- `instance.rs`: `flock` on the lock file.

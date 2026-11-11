@@ -166,6 +166,8 @@ pub struct WindowConfig {
     /// Show the desktop notifications programs ask for (OSC 9, OSC 777)
     /// while the window isn't focused.
     pub notifications: bool,
+    /// Open windows in the jotty already running, as `--single-instance`.
+    pub single_instance: bool,
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
@@ -190,6 +192,7 @@ impl Default for WindowConfig {
             renderer: RendererKind::Cpu,
             bell_urgent: true,
             notifications: true,
+            single_instance: false,
             columns: 80,
             lines: 24,
         }

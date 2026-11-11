@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::terminfo::Term;
@@ -65,12 +65,15 @@ fn set_flag(
 const MAX_QUEUED_RESPONSES: usize = 1 << 20;
 
 impl Pty {
-    /// Spawns `program` with `args` on a new pseudo-terminal.
+    /// Spawns `program` with `args` on a new pseudo-terminal, in `cwd` (or
+    /// jotty's current directory) with `env` (or jotty's environment).
     pub fn spawn(
         program: impl AsRef<OsStr>,
         args: &[OsString],
         term: &Term,
         size: WindowSize,
+        cwd: Option<&Path>,
+        env: Option<&[(OsString, OsString)]>,
     ) -> io::Result<Pty> {
         use std::os::fd::{AsFd, FromRawFd};
         use std::os::unix::process::CommandExt;
@@ -103,6 +106,12 @@ impl Pty {
         )?;
 
         let mut command = Command::new(program);
+        if let Some(env) = env {
+            command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        }
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
         command
             .args(args)
             .stdin(Stdio::from(slave.try_clone()?))
@@ -113,7 +122,10 @@ impl Pty {
             .env("TERM_PROGRAM", "jotty")
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
             .env_remove("LINES")
-            .env_remove("COLUMNS");
+            .env_remove("COLUMNS")
+            // Meant for the window that was started with it, and used up.
+            .env_remove("XDG_ACTIVATION_TOKEN")
+            .env_remove("DESKTOP_STARTUP_ID");
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
             command.pre_exec(|| {
@@ -267,9 +279,21 @@ impl Drop for Pty {
         unsafe {
             libc::kill(self.child.id() as libc::pid_t, libc::SIGHUP);
         }
-        // Not waiting for it: the window must close at once. jotty exits
-        // right after this, and init reaps whatever is left.
-        if let Err(e) = self.child.try_wait() {
+        // Not waiting for it here: the window must close at once, while
+        // other windows go on, so a thread reaps it once it has exited.
+        if let Ok(Some(_)) | Err(_) = self.child.try_wait() {
+            return;
+        }
+        let pid = self.child.id() as libc::pid_t;
+        let reaper = std::thread::Builder::new()
+            .name("reap-child".into())
+            .spawn(move || {
+                // SAFETY: waitpid on our own child, which nothing else waits
+                // for: the `Child` is dropped with the `Pty` and never waited
+                // on again.
+                unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            });
+        if let Err(e) = reaper {
             log::debug!("cannot reap the child: {e}");
         }
     }
@@ -327,7 +351,15 @@ mod tests {
     }
 
     fn sh_with(script: &str, term: &Term) -> Pty {
-        Pty::spawn("/bin/sh", &["-c".into(), script.into()], term, SIZE).unwrap()
+        Pty::spawn(
+            "/bin/sh",
+            &["-c".into(), script.into()],
+            term,
+            SIZE,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -358,6 +390,21 @@ mod tests {
     fn runs_child_with_environment() {
         let mut pty = sh("echo \"$TERM $COLORTERM\"");
         assert!(read_to_end(&mut pty).contains("xterm-256color truecolor"));
+    }
+
+    #[test]
+    fn runs_in_the_given_directory_with_the_given_environment() {
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let env = [
+            ("FOO".into(), "bar".into()),
+            ("XDG_ACTIVATION_TOKEN".into(), "used".into()),
+            ("PATH".into(), "/bin:/usr/bin".into()),
+        ];
+        let script = "echo \"[$FOO|$XDG_ACTIVATION_TOKEN|$HOME|$(pwd)]\"";
+        let args = ["-c".into(), script.into()];
+        let mut pty = Pty::spawn("/bin/sh", &args, &xterm(), SIZE, Some(&dir), Some(&env)).unwrap();
+        let out = read_to_end(&mut pty);
+        assert!(out.contains(&format!("[bar|||{}]", dir.display())), "{out}");
     }
 
     #[test]
@@ -443,6 +490,6 @@ mod tests {
 
     #[test]
     fn spawn_failure_is_an_error() {
-        assert!(Pty::spawn("/nonexistent/program", &[], &xterm(), SIZE).is_err());
+        assert!(Pty::spawn("/nonexistent/program", &[], &xterm(), SIZE, None, None).is_err());
     }
 }

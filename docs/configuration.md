@@ -24,7 +24,7 @@ and the other window and terminal options apply right away. A new
 only apply to new windows, which jotty logs when they change:
 `terminal.shell`, `terminal.term`, `terminal.scrollback`,
 `window.renderer`, `window.columns`, `window.lines`, `window.title` and
-`window.app_id`.
+`window.app_id`. `window.single_instance` applies when jotty next starts.
 
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
@@ -126,6 +126,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
 | `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
 | `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
+| `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
 
@@ -182,6 +183,37 @@ make; printf '\e]777;notify;make;finished with status %d\a' $?
 
 In Claude Code, choose the `ghostty` notification channel (`/config`, then
 *Notifications*), which sends `OSC 777`; `iterm2` sends `OSC 9`.
+
+### Single instance
+
+With `single_instance = true`, or when started with `--single-instance`,
+jotty opens its window in the jotty that is already running instead of
+starting another process, as `kitty --single-instance` does:
+
+1. The first jotty finds none running. It opens its window and listens on
+   a socket in `$XDG_RUNTIME_DIR`
+   (`jotty-<wayland display>-<config>.sock`).
+2. Each later jotty connects to that socket and sends its current
+   directory, its environment and its `-e` command. The running jotty opens
+   the window, and the later one exits at once, with status 0. If the
+   window can't be opened (no such program, say), it prints the error and
+   exits with status 1.
+3. The running jotty exits when its last window closes, with the exit status
+   of the program in that window. The next jotty becomes the new one.
+
+New windows open faster this way, as fonts and the Wayland connection are
+already loaded, and all windows share one process's memory.
+
+The window gets the directory and environment of the command that asked for
+it, so a jotty started from a `nix develop` shell runs its shell in that
+environment, and the launcher's activation token gives it focus. The config
+is the running jotty's: each config file (`--config`, or none for the
+default one) and each Wayland display has its own instance, so `jotty -c
+other.toml --single-instance` doesn't join the default one. A jotty of
+another version doesn't join either, and opens a window of its own.
+
+All windows of an instance go down together if it crashes. See
+[known issues](known-issues.md#wayland-integration).
 
 ### Renderer
 
@@ -320,7 +352,7 @@ Actions you don't list keep their defaults.
 | `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
 | `reload_config` | `ctrl+shift+r` | Read the config file again |
 | `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
-| `new_window` | `ctrl+shift+n` | Open another jotty in the current directory of the shell (or whatever runs in the terminal), with the same `--config` file |
+| `new_window` | `ctrl+shift+n` | Open another window in the current directory of the shell (or whatever runs in the terminal) |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -355,8 +387,8 @@ scroll_page_up = ["shift+page_up", "shift+wheel_up"]
 scroll_page_down = ["shift+page_down", "shift+wheel_down"]
 ```
 
-**A new window in the same directory.** `new_window` starts another jotty
-where you are: in the current directory of the program running in the
+**A new window in the same directory.** `new_window` opens another window,
+in the same jotty process, where you are: in the current directory of the program running in the
 terminal, usually your shell after its last `cd`. It is bound to
 Ctrl+Shift+N; to use Shift+Enter instead (which then no longer reaches
 programs that use it, such as some chat CLIs and Neovim mappings):
