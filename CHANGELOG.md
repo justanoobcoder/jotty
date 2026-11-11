@@ -8,6 +8,8 @@ CHANGELOG
     the jotty already running, with the directory and environment of the
     command that asked for them
 - Ctrl+Shift+N opens the new window in the same process
+- Draw a title bar with close, maximize and minimize buttons, and borders,
+    on compositors without server-side decorations (GNOME)
 
 ## 2.0.0
 

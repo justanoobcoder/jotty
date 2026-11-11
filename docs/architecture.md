@@ -371,8 +371,17 @@ the one it created.
 
 ## Window and scaling (`app.rs`)
 
-The window is an `xdg_toplevel` that asks for server-side decorations. The
-first configure sets the logical size; the grid size is
+The window is an `xdg_toplevel` that asks for server-side decorations. When
+the compositor wants client-side ones instead (GNOME has no
+`xdg-decoration`), jotty adds SCTK's `FallbackFrame`: a title bar and
+borders drawn into synced subsurfaces placed around the window's surface,
+at negative offsets, so the terminal surface and the renderers are
+unchanged. The window geometry and minimum size include the frame, and the
+configured size minus the frame is the terminal's. Pointer events on the
+frame's surfaces (found through their parent surface) go to the frame,
+which answers with a move, resize, window menu, minimize, maximize or
+close. The frame draws, when dirty, just before the renderer commits the
+window. The first configure sets the logical size; the grid size is
 `(physical size − 2·padding) / cell size`. With `wp-fractional-scale-v1` and
 `wp-viewporter`, the scale is the compositor's preferred fractional scale:
 the buffer is `round(logical size × scale)` pixels and the viewport maps it

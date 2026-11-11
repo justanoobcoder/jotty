@@ -6,15 +6,17 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Write};
+use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
 use smithay_client_toolkit::compositor::{
-    CompositorHandler, CompositorState, FrameCallbackData, Region,
+    CompositorHandler, CompositorState, FrameCallbackData, Region, SurfaceData,
 };
 use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::Capability as EffectCapability;
 use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
@@ -59,10 +61,17 @@ use smithay_client_toolkit::seat::pointer::{
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shell::xdg::window::{
-    Window, WindowConfigure, WindowDecorations, WindowHandler,
+use smithay_client_toolkit::reexports::csd_frame::{
+    DecorationsFrame, FrameAction, FrameClick, ResizeEdge,
 };
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
+use smithay_client_toolkit::seat::pointer::PointerData;
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shell::xdg::fallback_frame::FallbackFrame;
+use smithay_client_toolkit::shell::xdg::window::{
+    DecorationMode, Window, WindowConfigure, WindowDecorations, WindowHandler,
+};
+use smithay_client_toolkit::subcompositor::SubcompositorState;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals;
@@ -248,6 +257,9 @@ pub struct Shared {
     output_state: OutputState,
     compositor: CompositorState,
     xdg_shell: XdgShell,
+    /// For the decorations frame drawn when the compositor wants
+    /// client-side decorations; without it, the window goes undecorated.
+    subcompositor: Option<Arc<SubcompositorState>>,
     shm: Shm,
     /// Both are needed for fractional scaling.
     viewporter: Option<WpViewporter>,
@@ -312,7 +324,13 @@ pub struct TermWindow {
     // Declared before `window` so the EGL surface is destroyed before the
     // wl_surface it renders to.
     renderer: Renderer,
+    /// The title bar and borders, while the compositor wants client-side
+    /// decorations. Declared before `window`: its subsurfaces are children
+    /// of the window's surface.
+    frame: Option<FallbackFrame<App>>,
     window: Window,
+    /// The smallest size of the terminal area, in logical pixels.
+    min_size: (u32, u32),
     term: Terminal,
     pty: Pty,
     /// The loop source reading the pty, removed when the window closes.
@@ -403,6 +421,10 @@ pub fn run(
         CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
     let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|e| format!("xdg_wm_base: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
+    let subcompositor = SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh)
+        .map(Arc::new)
+        .map_err(|e| log::info!("no wl_subcompositor, no client-side decorations: {e}"))
+        .ok();
     let background_effect = BackgroundEffectState::new(&globals, &qh);
     if config.window.blur
         && background_effect
@@ -445,6 +467,7 @@ pub fn run(
             output_state: OutputState::new(&globals, &qh),
             compositor,
             xdg_shell,
+            subcompositor,
             shm,
             viewporter,
             fractional_manager,
@@ -547,7 +570,8 @@ impl TermWindow {
             .create_window(surface, WindowDecorations::RequestServer, qh);
         window.set_title(config.window.title.clone());
         window.set_app_id(config.window.app_id.clone());
-        window.set_min_size(Some((cell.width * 2 + 2 * pad, cell.height + 2 * pad)));
+        let min_size = (cell.width * 2 + 2 * pad, cell.height + 2 * pad);
+        window.set_min_size(Some(min_size));
         if config.window.opacity >= 1.0 {
             // Lets the compositor skip drawing what is behind the window.
             set_whole_region(&shared.compositor, |region| {
@@ -667,7 +691,9 @@ impl TermWindow {
             draw_failures: 0,
             blur: None,
             renderer,
+            frame: None,
             window,
+            min_size,
             term,
             pty,
             pty_source: Some(pty_source),
@@ -742,6 +768,9 @@ impl TermWindow {
         }
         log::info!("scale factor {scale}");
         self.scale = scale;
+        if let Some(frame) = &mut self.frame {
+            frame.set_scaling_factor(scale);
+        }
         if self.viewport.is_none() {
             self.window.wl_surface().set_buffer_scale(scale as i32);
         }
@@ -793,6 +822,174 @@ impl TermWindow {
         }
         self.vi_refresh();
         self.request_redraw();
+    }
+
+    /// Shows or hides the decorations frame for `configure`, and returns
+    /// the size it leaves for the terminal (`None` where the compositor
+    /// leaves the size to jotty).
+    fn decorate(
+        &mut self,
+        shared: &Shared,
+        configure: &WindowConfigure,
+    ) -> (Option<NonZeroU32>, Option<NonZeroU32>) {
+        if configure.decoration_mode == DecorationMode::Server {
+            if let Some(frame) = &mut self.frame
+                && !frame.is_hidden()
+            {
+                frame.set_hidden(true);
+                self.window.set_min_size(Some(self.min_size));
+            }
+            return configure.new_size;
+        }
+        if self.frame.is_none()
+            && let Some(subcompositor) = &shared.subcompositor
+        {
+            match FallbackFrame::new(
+                &self.window,
+                &shared.shm,
+                Arc::clone(subcompositor),
+                self.qh.clone(),
+            ) {
+                Ok(mut frame) => {
+                    frame.set_scaling_factor(self.scale);
+                    self.frame = Some(frame);
+                }
+                Err(e) => log::warn!("cannot create the window decorations: {e}"),
+            }
+        }
+        let Some(frame) = &mut self.frame else {
+            return configure.new_size;
+        };
+        if frame.is_hidden() {
+            frame.set_hidden(false);
+        }
+        // The state first: borders depend on it (none when fullscreen).
+        frame.update_state(configure.state);
+        frame.update_wm_capabilities(configure.capabilities);
+        let (min_w, min_h) = frame.add_borders(self.min_size.0, self.min_size.1);
+        self.window.set_min_size(Some((min_w, min_h)));
+        match configure.new_size {
+            (Some(w), Some(h)) => frame.subtract_borders(w, h),
+            _ => (None, None),
+        }
+    }
+
+    /// Sets the window geometry to the terminal area and its frame.
+    fn set_window_geometry(&mut self) {
+        // Its `set_window_geometry` takes unsigned offsets; the frame's are negative.
+        use smithay_client_toolkit::shell::xdg::XdgSurface;
+
+        let (w, h) = (self.size.0.max(1), self.size.1.max(1));
+        let (x, y, outer) = match &mut self.frame {
+            Some(frame) if !frame.is_hidden() => {
+                frame.resize(
+                    NonZeroU32::new(w).expect("clamped to 1"),
+                    NonZeroU32::new(h).expect("clamped to 1"),
+                );
+                let (x, y) = frame.location();
+                (x, y, frame.add_borders(w, h))
+            }
+            _ => (0, 0, (w, h)),
+        };
+        self.window
+            .xdg_surface()
+            .set_window_geometry(x, y, outer.0 as i32, outer.1 as i32);
+    }
+
+    /// Handles a pointer event on the decorations frame.
+    fn frame_pointer_event(
+        &mut self,
+        shared: &mut Shared,
+        conn: &Connection,
+        event: &PointerEvent,
+    ) {
+        let Some(frame) = &mut self.frame else {
+            return;
+        };
+        let (x, y) = event.position;
+        let cursor = match event.kind {
+            PointerEventKind::Enter { .. } => {
+                frame.click_point_moved(Duration::ZERO, &event.surface.id(), x, y)
+            }
+            PointerEventKind::Motion { time } => frame.click_point_moved(
+                Duration::from_millis(time.into()),
+                &event.surface.id(),
+                x,
+                y,
+            ),
+            PointerEventKind::Leave { .. } => {
+                frame.click_point_left();
+                None
+            }
+            PointerEventKind::Press {
+                button,
+                serial,
+                time,
+            }
+            | PointerEventKind::Release {
+                button,
+                serial,
+                time,
+            } => {
+                let click = match button {
+                    BTN_LEFT => FrameClick::Normal,
+                    BTN_RIGHT => FrameClick::Alternate,
+                    _ => return,
+                };
+                let pressed = matches!(event.kind, PointerEventKind::Press { .. });
+                if let Some(action) =
+                    frame.on_click(Duration::from_millis(time.into()), click, pressed)
+                {
+                    self.frame_action(shared, serial, action);
+                }
+                None
+            }
+            PointerEventKind::Axis { .. } => None,
+        };
+        if let (Some(cursor), Some(pointer)) = (cursor, &shared.pointer)
+            && let Err(e) = pointer.set_cursor(conn, cursor)
+        {
+            log::debug!("cannot set cursor: {e}");
+        }
+        // Hovering a button highlights it.
+        if self.frame.as_ref().is_some_and(|f| f.is_dirty()) {
+            self.request_redraw();
+        }
+    }
+
+    /// Does what a click on the decorations frame asks for.
+    fn frame_action(&mut self, shared: &Shared, serial: u32, action: FrameAction) {
+        let Some(seat) = shared
+            .pointer
+            .as_ref()
+            .and_then(|p| p.pointer().data::<PointerData<()>>())
+            .map(|data| data.seat().clone())
+        else {
+            return;
+        };
+        match action {
+            FrameAction::Close => self.exit = true,
+            FrameAction::Minimize => self.window.set_minimized(),
+            FrameAction::Maximize => self.window.set_maximized(),
+            FrameAction::UnMaximize => self.window.unset_maximized(),
+            FrameAction::ShowMenu(x, y) => self.window.show_window_menu(&seat, serial, (x, y)),
+            FrameAction::Move => self.window.move_(&seat, serial),
+            FrameAction::Resize(edge) => {
+                let edge = match edge {
+                    ResizeEdge::Top => XdgResizeEdge::Top,
+                    ResizeEdge::Bottom => XdgResizeEdge::Bottom,
+                    ResizeEdge::Left => XdgResizeEdge::Left,
+                    ResizeEdge::TopLeft => XdgResizeEdge::TopLeft,
+                    ResizeEdge::BottomLeft => XdgResizeEdge::BottomLeft,
+                    ResizeEdge::Right => XdgResizeEdge::Right,
+                    ResizeEdge::TopRight => XdgResizeEdge::TopRight,
+                    ResizeEdge::BottomRight => XdgResizeEdge::BottomRight,
+                    _ => XdgResizeEdge::None,
+                };
+                self.window.resize(&seat, serial, edge);
+            }
+            _ => {}
+        }
     }
 
     fn set_font_points(&mut self, points: f32) {
@@ -1006,6 +1203,14 @@ impl TermWindow {
             }),
             search: search_bar.as_deref(),
         };
+        // The frame's subsurfaces are synced: what it commits shows with
+        // the window's next commit, which the renderer makes.
+        if let Some(decorations) = &mut self.frame
+            && decorations.is_dirty()
+            && !decorations.is_hidden()
+        {
+            decorations.draw();
+        }
         match self.renderer.draw(&frame) {
             Ok(again) => {
                 self.dirty |= again;
@@ -2175,6 +2380,16 @@ impl App {
         Some((&mut self.shared, window))
     }
 
+    /// The window whose decorations frame has `surface`, and the shared state.
+    fn split_by_frame_surface(
+        &mut self,
+        surface: &WlSurface,
+    ) -> Option<(&mut Shared, &mut TermWindow)> {
+        let parent = surface.data::<SurfaceData<()>>()?.parent_surface()?;
+        self.split_by_surface(parent)
+            .filter(|(_, window)| window.frame.is_some())
+    }
+
     /// The window with keyboard focus and the shared state.
     fn split_focused(&mut self) -> Option<(&mut Shared, &mut TermWindow)> {
         let id = self.shared.keyboard_focus?;
@@ -2667,16 +2882,18 @@ impl WindowHandler for App {
         configure: WindowConfigure,
         _: u32,
     ) {
-        let Some((_, window)) = self.split_by_surface(window.wl_surface()) else {
+        let Some((shared, window)) = self.split_by_surface(window.wl_surface()) else {
             return;
         };
         let size_before = window.size;
-        if let Some(w) = configure.new_size.0 {
+        let (width, height) = window.decorate(shared, &configure);
+        if let Some(w) = width {
             window.size.0 = w.get();
         }
-        if let Some(h) = configure.new_size.1 {
+        if let Some(h) = height {
             window.size.1 = h.get();
         }
+        window.set_window_geometry();
         let unchanged = window.configured && window.size == size_before;
         window.configured = true;
         // Focus and state changes are configures too, with the same size.
@@ -2913,6 +3130,8 @@ impl PointerHandler for App {
         for event in events {
             if let Some((shared, window)) = self.split_by_surface(&event.surface) {
                 window.pointer_event(shared, conn, event);
+            } else if let Some((shared, window)) = self.split_by_frame_surface(&event.surface) {
+                window.frame_pointer_event(shared, conn, event);
             }
         }
     }

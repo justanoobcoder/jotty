@@ -154,9 +154,11 @@ nothing surprises you.
   asked.
 - The notification limit (a burst of 4, then one every 2 seconds) counts
   the notifications of all windows of a process together.
-- **No client-side decorations.** jotty asks for server-side decorations. On
-  compositors that don't provide them (GNOME/Mutter), the window has no title
-  bar or border.
+- **Plain client-side decorations.** On compositors without server-side
+  decorations (GNOME/Mutter), jotty draws SCTK's fallback frame: a grey title
+  bar with close, maximize and minimize buttons, and thin borders. It shows
+  no title, ignores the color theme, draws at the next integer scale, and
+  keeps its borders while the window is tiled.
 - **Fractional scaling** needs both `wp-fractional-scale-v1` and
   `wp-viewporter`; without them, jotty renders at the next integer scale.
 - Block (rectangular) selection is only available in vi mode, not with the
