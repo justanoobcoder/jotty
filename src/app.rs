@@ -382,6 +382,9 @@ pub struct TermWindow {
     /// When a link was last clicked.
     last_link_click: Option<u32>,
     pointer_inside: bool,
+    /// The cursor last set over the decorations frame, to set it only
+    /// when it changes.
+    frame_cursor: Option<CursorIcon>,
     /// A cell marked by Shift+click; the next Shift+click selects from it.
     shift_mark: Option<Point>,
     /// The current left press was a Shift+click (it marks a cell unless
@@ -723,6 +726,7 @@ impl TermWindow {
             hover_cell: None,
             last_link_click: None,
             pointer_inside: false,
+            frame_cursor: None,
             last_click: None,
             shift_mark: None,
             shift_press: false,
@@ -874,22 +878,27 @@ impl TermWindow {
         }
     }
 
-    /// Sets the window geometry to the terminal area and its frame.
+    /// Sets the window geometry to the terminal area and its frame. Without
+    /// a frame, the geometry is left to its default, the surface's extents.
     fn set_window_geometry(&mut self) {
         // Its `set_window_geometry` takes unsigned offsets; the frame's are negative.
         use smithay_client_toolkit::shell::xdg::XdgSurface;
 
         let (w, h) = (self.size.0.max(1), self.size.1.max(1));
-        let (x, y, outer) = match &mut self.frame {
-            Some(frame) if !frame.is_hidden() => {
-                frame.resize(
-                    NonZeroU32::new(w).expect("clamped to 1"),
-                    NonZeroU32::new(h).expect("clamped to 1"),
-                );
-                let (x, y) = frame.location();
-                (x, y, frame.add_borders(w, h))
-            }
-            _ => (0, 0, (w, h)),
+        let Some(frame) = &mut self.frame else {
+            return;
+        };
+        // A hidden frame (the compositor went back to server-side
+        // decorations) resets it to the surface.
+        let (x, y, outer) = if frame.is_hidden() {
+            (0, 0, (w, h))
+        } else {
+            frame.resize(
+                NonZeroU32::new(w).expect("clamped to 1"),
+                NonZeroU32::new(h).expect("clamped to 1"),
+            );
+            let (x, y) = frame.location();
+            (x, y, frame.add_borders(w, h))
         };
         self.window
             .xdg_surface()
@@ -909,6 +918,7 @@ impl TermWindow {
         let (x, y) = event.position;
         let cursor = match event.kind {
             PointerEventKind::Enter { .. } => {
+                self.frame_cursor = None;
                 frame.click_point_moved(Duration::ZERO, &event.surface.id(), x, y)
             }
             PointerEventKind::Motion { time } => frame.click_point_moved(
@@ -937,6 +947,11 @@ impl TermWindow {
                     _ => return,
                 };
                 let pressed = matches!(event.kind, PointerEventKind::Press { .. });
+                // The frame asks for the window menu on both press and
+                // release of the right button.
+                if click == FrameClick::Alternate && !pressed {
+                    return;
+                }
                 if let Some(action) =
                     frame.on_click(Duration::from_millis(time.into()), click, pressed)
                 {
@@ -947,9 +962,12 @@ impl TermWindow {
             PointerEventKind::Axis { .. } => None,
         };
         if let (Some(cursor), Some(pointer)) = (cursor, &shared.pointer)
-            && let Err(e) = pointer.set_cursor(conn, cursor)
+            && self.frame_cursor != Some(cursor)
         {
-            log::debug!("cannot set cursor: {e}");
+            self.frame_cursor = Some(cursor);
+            if let Err(e) = pointer.set_cursor(conn, cursor) {
+                log::debug!("cannot set cursor: {e}");
+            }
         }
         // Hovering a button highlights it.
         if self.frame.as_ref().is_some_and(|f| f.is_dirty()) {
