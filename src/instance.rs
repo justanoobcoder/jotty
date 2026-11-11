@@ -133,8 +133,13 @@ fn decode(buf: &[u8]) -> Result<Option<Request>, DecodeError> {
     let command = match r.u32()? {
         0 => None,
         1 => {
+            let count = r.u32()?;
+            // A command has at least the program.
+            if count == 0 {
+                return Err(DecodeError::Malformed);
+            }
             let mut command = Vec::new();
-            for _ in 0..r.u32()? {
+            for _ in 0..count {
                 command.push(r.os_string()?);
             }
             Some(command)
@@ -413,15 +418,19 @@ impl Client {
                 Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                 Ok(n) => self.received.extend_from_slice(&chunk[..n]),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(Received::Incomplete);
+                }
                 Err(e) => return Err(e),
             }
+            // Decoded after every chunk, so that a client that keeps
+            // sending is cut off at the size limit.
+            match decode(&self.received) {
+                Ok(None) => {}
+                Ok(Some(request)) => return Ok(Received::Request(request)),
+                Err(e) => return Ok(Received::Invalid(e)),
+            }
         }
-        Ok(match decode(&self.received) {
-            Ok(None) => Received::Incomplete,
-            Ok(Some(request)) => Received::Request(request),
-            Err(e) => Received::Invalid(e),
-        })
     }
 
     /// Answers the client, which then goes away.
@@ -451,11 +460,7 @@ mod tests {
 
     #[test]
     fn requests_round_trip_whatever_their_bytes() {
-        for command in [
-            None,
-            Some(&[b"vim" as &[u8], b"caf\xe9.txt"][..]),
-            Some(&[][..]),
-        ] {
+        for command in [None, Some(&[b"vim" as &[u8], b"caf\xe9.txt"][..])] {
             let request = request(command);
             assert_eq!(decode(&request.encode()), Ok(Some(request)));
         }
@@ -482,6 +487,9 @@ mod tests {
         let mut huge = bytes.clone();
         huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(decode(&huge), Err(DecodeError::TooLarge(_))));
+
+        let empty_command = request(Some(&[])).encode();
+        assert_eq!(decode(&empty_command), Err(DecodeError::Malformed));
 
         let mut trailing = bytes.clone();
         trailing.push(0);
@@ -572,6 +580,30 @@ mod tests {
                 Err(e) => panic!("{e}"),
             }
         }
+    }
+
+    #[test]
+    fn a_client_that_keeps_sending_is_cut_off() {
+        let (mut peer, stream) = UnixStream::pair().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let mut header = MAGIC.to_vec();
+        header.extend(VERSION.to_le_bytes());
+        header.extend((MAX_REQUEST as u32).to_le_bytes());
+        peer.write_all(&header).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let junk = vec![0; 1 << 16];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            // Fills the socket, as a client faster than jotty would.
+            while peer.write(&junk).is_ok() {}
+            match client.read().unwrap() {
+                Received::Incomplete => assert!(Instant::now() < deadline),
+                Received::Invalid(DecodeError::Malformed) => break,
+                Received::Invalid(e) => panic!("{e}"),
+                Received::Request(_) => panic!("junk isn't a request"),
+            }
+        }
+        assert!(client.received.len() <= HEADER_LEN + MAX_REQUEST + junk.len());
     }
 
     #[test]

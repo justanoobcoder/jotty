@@ -145,6 +145,8 @@ const SELECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// row close the window.
 const DRAW_RETRY: Duration = Duration::from_millis(200);
 const MAX_DRAW_FAILURES: u32 = 50;
+/// How long a jotty handing over its window may take to send its request.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
 /// The preferred text type among those a paste offer has.
@@ -315,7 +317,8 @@ pub struct TermWindow {
     pty: Pty,
     /// The loop source reading the pty, removed when the window closes.
     pty_source: Option<RegistrationToken>,
-    pty_write_queued: bool,
+    /// The loop source writing what the pty couldn't take yet, if any.
+    pty_writer: Option<RegistrationToken>,
 
     /// Window size in logical pixels and the scale factor, which is
     /// fractional with wp-fractional-scale.
@@ -599,9 +602,10 @@ impl TermWindow {
         };
 
         let (program, args) = match spawn.command {
-            Some(mut command) => {
-                let program = command.remove(0);
-                (program, command)
+            Some(command) => {
+                let mut command = command.into_iter();
+                let program = command.next().ok_or("the command is empty")?;
+                (program, command.collect())
             }
             None => (
                 config
@@ -667,7 +671,7 @@ impl TermWindow {
             term,
             pty,
             pty_source: Some(pty_source),
-            pty_write_queued: false,
+            pty_writer: None,
             size,
             scale: 1.0,
             viewport,
@@ -906,7 +910,7 @@ impl TermWindow {
             self.pty.discard_pending();
             return;
         }
-        if !self.pty.has_pending() || self.pty_write_queued {
+        if !self.pty.has_pending() || self.pty_writer.is_some() {
             return;
         }
         let Ok(fd) = self.pty.fd().try_clone_to_owned() else {
@@ -927,11 +931,11 @@ impl TermWindow {
             if window.pty.has_pending() {
                 Ok(PostAction::Continue)
             } else {
-                window.pty_write_queued = false;
+                window.pty_writer = None;
                 Ok(PostAction::Remove)
             }
         });
-        self.pty_write_queued = inserted.is_ok();
+        self.pty_writer = inserted.ok();
     }
 
     fn request_redraw(&mut self) {
@@ -2216,12 +2220,22 @@ impl App {
     /// Takes down a window that was removed from the list.
     fn close(&mut self, mut window: TermWindow) {
         let shared = &mut self.shared;
-        for focus in [&mut shared.keyboard_focus, &mut shared.ime_focus] {
-            if *focus == Some(window.id) {
-                *focus = None;
+        if shared.keyboard_focus == Some(window.id) {
+            shared.keyboard_focus = None;
+        }
+        if shared.ime_focus == Some(window.id) {
+            shared.ime_focus = None;
+            // No leave event may come for a destroyed surface.
+            if let Some(text_input) = &shared.text_input {
+                text_input.disable();
+                text_input.commit();
             }
         }
-        if let Some(token) = window.pty_source.take() {
+        // Both hold a copy of the pty's descriptor, which must close.
+        for token in [window.pty_source.take(), window.pty_writer.take()]
+            .into_iter()
+            .flatten()
+        {
             shared.loop_handle.remove(token);
         }
         if let Some(blur) = window.blur.take() {
@@ -2296,8 +2310,24 @@ impl App {
                 }
                 Ok(PostAction::Remove)
             });
+        let token = match inserted {
+            Ok(token) => token,
+            Err(e) => return log::warn!("cannot read from a jotty: {e}"),
+        };
+        // A client that never finishes its request mustn't hold a
+        // descriptor forever. Removing a source that is already gone does
+        // nothing: tokens are never reused.
+        let timer = Timer::from_duration(CLIENT_TIMEOUT);
+        let inserted = self
+            .shared
+            .loop_handle
+            .insert_source(timer, move |_, _, app| {
+                app.shared.loop_handle.remove(token);
+                TimeoutAction::Drop
+            });
         if let Err(e) = inserted {
-            log::warn!("cannot read from a jotty: {e}");
+            log::warn!("cannot time out a jotty: {e}");
+            self.shared.loop_handle.remove(token);
         }
     }
 
