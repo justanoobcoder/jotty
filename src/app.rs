@@ -1,6 +1,7 @@
 //! The Wayland application: window, input, clipboard, input method and the
 //! event loop tying them to the terminal and the renderer.
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::OsString;
@@ -71,6 +72,7 @@ use smithay_client_toolkit::shell::xdg::window::{
     DecorationMode, Window, WindowConfigure, WindowDecorations, WindowHandler,
 };
 use smithay_client_toolkit::subcompositor::SubcompositorState;
+use sctk_adwaita::theme::ColorTheme;
 use sctk_adwaita::{AdwaitaFrame, FrameConfig};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
@@ -261,6 +263,9 @@ pub struct Shared {
     /// For the decorations frame drawn when the compositor wants
     /// client-side decorations; without it, the window goes undecorated.
     subcompositor: Option<Arc<SubcompositorState>>,
+    /// The frames' light or dark theme, asked of the desktop once (it
+    /// takes a `dbus-send`).
+    frame_theme: OnceCell<ColorTheme>,
     shm: Shm,
     /// Both are needed for fractional scaling.
     viewporter: Option<WpViewporter>,
@@ -474,6 +479,7 @@ pub fn run(
             compositor,
             xdg_shell,
             subcompositor,
+            frame_theme: OnceCell::new(),
             shm,
             viewporter,
             fractional_manager,
@@ -853,15 +859,16 @@ impl TermWindow {
         if self.frame.is_none()
             && let Some(subcompositor) = &shared.subcompositor
         {
-            // Picks the light or dark theme, the title font and the
-            // button layout from the desktop's settings.
+            // Asks the desktop for the title font and the button layout,
+            // running `gsettings`, `fc-match` and `dbus-send` on this thread.
+            let theme = shared.frame_theme.get_or_init(ColorTheme::auto).clone();
             match AdwaitaFrame::new(
                 &self.window,
                 &shared.shm,
                 Arc::clone(&shared.compositor),
                 Arc::clone(subcompositor),
                 self.qh.clone(),
-                FrameConfig::auto(),
+                FrameConfig::new(theme),
             ) {
                 Ok(mut frame) => {
                     frame.set_scaling_factor(self.scale);
@@ -939,6 +946,9 @@ impl TermWindow {
             ),
             PointerEventKind::Leave { .. } => {
                 frame.click_point_left();
+                // Leaving doesn't mark the frame dirty, so a hovered button
+                // would stay highlighted; setting the same title does.
+                frame.set_title(self.title.clone());
                 None
             }
             PointerEventKind::Press {
@@ -1072,10 +1082,15 @@ impl TermWindow {
             let written = self.pty.write_response(&responses);
             self.finish_send(written);
         }
-        if let Some(title) = title {
+        if let Some(title) = title
+            && title != self.title
+        {
+            // Setting a title redraws the whole frame.
             if let Some(frame) = &mut self.frame {
                 frame.set_title(title.clone());
-                self.request_redraw();
+                if !frame.is_hidden() {
+                    self.request_redraw();
+                }
             }
             self.window.set_title(title.clone());
             self.title = title;
