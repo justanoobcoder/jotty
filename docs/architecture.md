@@ -373,8 +373,8 @@ the one it created.
 
 The window is an `xdg_toplevel` that asks for server-side decorations. When
 the compositor wants client-side ones instead (GNOME has no
-`xdg-decoration`), jotty adds SCTK's `FallbackFrame`: a title bar and
-borders drawn into synced subsurfaces placed around the window's surface,
+`xdg-decoration`), jotty adds an `AdwaitaFrame` from sctk-adwaita: a title bar
+(with the window title) and borders drawn into synced subsurfaces placed around the window's surface,
 at negative offsets, so the terminal surface and the renderers are
 unchanged. The window geometry and minimum size include the frame, and the
 configured size minus the frame is the terminal's. Pointer events on the

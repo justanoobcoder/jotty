@@ -67,11 +67,11 @@ use smithay_client_toolkit::reexports::csd_frame::{
 use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
 use smithay_client_toolkit::seat::pointer::PointerData;
 use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shell::xdg::fallback_frame::FallbackFrame;
 use smithay_client_toolkit::shell::xdg::window::{
     DecorationMode, Window, WindowConfigure, WindowDecorations, WindowHandler,
 };
 use smithay_client_toolkit::subcompositor::SubcompositorState;
+use sctk_adwaita::{AdwaitaFrame, FrameConfig};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals;
@@ -255,7 +255,8 @@ pub struct Shared {
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
-    compositor: CompositorState,
+    /// Shared with the decorations frames.
+    compositor: Arc<CompositorState>,
     xdg_shell: XdgShell,
     /// For the decorations frame drawn when the compositor wants
     /// client-side decorations; without it, the window goes undecorated.
@@ -327,10 +328,12 @@ pub struct TermWindow {
     /// The title bar and borders, while the compositor wants client-side
     /// decorations. Declared before `window`: its subsurfaces are children
     /// of the window's surface.
-    frame: Option<FallbackFrame<App>>,
+    frame: Option<AdwaitaFrame<App>>,
     window: Window,
     /// The smallest size of the terminal area, in logical pixels.
     min_size: (u32, u32),
+    /// The window title, for a decorations frame created later.
+    title: String,
     term: Terminal,
     pty: Pty,
     /// The loop source reading the pty, removed when the window closes.
@@ -421,7 +424,7 @@ pub fn run(
         .map_err(|e| format!("cannot watch the Wayland socket: {e}"))?;
 
     let compositor =
-        CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
+        Arc::new(CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?);
     let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|e| format!("xdg_wm_base: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
     let subcompositor = SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh)
@@ -571,7 +574,8 @@ impl TermWindow {
         let window = shared
             .xdg_shell
             .create_window(surface, WindowDecorations::RequestServer, qh);
-        window.set_title(config.window.title.clone());
+        let title = config.window.title.clone();
+        window.set_title(title.clone());
         window.set_app_id(config.window.app_id.clone());
         let min_size = (cell.width * 2 + 2 * pad, cell.height + 2 * pad);
         window.set_min_size(Some(min_size));
@@ -697,6 +701,7 @@ impl TermWindow {
             frame: None,
             window,
             min_size,
+            title,
             term,
             pty,
             pty_source: Some(pty_source),
@@ -848,14 +853,19 @@ impl TermWindow {
         if self.frame.is_none()
             && let Some(subcompositor) = &shared.subcompositor
         {
-            match FallbackFrame::new(
+            // Picks the light or dark theme, the title font and the
+            // button layout from the desktop's settings.
+            match AdwaitaFrame::new(
                 &self.window,
                 &shared.shm,
+                Arc::clone(&shared.compositor),
                 Arc::clone(subcompositor),
                 self.qh.clone(),
+                FrameConfig::auto(),
             ) {
                 Ok(mut frame) => {
                     frame.set_scaling_factor(self.scale);
+                    frame.set_title(self.title.clone());
                     self.frame = Some(frame);
                 }
                 Err(e) => log::warn!("cannot create the window decorations: {e}"),
@@ -1063,7 +1073,12 @@ impl TermWindow {
             self.finish_send(written);
         }
         if let Some(title) = title {
-            self.window.set_title(title);
+            if let Some(frame) = &mut self.frame {
+                frame.set_title(title.clone());
+                self.request_redraw();
+            }
+            self.window.set_title(title.clone());
+            self.title = title;
         }
         if bell {
             self.ring_bell(shared);
