@@ -171,15 +171,35 @@ impl Egl {
             )
             .map_err(|e| format!("eglCreateContext: {e}"))?;
 
+        // What fails from here destroys what it made: other windows may keep
+        // the display, so terminating it wouldn't clean up.
         let window = WlEglSurface::new(surface, width.max(1), height.max(1))
-            .map_err(|e| format!("wl_egl_window: {e}"))?;
+            .map_err(|e| format!("wl_egl_window: {e}"));
         // SAFETY: `window` is a live `wl_egl_window` that `Egl` keeps until the surface is gone.
-        let surface = unsafe {
-            api.create_window_surface(display, config, window.ptr() as egl::NativeWindowType, None)
+        let surface = window.and_then(|window| {
+            unsafe {
+                api.create_window_surface(
+                    display,
+                    config,
+                    window.ptr() as egl::NativeWindowType,
+                    None,
+                )
+            }
+            .map(|surface| (window, surface))
+            .map_err(|e| format!("eglCreateWindowSurface: {e}"))
+        });
+        let (window, surface) = match surface {
+            Ok(made) => made,
+            Err(e) => {
+                let _ = api.destroy_context(display, context);
+                return Err(e);
+            }
+        };
+        if let Err(e) = api.make_current(display, Some(surface), Some(surface), Some(context)) {
+            let _ = api.destroy_surface(display, surface);
+            let _ = api.destroy_context(display, context);
+            return Err(format!("eglMakeCurrent: {e}"));
         }
-        .map_err(|e| format!("eglCreateWindowSurface: {e}"))?;
-        api.make_current(display, Some(surface), Some(surface), Some(context))
-            .map_err(|e| format!("eglMakeCurrent: {e}"))?;
         // Never block in eglSwapBuffers; frames are paced by frame callbacks.
         if let Err(e) = api.swap_interval(display, 0) {
             log::warn!("eglSwapInterval: {e}");
