@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use glow::{HasContext, PixelUnpackData, Texture};
 use khronos_egl as egl;
@@ -66,7 +67,12 @@ void main() {
 }
 "#;
 
-/// The EGL display, context and window surface.
+/// How many `Egl`s exist. They all share the EGL display of the Wayland
+/// connection, which `eglTerminate` would end for every one of them, so
+/// only the last one terminates it.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// The EGL display, context and window surface of one window.
 struct Egl {
     api: &'static egl::Instance<egl::Static>,
     display: egl::Display,
@@ -95,14 +101,34 @@ impl Egl {
             .map_err(|e| format!("eglInitialize: {e}"))?;
         // SAFETY: the same promises this function requires of its caller.
         let egl = unsafe { Self::on_display(api, display, surface, width, height) };
-        if egl.is_err() {
-            // Also destroys the context and surface made so far, as the CPU
-            // renderer takes over for the rest of the process.
-            if let Err(e) = api.terminate(display) {
-                log::debug!("eglTerminate: {e}");
+        match &egl {
+            Ok(_) => {
+                LIVE.fetch_add(1, Ordering::Relaxed);
             }
+            // Also destroys the context and surface made so far, as the CPU
+            // renderer takes over for this window; other windows may still
+            // draw on the display.
+            Err(_) if LIVE.load(Ordering::Relaxed) == 0 => {
+                if let Err(e) = api.terminate(display) {
+                    log::debug!("eglTerminate: {e}");
+                }
+            }
+            Err(_) => {}
         }
         egl
+    }
+
+    /// Makes this window's context and surface current: other windows'
+    /// renderers make theirs current too.
+    fn make_current(&self) -> Result<(), String> {
+        self.api
+            .make_current(
+                self.display,
+                Some(self.surface),
+                Some(self.surface),
+                Some(self.context),
+            )
+            .map_err(|e| format!("eglMakeCurrent: {e}"))
     }
 
     /// # Safety
@@ -173,7 +199,9 @@ impl Drop for Egl {
         let _ = self.api.make_current(self.display, None, None, None);
         let _ = self.api.destroy_surface(self.display, self.surface);
         let _ = self.api.destroy_context(self.display, self.context);
-        let _ = self.api.terminate(self.display);
+        if LIVE.fetch_sub(1, Ordering::Relaxed) == 1 {
+            let _ = self.api.terminate(self.display);
+        }
     }
 }
 
@@ -417,6 +445,7 @@ impl Renderer {
     /// Draws and presents a frame (this commits the surface). Returns
     /// whether another frame is needed because the glyph atlas overflowed.
     pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
+        self.egl.make_current()?;
         let metrics = self.fonts.metrics;
         let theme = self.theme.effective(frame.screen);
         let gl = &self.gl;
@@ -538,6 +567,11 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        // The objects belong to this window's context.
+        if let Err(e) = self.egl.make_current() {
+            log::debug!("{e}; leaving the GL objects to the context's destruction");
+            return;
+        }
         // SAFETY: the context is current, and the quads drawn were uploaded above.
         unsafe {
             self.gl.delete_texture(self.texture);
