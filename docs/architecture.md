@@ -439,5 +439,8 @@ The `unsafe` code is confined to:
 - `renderer/gl.rs`: EGL and GL calls. The `Renderer` must not outlive the
   `wl_display` or the `wl_surface`. `TermWindow` declares `renderer` before
   `window`, so it is dropped first, and the event loop holding the
-  connection outlives `App` and its windows;
+  connection outlives `App` and its windows. Each window has its own EGL
+  context and surface on the connection's one EGL display: a renderer makes
+  its context current before drawing or deleting GL objects, and only the
+  last one to go terminates the display;
 - `instance.rs`: `flock` on the lock file.
