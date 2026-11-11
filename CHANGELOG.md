@@ -3,14 +3,11 @@ CHANGELOG
 
 ## Unreleased
 
+- Display sixel images
 - Add `--single-instance` and `window.single_instance`: new windows open in
     the jotty already running, with the directory and environment of the
     command that asked for them
 - Ctrl+Shift+N opens the new window in the same process
-
-## 2.1.0
-
-- Display sixel images
 
 ## 2.0.0
 
