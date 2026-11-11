@@ -4,7 +4,7 @@
 # the tagged source with the version filled in; it also works for the AUR.
 
 pkgname=jotty
-pkgver=2.0.0
+pkgver=2.1.0
 pkgrel=1
 pkgdesc='An opinionated, Wayland-native terminal emulator'
 arch=('x86_64' 'aarch64')

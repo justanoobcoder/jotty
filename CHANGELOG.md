@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+## 2.1.0
+
 - Display sixel images
 - Add `--single-instance` and `window.single_instance`: new windows open in
     the jotty already running, with the directory and environment of the
