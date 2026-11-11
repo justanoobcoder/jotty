@@ -154,9 +154,17 @@ nothing surprises you.
   asked.
 - The notification limit (a burst of 4, then one every 2 seconds) counts
   the notifications of all windows of a process together.
-- **No client-side decorations.** jotty asks for server-side decorations. On
-  compositors that don't provide them (GNOME/Mutter), the window has no title
-  bar or border.
+- **Client-side decorations come from sctk-adwaita.** On compositors without
+  server-side decorations (GNOME/Mutter), the title bar imitates Adwaita
+  rather than using GTK. Its light or dark theme is asked of the desktop
+  once per process, and its button layout once per window, so later changes
+  to either don't apply; it ignores jotty's color theme. It draws at the next
+  integer scale, and keeps its borders and resize edges while tiled (only a
+  maximized window loses them). Creating it runs `gsettings`, `fc-match` and
+  `dbus-send` on the event loop's thread: each new window stalls all
+  windows for tens of milliseconds, up to about 200 ms when the desktop
+  portal is slow. Without these programs on `PATH`, the frame falls back to
+  the light theme and the Cantarell font it embeds.
 - **Fractional scaling** needs both `wp-fractional-scale-v1` and
   `wp-viewporter`; without them, jotty renders at the next integer scale.
 - Block (rectangular) selection is only available in vi mode, not with the
