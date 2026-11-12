@@ -1532,6 +1532,17 @@ fn a_collection_that_frees_nothing_is_not_repeated_until_a_screen_scrolls() {
 }
 
 #[test]
+fn collections_resume_after_the_alternate_screen_scrolls() {
+    // The alternate screen keeps no history, but its rows scroll off too.
+    let mut t = Terminal::new(10, 2, 0);
+    t.screen_mut().limit_tables(2);
+    t.feed(b"\x1b[?1049h\x1b[58:5:1ma\x1b[58:5:2mb\x1b[58:5:3mc");
+    assert_eq!(extra(&t, 0, 2).underline_color, Color::Default);
+    t.feed(b"\r\n\r\n\r\n\x1b[58:5:5me");
+    assert_eq!(extra(&t, 1, 0).underline_color, Color::Indexed(5));
+}
+
+#[test]
 fn overlong_hyperlinks_are_ignored() {
     let mut t = term(10, 1);
     let long = "x".repeat(3000);

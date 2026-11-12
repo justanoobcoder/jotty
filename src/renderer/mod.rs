@@ -96,8 +96,8 @@ impl Glyphs {
     /// Builds the frame's quads into `layers`, rasterizing the glyphs it
     /// needs with `store` (see [`Atlas::cache`]). When the atlas had to
     /// start over on the way, the quads placed before that point in the
-    /// atlas are stale, so the frame is built once more before anything
-    /// is drawn.
+    /// atlas are stale, so the frame is built again before anything is
+    /// drawn: once per doubling of the atlas, and once more at its largest.
     pub fn build(
         &mut self,
         frame: &Frame,
@@ -105,7 +105,9 @@ impl Glyphs {
         layers: &mut Layers,
         mut store: impl FnMut(u32, u32, u32, &font::Glyph),
     ) {
-        for _ in 0..2 {
+        // Enough for 512 to grow to 4096 and one retry; the atlas never
+        // asks for more.
+        for _ in 0..6 {
             let metrics = self.fonts.metrics;
             build(
                 frame,

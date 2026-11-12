@@ -149,7 +149,13 @@ struct ResolvedPath {
     dir: Option<PathBuf>,
     /// The file it names, if there is one.
     file: Option<String>,
+    /// When it was checked: files come and go, so the answer is only kept
+    /// for `RESOLVED_PATH_TTL`.
+    checked: Instant,
 }
+
+/// How long a hovered path's existence check is trusted.
+const RESOLVED_PATH_TTL: Duration = Duration::from_secs(1);
 
 /// Clicks on the same cell within this many milliseconds of each other make
 /// a double or triple click.
@@ -1363,6 +1369,7 @@ impl TermWindow {
         let key = Key {
             keysym: event.keysym,
             base,
+            latin: shared.latin_keysym(event.raw_code),
             text: event.utf8.as_deref(),
             action,
         };
@@ -1382,6 +1389,7 @@ impl TermWindow {
         let key = Key {
             keysym: event.keysym,
             base: shared.base_keysym(event.raw_code),
+            latin: shared.latin_keysym(event.raw_code),
             text: event.utf8.as_deref(),
             action: KeyAction::Release,
         };
@@ -1735,6 +1743,7 @@ impl TermWindow {
                 if let Some(cached) = &*cache.borrow()
                     && cached.text == text
                     && cached.dir == dir
+                    && cached.checked.elapsed() < RESOLVED_PATH_TTL
                 {
                     return cached.file.clone();
                 }
@@ -1744,6 +1753,7 @@ impl TermWindow {
                     text: text.to_owned(),
                     dir,
                     file: file.clone(),
+                    checked: Instant::now(),
                 });
                 file
             };
@@ -1754,6 +1764,7 @@ impl TermWindow {
             self.resolved_path = cache.into_inner();
             link
         } else {
+            self.resolved_path = None;
             None
         };
         if link == self.hovered_link {
@@ -2403,6 +2414,24 @@ impl Shared {
             .key_get_syms_by_level(code, self.layout, 0)
             .first()
             .copied()
+    }
+
+    /// The Latin letter `raw_code` produces without modifiers in the first
+    /// layout that has one there, when the active layout's symbol isn't
+    /// ASCII (`None` when it is, or no layout has one).
+    fn latin_keysym(&self, raw_code: u32) -> Option<Keysym> {
+        let keymap = self.keymap.as_ref()?;
+        let code = xkb::Keycode::new(raw_code + 8);
+        let latin = |layout: u32| {
+            let syms = keymap.key_get_syms_by_level(code, layout, 0);
+            syms.first()
+                .copied()
+                .filter(|sym| sym.key_char().is_some_and(|c| c.is_ascii_alphabetic()))
+        };
+        if latin(self.layout).is_some() {
+            return None;
+        }
+        (0..keymap.num_layouts()).find_map(latin)
     }
 
     /// Shows a notification for `window`, which clicking it focuses.

@@ -43,7 +43,9 @@ pub enum Action {
 impl Action {
     /// Whether holding the key down runs the action again and again, as
     /// scrolling does. Opening windows, reloading the config or toggling
-    /// modes at the repeat rate is never meant.
+    /// modes at the repeat rate is never meant. A repeat of an action that
+    /// doesn't is dropped before the action runs, so every such action
+    /// must always take the key (only `CopyOrInterrupt` ever declines it).
     #[must_use]
     pub fn repeats(self) -> bool {
         match self {

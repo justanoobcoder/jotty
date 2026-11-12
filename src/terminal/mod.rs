@@ -319,8 +319,10 @@ pub struct Screen {
     /// The first cell of the grapheme cluster being printed, which later
     /// characters of the cluster join.
     cluster_start: Option<(usize, usize)>,
-    /// How many rows must have scrolled off (both grids together) before
-    /// strings are collected again, after a collection left a table full.
+    /// Rows scrolled off either screen so far, history or not.
+    scrolled_rows: u64,
+    /// The value of `scrolled_rows` at which strings may be collected
+    /// again, after a collection left a table full.
     collect_after: Option<u64>,
     /// The configured colors, reported by OSC 4, 10 and 11 queries.
     default_colors: DefaultColors,
@@ -474,6 +476,7 @@ impl Screen {
             clusters: StringTable::default(),
             extras: Table::default(),
             cluster_start: None,
+            scrolled_rows: 0,
             collect_after: None,
             default_colors: DefaultColors::default(),
             last_printed: None,
@@ -805,7 +808,7 @@ impl Screen {
     /// full and less than a screenful has scrolled off since: every new
     /// distinct value would otherwise scan the whole history for nothing.
     fn try_collect_strings(&mut self) {
-        let scrolled = self.primary.scrolled + self.alternate.scrolled;
+        let scrolled = self.scrolled_rows;
         if self.collect_after.is_some_and(|after| scrolled < after) {
             return;
         }
@@ -1369,6 +1372,7 @@ impl Screen {
         let keep = top == 0 && !self.alt_active;
         let line = self.top_line();
         let scrolled = self.grid_mut().scroll_up(top, bottom, n, &template, keep);
+        self.scrolled_rows += scrolled as u64;
         if self.graphics().placements().is_empty() {
             // Nothing to move: this is every newline of plain output.
         } else if keep {

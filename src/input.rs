@@ -43,6 +43,9 @@ pub struct Key<'text> {
     pub keysym: Keysym,
     /// The key's symbol without modifiers, in the active layout.
     pub base: Option<Keysym>,
+    /// The key's symbol without modifiers in the first layout where it is
+    /// a Latin letter, when the active layout's isn't one.
+    pub latin: Option<Keysym>,
     /// The UTF-8 text xkb produced.
     pub text: Option<&'text str>,
     pub action: KeyAction,
@@ -60,12 +63,12 @@ pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
     }
     // xkb turns Ctrl+letter into a control character for ASCII symbols
     // only; on a Cyrillic or Greek layout the key's text is the letter
-    // itself, so the key's base symbol stands in for it.
-    let base_text: String;
-    let text = match (key.text, key.base.and_then(Keysym::key_char)) {
-        (Some(text), Some(base)) if mods.ctrl && !text.is_ascii() && base.is_ascii() => {
-            base_text = base.to_string();
-            Some(base_text.as_str())
+    // itself, so the Latin letter on the same key stands in for it.
+    let latin_text: String;
+    let text = match (key.text, key.latin.and_then(Keysym::key_char)) {
+        (Some(text), Some(latin)) if mods.ctrl && !text.is_ascii() && latin.is_ascii() => {
+            latin_text = latin.to_string();
+            Some(latin_text.as_str())
         }
         _ => key.text,
     };
@@ -662,6 +665,7 @@ mod tests {
     ) -> Option<String> {
         let key = Key {
             keysym,
+            latin: None,
             base: Some(base),
             text,
             action,
@@ -873,7 +877,8 @@ mod tests {
     fn ctrl_on_a_non_latin_layout_uses_the_base_key() {
         let key = Key {
             keysym: Keysym::Cyrillic_es,
-            base: Some(Keysym::c),
+            base: Some(Keysym::Cyrillic_es),
+            latin: Some(Keysym::c),
             text: Some("\u{441}"),
             action: KeyAction::Press,
         };
