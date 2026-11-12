@@ -105,6 +105,11 @@ pub struct Bus {
     outgoing: VecDeque<u8>,
     pending: VecDeque<Pending>,
     shown: VecDeque<Shown>,
+    /// The serial of the `GetCapabilities` call, until its reply comes.
+    capabilities: Option<u32>,
+    /// Whether the daemon reads the body as markup, so that `<` and `&`
+    /// must be escaped. Assumed until it says otherwise.
+    body_markup: bool,
 }
 
 impl Bus {
@@ -122,6 +127,8 @@ impl Bus {
             outgoing: VecDeque::new(),
             pending: VecDeque::new(),
             shown: VecDeque::new(),
+            capabilities: None,
+            body_markup: true,
         };
         // The bus requires Hello first; its reply (our unique name) and the
         // NameAcquired signal that follows are ignored.
@@ -138,6 +145,18 @@ impl Bus {
             &body.buf,
             NO_REPLY_EXPECTED,
         )?;
+        // A daemon without `body-markup` shows the body as it is, so it
+        // must not be escaped for it.
+        let serial = bus.call(
+            NOTIFICATIONS,
+            NOTIFICATIONS_PATH,
+            NOTIFICATIONS,
+            "GetCapabilities",
+            "",
+            &[],
+            0,
+        )?;
+        bus.capabilities = Some(serial);
         // Everything is written: the timeouts above let these block.
         bus.stream.set_nonblocking(true)?;
         Ok(bus)
@@ -181,7 +200,12 @@ impl Bus {
             log::warn!("the session bus isn't reading; dropping a notification");
             return Ok(());
         }
-        let message = notify_body(app_id, summary, &escape_markup(body));
+        let body = if self.body_markup {
+            escape_markup(body)
+        } else {
+            body.to_owned()
+        };
+        let message = notify_body(app_id, summary, &body);
         let serial = self.call(
             NOTIFICATIONS,
             NOTIFICATIONS_PATH,
@@ -228,6 +252,17 @@ impl Bus {
 
     fn handle(&mut self, message: Message, events: &mut Vec<Event>) {
         match message.kind {
+            METHOD_RETURN | ERROR if message.reply_serial == self.capabilities => {
+                self.capabilities = None;
+                if message.kind == METHOD_RETURN && message.signature == "as" {
+                    match message.body().strings() {
+                        Ok(capabilities) => {
+                            self.body_markup = capabilities.iter().any(|c| c == "body-markup");
+                        }
+                        Err(e) => log::debug!("ignoring the daemon's capabilities: {e}"),
+                    }
+                }
+            }
             METHOD_RETURN | ERROR => {
                 let Some(i) = self
                     .pending
@@ -705,6 +740,17 @@ impl Reader<'_> {
         self.u8()?;
         Ok(text)
     }
+
+    /// An array of strings (`as`).
+    fn strings(&mut self) -> Result<Vec<String>, &'static str> {
+        let len = self.u32()? as usize;
+        let end = self.pos.checked_add(len).ok_or(TRUNCATED)?;
+        let mut strings = Vec::new();
+        while self.pos < end {
+            strings.push(self.str()?);
+        }
+        Ok(strings)
+    }
 }
 
 #[cfg(test)]
@@ -778,6 +824,8 @@ mod tests {
             outgoing: VecDeque::new(),
             pending: std::mem::take(&mut state.0),
             shown: std::mem::take(&mut state.1),
+            capabilities: None,
+            body_markup: true,
         };
         let mut events = Vec::new();
         for m in messages {
@@ -799,6 +847,8 @@ mod tests {
             outgoing: VecDeque::new(),
             pending: VecDeque::new(),
             shown: VecDeque::new(),
+            capabilities: None,
+            body_markup: true,
         };
         let body = "x".repeat(1024);
         for _ in 0..2000 {
@@ -806,6 +856,49 @@ mod tests {
         }
         assert!(bus.has_outgoing());
         assert!(bus.outgoing.len() < MAX_OUTGOING + 2048);
+    }
+
+    #[test]
+    fn the_body_is_escaped_only_for_daemons_that_read_markup() {
+        let capabilities = |list: &[&str]| {
+            let mut body = Writer::default();
+            body.array(4, |w| {
+                for item in list {
+                    w.str(item);
+                }
+            });
+            incoming(METHOD_RETURN, &[(5, "u", "9")], "as", &body.buf)
+        };
+        let (a, mut peer) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let mut bus = Bus {
+            stream: a,
+            serial: 0,
+            received: Vec::new(),
+            outgoing: VecDeque::new(),
+            pending: VecDeque::new(),
+            shown: VecDeque::new(),
+            capabilities: Some(9),
+            body_markup: true,
+        };
+        // What the daemon would receive for a body with a `<` in it.
+        let mut sent = |bus: &mut Bus| {
+            use std::io::Read;
+            bus.notify(0, "jotty", "t", "a < b").unwrap();
+            let mut received = Vec::new();
+            let _ = peer.read_to_end(&mut received);
+            String::from_utf8_lossy(&received).into_owned()
+        };
+        assert!(sent(&mut bus).contains("a &lt; b"));
+        let mut events = Vec::new();
+        let reply = capabilities(&["actions", "body"]);
+        bus.handle(Message::parse(&reply).unwrap(), &mut events);
+        assert!(!bus.body_markup);
+        assert!(sent(&mut bus).contains("a < b"));
+        // The reply is taken once; a later one with that serial is a
+        // notification's reply.
+        assert_eq!(bus.capabilities, None);
     }
 
     #[test]
