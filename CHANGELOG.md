@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+## 2.2.0
+
 - The glyph atlas grows as a screen needs it, instead of being cleared on
     every frame when a screen doesn't fit, and starts smaller
 - Ctrl+letter sends the control character on non-Latin keyboard layouts
