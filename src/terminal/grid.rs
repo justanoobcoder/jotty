@@ -538,7 +538,9 @@ impl Grid {
         }
 
         // The screen shows the last rows, unless that would hide the first
-        // point (the cursor).
+        // point (the cursor). Rows below the screen then no longer fit
+        // anywhere (the history is above it) and are dropped: the cursor
+        // staying visible matters more, and content below it is rare.
         let total = out.len();
         let mut start = total.saturating_sub(rows);
         if let Some(Some(pos)) = moved.first() {

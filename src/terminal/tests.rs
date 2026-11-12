@@ -1566,7 +1566,7 @@ fn unused_extras_are_dropped_when_the_table_fills() {
 #[test]
 fn erased_rows_are_not_joined_by_reflow() {
     let mut t = term(10, 4);
-    t.feed(b"aaaaaaaaaaBBBB[1;1H[2Kx");
+    t.feed(b"aaaaaaaaaaBBBB\x1b[1;1H\x1b[2Kx");
     assert!(!t.screen().grid().rows[0].wrapped);
     t.screen_mut().resize(20, 4);
     assert_eq!(lines(&t)[..2], ["x".to_string(), "BBBB".to_string()]);
