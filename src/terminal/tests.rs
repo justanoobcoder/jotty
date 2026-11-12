@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_OSC_BYTES,
-    MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
+    Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS,
+    MouseMode, Notification, Row, Terminal, Underline,
 };
 use crate::color::Rgb;
 
@@ -1409,9 +1409,9 @@ fn long_titles_and_osc_strings_are_cut() {
     t.feed(format!("\x1b]0;{long}\x07").as_bytes());
     let title = t.screen_mut().take_title().unwrap();
     assert_eq!(title.len(), MAX_TITLE_CHARS);
+    // A link that long is dropped rather than kept truncated.
     t.feed(format!("\x1b]8;;{long}\x1b\\a").as_bytes());
-    let link = t.screen().link(extra(&t, 0, 0).link).unwrap();
-    assert!(link.len() < MAX_OSC_BYTES);
+    assert_eq!(extra(&t, 0, 0).link, 0);
 }
 
 #[test]
@@ -1514,6 +1514,31 @@ fn a_full_extra_table_is_not_collected_for_an_extra_it_has() {
     assert_eq!(cell(&t, 0, 1).extra, id);
     assert_eq!(cell(&t, 0, 2).extra, id);
     assert_eq!(t.screen().link(extra(&t, 0, 2).link), Some("b"));
+}
+
+#[test]
+fn a_collection_that_frees_nothing_is_not_repeated_until_a_screen_scrolls() {
+    let mut t = Terminal::new(10, 2, 0);
+    t.screen_mut().limit_tables(2);
+    // Both extras are in use: collecting for `c` frees nothing.
+    t.feed(b"\x1b[58:5:1ma\x1b[58:5:2mb\x1b[58:5:3mc");
+    assert_eq!(extra(&t, 0, 2).underline_color, Color::Default);
+    // Overwriting `a` frees its extra, but the collection is on hold.
+    t.feed(b"\x1b[59m\x1b[1;1Hx\x1b[1;4H\x1b[58:5:4md");
+    assert_eq!(extra(&t, 0, 3).underline_color, Color::Default);
+    // Once a screenful scrolled off, it runs again.
+    t.feed(b"\r\n\r\n\r\n\x1b[58:5:5me");
+    assert_eq!(extra(&t, 1, 0).underline_color, Color::Indexed(5));
+}
+
+#[test]
+fn overlong_hyperlinks_are_ignored() {
+    let mut t = term(10, 1);
+    let long = "x".repeat(3000);
+    let fits = "y".repeat(2048);
+    t.feed(format!("\x1b]8;;{long}\x1b\\a\x1b]8;;{fits}\x1b\\b").as_bytes());
+    assert_eq!(extra(&t, 0, 0).link, 0);
+    assert_eq!(t.screen().link(extra(&t, 0, 1).link), Some(fits.as_str()));
 }
 
 #[test]

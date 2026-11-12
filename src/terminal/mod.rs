@@ -23,6 +23,9 @@ const MAX_APC: usize = 64 << 20;
 /// hyperlinks and notifications, but an unterminated OSC can't grow
 /// without bound.
 const MAX_OSC_BYTES: usize = 16 << 10;
+/// The longest hyperlink target kept: the table holds up to `u16::MAX`
+/// of them until a collection, so each one bounds the memory they take.
+const MAX_LINK_BYTES: usize = 2048;
 
 /// A terminal: the parser and the screen it drives.
 pub struct Terminal {
@@ -316,6 +319,9 @@ pub struct Screen {
     /// The first cell of the grapheme cluster being printed, which later
     /// characters of the cluster join.
     cluster_start: Option<(usize, usize)>,
+    /// How many rows must have scrolled off (both grids together) before
+    /// strings are collected again, after a collection left a table full.
+    collect_after: Option<u64>,
     /// The configured colors, reported by OSC 4, 10 and 11 queries.
     default_colors: DefaultColors,
     /// Where the last character was printed, if nothing else happened
@@ -468,6 +474,7 @@ impl Screen {
             clusters: StringTable::default(),
             extras: Table::default(),
             cluster_start: None,
+            collect_after: None,
             default_colors: DefaultColors::default(),
             last_printed: None,
             title: None,
@@ -716,9 +723,7 @@ impl Screen {
         if cell.extra == 0 {
             return "";
         }
-        self.clusters
-            .get(self.extra(cell).cluster)
-            .map_or("", String::as_str)
+        self.clusters.get(self.extra(cell).cluster).unwrap_or("")
     }
 
     /// A cell's whole text: its character and the rest of its cluster.
@@ -782,7 +787,7 @@ impl Screen {
                     // A new string makes a new extra too.
                     None => {
                         if table.is_full() || self.extras.is_full() {
-                            self.collect_strings();
+                            self.try_collect_strings();
                         }
                         return;
                     }
@@ -792,8 +797,21 @@ impl Screen {
         let extra = extra(id);
         if self.extras.is_full() && extra != Extra::default() && self.extras.find(&extra).is_none()
         {
-            self.collect_strings();
+            self.try_collect_strings();
         }
+    }
+
+    /// Collects unused strings and extras, unless a collection left a table
+    /// full and less than a screenful has scrolled off since: every new
+    /// distinct value would otherwise scan the whole history for nothing.
+    fn try_collect_strings(&mut self) {
+        let scrolled = self.primary.scrolled + self.alternate.scrolled;
+        if self.collect_after.is_some_and(|after| scrolled < after) {
+            return;
+        }
+        self.collect_strings();
+        let still_full = self.links.is_full() || self.clusters.is_full() || self.extras.is_full();
+        self.collect_after = still_full.then(|| scrolled + self.rows as u64);
     }
 
     /// Changes the extra of the cursor's template (its link or underline
@@ -958,7 +976,7 @@ impl Screen {
 
     /// The target of the hyperlink with `id`, as cells refer to it.
     pub fn link(&self, id: u16) -> Option<&str> {
-        self.links.get(id).map(String::as_str)
+        self.links.get(id)
     }
 
     /// Starts (`uri` non-empty) or ends a hyperlink (OSC 8). Identical
@@ -974,6 +992,10 @@ impl Screen {
         self.make_room(None, |_| ended);
         self.update_template_extra(|extra| extra.link = 0);
         if uri.is_empty() {
+            return;
+        }
+        if uri.len() > MAX_LINK_BYTES {
+            log::debug!("hyperlink target longer than {MAX_LINK_BYTES} bytes; ignoring it");
             return;
         }
         let unlinked = self.extra(&self.cursor.template);

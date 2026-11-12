@@ -2,23 +2,24 @@
 //! cluster tails, and the combinations of those and underline colors that
 //! a cell carries (`Extra`).
 
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::rc::Rc;
 
 /// A table of distinct values. Id 0 means "none"; a value's id is its
-/// index + 1, so a table holds at most `u16::MAX` values.
+/// index + 1, so a table holds at most `u16::MAX` values. Each value is
+/// stored once, shared by the list and the index.
 #[derive(Debug)]
-pub(super) struct Table<T> {
-    items: Vec<T>,
-    ids: HashMap<T, u16>,
+pub(super) struct Table<T: ?Sized> {
+    items: Vec<Rc<T>>,
+    ids: HashMap<Rc<T>, u16>,
     /// At most `u16::MAX`; tests lower it to fill tables quickly.
     capacity: usize,
 }
 
-pub(super) type StringTable = Table<String>;
+pub(super) type StringTable = Table<str>;
 
-impl<T> Default for Table<T> {
+impl<T: ?Sized> Default for Table<T> {
     fn default() -> Self {
         Table {
             items: Vec::new(),
@@ -28,7 +29,11 @@ impl<T> Default for Table<T> {
     }
 }
 
-impl<T: Clone + Eq + Hash> Table<T> {
+impl<T> Table<T>
+where
+    T: ?Sized + Eq + Hash + ToOwned,
+    Rc<T>: From<T::Owned>,
+{
     #[cfg(test)]
     pub(super) fn set_capacity(&mut self, capacity: usize) {
         self.capacity = capacity.min(u16::MAX as usize);
@@ -37,33 +42,26 @@ impl<T: Clone + Eq + Hash> Table<T> {
     /// The value with `id`; `None` for 0 or an id the table doesn't have.
     pub(super) fn get(&self, id: u16) -> Option<&T> {
         let index = usize::from(id).checked_sub(1)?;
-        self.items.get(index)
+        self.items.get(index).map(Rc::as_ref)
     }
 
     /// The id of `value`, if the table has it.
-    pub(super) fn find<Q>(&self, value: &Q) -> Option<u16>
-    where
-        T: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
+    pub(super) fn find(&self, value: &T) -> Option<u16> {
         self.ids.get(value).copied()
     }
 
     /// The id of `value`, adding it if new; `None` when the table is full.
-    pub(super) fn insert<Q>(&mut self, value: &Q) -> Option<u16>
-    where
-        T: Borrow<Q>,
-        Q: Hash + Eq + ToOwned<Owned = T> + ?Sized,
-    {
+    pub(super) fn insert(&mut self, value: &T) -> Option<u16> {
         if let Some(id) = self.find(value) {
             return Some(id);
         }
         if self.is_full() {
             return None;
         }
-        self.items.push(value.to_owned());
+        let value: Rc<T> = Rc::from(value.to_owned());
+        self.items.push(Rc::clone(&value));
         let id = self.items.len() as u16;
-        self.ids.insert(value.to_owned(), id);
+        self.ids.insert(value, id);
         Some(id)
     }
 
@@ -74,19 +72,27 @@ impl<T: Clone + Eq + Hash> Table<T> {
     /// Keeps only the values whose id is marked in `used` (indexed by id),
     /// and returns the new id of every old one (0 for dropped ones).
     pub(super) fn retain(&mut self, used: &[bool]) -> Vec<u16> {
-        self.retain_map(used, T::clone)
+        self.retain_with(used, Rc::clone)
     }
 
     /// Like `retain`, replacing each kept value with `map` of it. Values
     /// that `map` makes equal must not both be kept.
-    pub(super) fn retain_map(&mut self, used: &[bool], mut map: impl FnMut(&T) -> T) -> Vec<u16> {
+    pub(super) fn retain_map(
+        &mut self,
+        used: &[bool],
+        mut map: impl FnMut(&T) -> T::Owned,
+    ) -> Vec<u16> {
+        self.retain_with(used, |value| Rc::from(map(value)))
+    }
+
+    fn retain_with(&mut self, used: &[bool], mut map: impl FnMut(&Rc<T>) -> Rc<T>) -> Vec<u16> {
         let mut remap = vec![0; self.items.len() + 1];
         let old = std::mem::take(&mut self.items);
         self.ids.clear();
         for (index, value) in old.iter().enumerate() {
             if used.get(index + 1).copied().unwrap_or(false) {
                 let value = map(value);
-                self.items.push(value.clone());
+                self.items.push(Rc::clone(&value));
                 let id = self.items.len() as u16;
                 self.ids.insert(value, id);
                 remap[index + 1] = id;
@@ -111,7 +117,7 @@ mod tests {
         let a = table.insert("a").unwrap();
         assert_eq!(table.insert("b"), Some(a + 1));
         assert_eq!(table.insert("a"), Some(a));
-        assert_eq!(table.get(a).map(String::as_str), Some("a"));
+        assert_eq!(table.get(a), Some("a"));
         assert_eq!(table.get(0), None);
     }
 
@@ -125,7 +131,7 @@ mod tests {
         used[3] = true;
         let remap = table.retain(&used);
         assert_eq!(remap, vec![0, 0, 0, 1]);
-        assert_eq!(table.get(1).map(String::as_str), Some("c"));
+        assert_eq!(table.get(1), Some("c"));
         assert_eq!(table.find("a"), None);
         assert_eq!(table.insert("a"), Some(2));
     }
