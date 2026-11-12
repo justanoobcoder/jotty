@@ -1208,6 +1208,19 @@ fn alternate_screen_has_its_own_images() {
     assert_eq!(t.screen().graphics().placements().len(), 1);
 }
 
+#[test]
+fn leaving_the_alternate_screen_drops_its_images() {
+    let mut t = term(10, 3);
+    t.feed(b"\x1b[?47h");
+    t.feed(IMAGE);
+    t.feed(b"\x1b_Ga=p,i=1\x1b\\");
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+    // Mode 47 doesn't clear on entry, but nothing could show them again.
+    t.feed(b"\x1b[?47l\x1b[?47h");
+    assert!(t.screen().graphics().placements().is_empty());
+    assert!(t.screen().graphics().is_empty());
+}
+
 /// A 20×36 red sixel image: 2×2 cells of 10×20 pixels.
 const SIXEL: &[u8] = b"\x1bPq\"1;1;20;36#1;2;100;0;0!20~-!20~-!20~-!20~-!20~-!20~\x1b\\";
 
@@ -1226,6 +1239,8 @@ fn sixel_image_is_placed_at_the_cursor_and_leaves_it_on_its_last_row() {
         .expect("the image is stored");
     assert_eq!((image.width, image.height), (20, 36));
     assert_eq!(image.pixels[..4], [255, 0, 0, 255]);
+    // The decoder's canvas grew by doubling; the stored image is exact.
+    assert_eq!(image.pixels.capacity(), image.pixels.len());
     assert_eq!(t.screen().cursor(), (1, 2));
     // At the bottom, the screen scrolls to make room.
     t.feed(b"\x1b[4;1H");

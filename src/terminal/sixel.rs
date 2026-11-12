@@ -168,7 +168,9 @@ impl Decoder {
             return None;
         }
         let mut pixels = if self.stride == width {
+            // The canvas grew by doubling; the image keeps only what it uses.
             self.pixels.truncate(width * height * 4);
+            self.pixels.shrink_to_fit();
             self.pixels
         } else {
             let mut pixels = Vec::with_capacity(width * height * 4);

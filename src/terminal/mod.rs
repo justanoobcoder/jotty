@@ -1347,7 +1347,9 @@ impl Screen {
         let keep = top == 0 && !self.alt_active;
         let line = self.top_line();
         let scrolled = self.grid_mut().scroll_up(top, bottom, n, &template, keep);
-        if keep {
+        if self.graphics().placements().is_empty() {
+            // Nothing to move: this is every newline of plain output.
+        } else if keep {
             // Images in the region went up with the screen; those below it
             // stay, and those past the history are gone.
             let graphics = &mut self.graphics[0];
@@ -1733,6 +1735,11 @@ impl Screen {
             self.erase_rows(0, self.rows);
             self.graphics[1].clear_all();
             self.keyboard[1] = KeyboardFlags::default();
+        }
+        if !on {
+            // Nothing shows the alternate screen's images again before the
+            // next switch clears them, or draws over them.
+            self.graphics[1].clear_all();
         }
         self.display_offset = 0;
         self.dirty = true;

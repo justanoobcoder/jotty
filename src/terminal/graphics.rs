@@ -688,6 +688,7 @@ impl Graphics {
             return;
         }
         let mut kept = Vec::with_capacity(self.placements.len() + 3);
+        let mut cut = false;
         for p in std::mem::take(&mut self.placements) {
             if !overlaps(&p) {
                 kept.push(p);
@@ -702,16 +703,20 @@ impl Graphics {
                 (hit_lines.clone(), c.start..hit_columns.start),
                 (hit_lines.clone(), hit_columns.end..c.end),
             ];
+            let before = kept.len();
             kept.extend(
                 pieces
                     .into_iter()
                     .filter_map(|(lines, columns)| p.crop(lines, columns, cell)),
             );
+            cut |= kept.len() == before;
         }
         self.placements = kept;
         let excess = self.placements.len().saturating_sub(MAX_PLACEMENTS);
         self.placements.drain(..excess);
-        self.drop_unreachable();
+        if cut || excess > 0 {
+            self.drop_unreachable();
+        }
     }
 
     /// Deletes placements (`a=d`) and, for an upper-case specifier, the
@@ -814,6 +819,7 @@ impl Graphics {
     /// those that leave it.
     pub fn scroll(&mut self, top: i64, bottom: i64, n: i64) {
         let cell = self.cell;
+        let before = self.placements.len();
         self.placements.retain_mut(|p| {
             if p.is_virtual || !(top..=bottom).contains(&p.line) {
                 return true;
@@ -821,7 +827,9 @@ impl Graphics {
             p.line -= n;
             p.lines(cell).end > top && p.line <= bottom
         });
-        self.drop_unreachable();
+        if self.placements.len() < before {
+            self.drop_unreachable();
+        }
     }
 
     /// Moves every placement whose top row is at or below `from` by
@@ -837,11 +845,14 @@ impl Graphics {
     /// Deletes the placements that touch rows `start..end`.
     pub fn clear(&mut self, start: i64, end: i64) {
         let cell = self.cell;
+        let before = self.placements.len();
         self.placements.retain(|p| {
             let lines = p.lines(cell);
             p.is_virtual || lines.end <= start || lines.start >= end
         });
-        self.drop_unreachable();
+        if self.placements.len() < before {
+            self.drop_unreachable();
+        }
     }
 
     /// Deletes everything.
@@ -949,7 +960,10 @@ fn read_from(mut file: File, offset: u64, size: usize) -> Result<Vec<u8>, String
     } else {
         size.min(MAX_DATA)
     };
-    let mut data = Vec::new();
+    // Sized up front: `read_to_end` would otherwise grow by doubling and
+    // keep up to twice the data allocated for as long as the image lives.
+    let expected = file.metadata().map_err(error)?.len().saturating_sub(offset);
+    let mut data = Vec::with_capacity(expected.min(limit as u64) as usize);
     file.take(limit as u64)
         .read_to_end(&mut data)
         .map_err(error)?;
@@ -1014,6 +1028,9 @@ fn decode(cmd: &Command, data: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
     let rgba = if bytes_per_pixel == 4 {
         let mut data = data;
         data.truncate(pixels * 4);
+        // Decompression and reading grow by doubling; the image is kept for
+        // long, so it drops the slack.
+        data.shrink_to_fit();
         data
     } else {
         data.as_chunks::<3>().0[..pixels]
@@ -1043,10 +1060,10 @@ fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
             .ok_or("EFBIG: image too large")?
     ];
     let info = reader.next_frame(&mut buf).map_err(bad)?;
-    let pixels = &buf[..info.buffer_size()];
+    buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
-        png::ColorType::Rgba => pixels.to_vec(),
-        png::ColorType::GrayscaleAlpha => pixels
+        png::ColorType::Rgba => buf,
+        png::ColorType::GrayscaleAlpha => buf
             .as_chunks::<2>()
             .0
             .iter()
