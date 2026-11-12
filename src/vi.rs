@@ -119,7 +119,8 @@ impl ViMode {
             self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(100_000));
             return Outcome::Done;
         }
-        let count = self.count.take().unwrap_or(1);
+        let given = self.count.take();
+        let count = given.unwrap_or(1);
         if let Some((first, count)) = self.pending.take() {
             return self.second_key(screen, first, key, count);
         }
@@ -142,9 +143,10 @@ impl ViMode {
                 }
             }
             Key::Char('g') => self.pending = Some(('g', count)),
+            // `G` goes to the last line, `5G` to the fifth, like `5gg`.
             Key::Char('G') => {
                 *p = Point {
-                    line: bottom,
+                    line: given.map_or(bottom, |n| top.saturating_add_unsigned(n - 1).min(bottom)),
                     col: 0,
                 }
             }
@@ -481,6 +483,19 @@ mod tests {
         press(&mut vi, &t, "gg");
         assert_eq!(vi.cursor, p(0, 0));
         press(&mut vi, &t, "99gg");
+        assert_eq!(vi.cursor, p(4, 0));
+    }
+
+    #[test]
+    fn g_goes_to_the_last_line_or_the_counted_one() {
+        let mut t = Terminal::new(10, 5, 0);
+        t.feed(b"a\r\nb\r\nc");
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "G");
+        assert_eq!(vi.cursor, p(4, 0));
+        press(&mut vi, &t, "2G");
+        assert_eq!(vi.cursor, p(1, 0));
+        press(&mut vi, &t, "99G");
         assert_eq!(vi.cursor, p(4, 0));
     }
 
