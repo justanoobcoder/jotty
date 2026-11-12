@@ -230,9 +230,16 @@ impl Fontconfig {
 }
 
 /// Finds and loads the system's color emoji font.
+#[cfg(test)]
 #[must_use]
 pub fn load_emoji_font() -> Option<EmojiFont> {
-    let file = Fontconfig::try_new().ok()?.find_color_emoji()?;
+    load_emoji_font_with(&Fontconfig::try_new().ok()?)
+}
+
+/// Finds and loads the system's color emoji font with an already loaded
+/// configuration: loading another one costs a full font scan.
+fn load_emoji_font_with(fontconfig: &Fontconfig) -> Option<EmojiFont> {
+    let file = fontconfig.find_color_emoji()?;
     match EmojiFont::try_new(map_file(&file.path).ok()?, file.index & 0xffff) {
         Ok(font) => {
             log::info!("loading emoji font {}", file.path.display());
@@ -414,7 +421,11 @@ impl Fonts {
         if !emoji::wants_color(text) {
             return None;
         }
-        let font = self.emoji.get_or_insert_with(load_emoji_font).as_ref()?;
+        let fontconfig = &self.fontconfig;
+        let font = self
+            .emoji
+            .get_or_insert_with(|| load_emoji_font_with(fontconfig))
+            .as_ref()?;
         let glyph = font.glyph_for(text)?;
         let m = self.metrics;
         let slot = m.width * if wide { 2 } else { 1 };
