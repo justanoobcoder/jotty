@@ -171,6 +171,9 @@ impl Renderer {
         for (y0, y1) in changed(&bands, &fingerprints, held) {
             rows[y0 as usize..y1 as usize].fill(true);
         }
+        // Painting changes the buffer before it is known to be presented:
+        // if attaching fails, what it holds is unknown.
+        held.clear();
         let images: Vec<Option<&Image>> = batch
             .images
             .iter()
