@@ -286,18 +286,22 @@ and a mode (solid, glyph, or color glyph). A single shader handles all
 modes, writing premultiplied alpha. The EGL config has an alpha channel, so the
 compositor blends the window: the clear color is the background at
 `window.opacity`, and colored cell backgrounds use the same alpha when
-`transparent_cell_backgrounds` is set. The atlas is a 2048×2048
-single-channel (`R8`) texture sampled with `NEAREST`, since glyphs sit on
-whole pixels, and color emoji go to a 1024×1024 `RGBA8` texture. When
-either fills up, both are cleared and the frame is redrawn. Each image is
-uploaded once as an `RGBA8` texture (sampled with `LINEAR`, as images are
-scaled) and freed when the program deletes it; the draw call is split at
-image quads to bind their texture.
+`transparent_cell_backgrounds` is set. The atlas is a single-channel
+(`R8`) texture sampled with `NEAREST`, since glyphs sit on whole pixels,
+and color emoji go to an `RGBA8` texture; they start at 1024×1024 and
+512×512 and double when a screen needs more, up to 4096×4096. When one
+fills up (`atlas::Atlas`), it grows or, at its largest, is cleared, the
+glyphs are repacked and `Glyphs::build` builds the frame once more before
+anything is drawn. Each image is uploaded once as a premultiplied `RGBA8`
+texture (sampled with `LINEAR`, as images are scaled) and freed when the
+program deletes it; the draw call is split at image quads to bind their
+texture.
 
 **2b. Drawing on the CPU** (`renderer::software`, the default) paints the
 same batch into an ARGB8888 `wl_shm` buffer: it clears to the background,
-then fills each quad, blending glyph coverage from a 1024×1024 atlas in
-memory, or color emoji from a 512×512 BGRA atlas allocated on first use.
+then fills each quad, blending glyph coverage from an atlas in memory
+(1024×1024 to start with, up to 2048×2048), or color emoji from a BGRA
+atlas (512×512 to start with) allocated on first use.
 Quads are axis-aligned and glyphs 1:1, so this is a plain blit with
 premultiplied-alpha blending, and the result matches the GL output pixel
 for pixel. Images are scaled by sampling the nearest pixel.

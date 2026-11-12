@@ -210,11 +210,12 @@ nothing surprises you.
   renderer.
 - The GPU renderer needs OpenGL ES 3.0 through EGL. Without it, jotty falls
   back to the CPU renderer.
-- When a glyph atlas fills up (text: 2048×2048 on the GPU, 1024×1024 on
-  the CPU; color emoji: 1024×1024 and 512×512), both are cleared and the
-  frame is redrawn, which can cause a brief hitch with very large fonts or
-  many scripts or emoji on screen. If the screen needs more than an atlas
-  holds, the glyphs that don't fit are left out of that frame.
+- A glyph atlas that fills up doubles (up to 4096×4096 on the GPU, within
+  the driver's texture size limit, and 2048×2048 on the CPU) and is
+  repacked, then the frame is built again before it is drawn, which can
+  cause a brief hitch with very large fonts or many scripts or emoji on
+  screen. If the screen needs more than the largest atlas holds, the glyphs
+  that don't fit are left out.
 - A frame that fails to draw is retried every 200 ms; the window closes
   after 50 failures in a row (10 seconds).
 - Windows of the same process don't share fonts or glyph atlases: each

@@ -12,8 +12,8 @@ use crate::terminal::Underline;
 /// tallest member. Good enough for glyphs, which are of similar height.
 #[derive(Debug)]
 pub struct Packer {
-    width: u32,
-    height: u32,
+    /// The side of the square area.
+    size: u32,
     x: u32,
     y: u32,
     shelf_height: u32,
@@ -24,10 +24,9 @@ const PADDING: u32 = 1;
 
 impl Packer {
     #[must_use]
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(size: u32) -> Self {
         Packer {
-            width,
-            height,
+            size,
             x: 0,
             y: 0,
             shelf_height: 0,
@@ -35,22 +34,22 @@ impl Packer {
     }
 
     #[must_use]
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+    pub fn size(&self) -> u32 {
+        self.size
     }
 
     /// Reserves a `w`×`h` area and returns its top-left corner, or `None`
     /// when the atlas is full.
     pub fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        if w > self.width || h > self.height {
+        if w > self.size || h > self.size {
             return None;
         }
-        if self.x + w > self.width {
+        if self.x + w > self.size {
             self.y += self.shelf_height + PADDING;
             self.x = 0;
             self.shelf_height = 0;
         }
-        if self.y + h > self.height {
+        if self.y + h > self.size {
             return None;
         }
         let pos = (self.x, self.y);
@@ -61,7 +60,7 @@ impl Packer {
 
     /// Frees the whole area, for repacking from scratch.
     pub fn clear(&mut self) {
-        *self = Packer::new(self.width, self.height);
+        *self = Packer::new(self.size);
     }
 }
 
@@ -82,6 +81,8 @@ enum GlyphKey {
 pub struct Atlas {
     packer: Packer,
     color_packer: Packer,
+    /// The largest side either image may grow to.
+    max_size: u32,
     glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
     /// The atlas filled up and was cleared since the last `take_overflowed`.
     overflowed: bool,
@@ -95,12 +96,13 @@ pub struct Atlas {
 
 impl Atlas {
     /// Square atlas images of `size` (coverage) and `color_size` (RGBA)
-    /// pixels.
+    /// pixels to start with; one that fills up doubles, up to `max_size`.
     #[must_use]
-    pub fn new(size: u32, color_size: u32) -> Self {
+    pub fn new(size: u32, color_size: u32, max_size: u32) -> Self {
         Atlas {
-            packer: Packer::new(size, size),
-            color_packer: Packer::new(color_size, color_size),
+            packer: Packer::new(size),
+            color_packer: Packer::new(color_size),
+            max_size: max_size.max(size).max(color_size),
             glyphs: HashMap::new(),
             overflowed: false,
             retrying: false,
@@ -113,6 +115,16 @@ impl Atlas {
             &mut self.color_packer
         } else {
             &mut self.packer
+        }
+    }
+
+    /// The side of the coverage image, or of the color one.
+    #[cfg(test)]
+    fn size(&self, color: bool) -> u32 {
+        if color {
+            self.color_packer.size()
+        } else {
+            self.packer.size()
         }
     }
 
@@ -138,18 +150,24 @@ impl Atlas {
         self.retrying
     }
 
-    /// Finds room for a glyph, clearing the atlas if it is full, unless that
-    /// just happened.
+    /// Finds room for a glyph. When the image is full it grows, or at its
+    /// largest is cleared, unless that just happened; either way the glyphs
+    /// placed earlier this frame are stale, so the caller redraws once more.
     fn allocate(&mut self, w: u32, h: u32, color: bool) -> Option<(u32, u32)> {
         if let Some(pos) = self.packer(color).alloc(w, h) {
             return Some(pos);
         }
-        if self.retrying {
+        let size = self.packer(color).size();
+        if size < self.max_size {
+            // Bigger, and from scratch: the positions so far are in the
+            // old image. A screen that fits now never clears it again.
+            let grown = size.saturating_mul(2).min(self.max_size);
+            log::info!("growing the glyph atlas to {grown}×{grown}");
+            *self.packer(color) = Packer::new(grown);
+        } else if self.retrying {
             log::debug!("the glyph atlas can't hold this screen; dropping a glyph");
             return None;
         }
-        // Start over; glyphs placed earlier this frame are stale, so the
-        // caller redraws once more.
         self.clear();
         self.overflowed = true;
         self.packer(color).alloc(w, h)
@@ -157,8 +175,9 @@ impl Atlas {
 
     /// A [`GlyphCache`] that rasterizes missing glyphs with `fonts` and
     /// hands each new bitmap to `store` with its position in its atlas
-    /// image (the color one when `glyph.color`).
-    pub fn cache<'cache, S: FnMut(u32, u32, &Glyph)>(
+    /// image (the color one when `glyph.color`) and that image's side,
+    /// which grows as needed.
+    pub fn cache<'cache, S: FnMut(u32, u32, u32, &Glyph)>(
         &'cache mut self,
         fonts: &'cache mut Fonts,
         store: S,
@@ -179,7 +198,7 @@ pub struct Cache<'cache, S> {
     store: S,
 }
 
-impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
+impl<S: FnMut(u32, u32, u32, &Glyph)> Cache<'_, S> {
     /// Returns the cached entry for `key`, or creates it with `make`.
     fn cached(
         &mut self,
@@ -200,8 +219,9 @@ impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
     fn place(&mut self, glyph: &Glyph) -> Option<GlyphInfo> {
         let atlas = &mut *self.atlas;
         let (x, y) = atlas.allocate(glyph.width, glyph.height, glyph.color)?;
-        (self.store)(x, y, glyph);
-        let size = atlas.packer(glyph.color).size().0 as f32;
+        let side = atlas.packer(glyph.color).size();
+        (self.store)(x, y, side, glyph);
+        let size = side as f32;
         Some(GlyphInfo {
             uv: [
                 x as f32 / size,
@@ -218,7 +238,7 @@ impl<S: FnMut(u32, u32, &Glyph)> Cache<'_, S> {
     }
 }
 
-impl<S: FnMut(u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
+impl<S: FnMut(u32, u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
     fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
         self.cached(GlyphKey::Char(c, style, wide), |fonts| {
             fonts.rasterize(c, style, wide)
@@ -249,15 +269,17 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_too_big_for_the_atlas_redraws_only_once() {
-        let mut atlas = Atlas::new(10, 10);
+    fn a_full_atlas_grows_then_starts_over() {
+        let mut atlas = Atlas::new(10, 10, 20);
         assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         let generation = atlas.generation();
-        // The first frame overflows and asks for one more.
-        assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
+        // Full: the image doubles and is repacked, which needs a redraw.
+        assert_eq!(atlas.allocate(10, 10, /* color= */ false), Some((0, 0)));
+        assert_eq!(atlas.size(false), 20);
+        assert_eq!(atlas.size(true), 10);
         assert_ne!(atlas.generation(), generation);
         assert!(atlas.take_overflowed());
-        // That one doesn't fit either: it drops the glyph and is the last.
+        // At its largest, a glyph that doesn't fit in the redraw is dropped.
         assert_eq!(atlas.allocate(10, 10, /* color= */ false), None);
         assert!(!atlas.take_overflowed());
         // The next frame can start over.
@@ -267,7 +289,7 @@ mod tests {
 
     #[test]
     fn packs_without_overlap() {
-        let mut packer = Packer::new(64, 64);
+        let mut packer = Packer::new(64);
         let mut placed = Vec::new();
         for i in 0..40 {
             let (w, h) = (5 + i % 7, 8 + i % 5);
@@ -284,15 +306,15 @@ mod tests {
 
     #[test]
     fn starts_new_shelf_when_row_is_full() {
-        let mut packer = Packer::new(10, 100);
+        let mut packer = Packer::new(10);
         assert_eq!(packer.alloc(6, 5), Some((0, 0)));
-        assert_eq!(packer.alloc(6, 7), Some((0, 6)));
+        assert_eq!(packer.alloc(6, 3), Some((0, 6)));
         assert_eq!(packer.alloc(3, 2), Some((7, 6)));
     }
 
     #[test]
     fn reports_full_and_clears() {
-        let mut packer = Packer::new(10, 10);
+        let mut packer = Packer::new(10);
         assert_eq!(packer.alloc(11, 1), None);
         assert!(packer.alloc(10, 10).is_some());
         assert_eq!(packer.alloc(1, 1), None);

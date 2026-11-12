@@ -1293,10 +1293,7 @@ impl TermWindow {
             decorations.draw();
         }
         match self.renderer.draw(&frame) {
-            Ok(again) => {
-                self.dirty |= again;
-                self.draw_failures = 0;
-            }
+            Ok(()) => self.draw_failures = 0,
             Err(e) => self.draw_failed(&e),
         }
         self.update_text_input(/* force= */ false);

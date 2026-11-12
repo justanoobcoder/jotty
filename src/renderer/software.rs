@@ -15,19 +15,26 @@ use wayland_client::protocol::wl_shm;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::atlas::Atlas;
-use super::{Batch, Frame, Theme, VERTEX_FLOATS};
-use crate::font::{CellMetrics, Fonts, Glyph};
+use super::{Batch, Frame, Glyphs, Layers, Theme, VERTEX_FLOATS};
+use crate::font::{Fonts, Glyph};
 use crate::terminal::graphics::Image;
 
-/// Smaller than the GL atlas: saving memory is the point of this renderer.
+/// The glyph atlas to start with, smaller than the GL one: saving memory
+/// is the point of this renderer. It doubles when a screen needs more.
 const ATLAS_SIZE: u32 = 1024;
-/// The color emoji atlas: room for a few hundred emoji at common sizes.
+/// The color emoji atlas to start with: room for a hundred emoji or so.
 const COLOR_ATLAS_SIZE: u32 = 512;
+/// The largest either atlas grows to: 4 MiB of coverage, 16 MiB of color.
+const MAX_ATLAS_SIZE: u32 = 2048;
+/// A pool this many times larger than the window needs is replaced by a
+/// smaller one; it never shrinks on its own.
+const POOL_SLACK: usize = 4;
 
 /// Draws batches on the CPU into shared-memory buffers. Only the bands of
 /// rows that changed since a buffer was last drawn are redrawn.
 pub struct Renderer {
     surface: WlSurface,
+    shm: Shm,
     pool: SlotPool,
     /// Buffers of the current size, with the band fingerprints of what each
     /// holds (empty: unknown). One is free unless the compositor still holds
@@ -35,13 +42,14 @@ pub struct Renderer {
     buffers: Vec<(Buffer, Vec<u64>)>,
     /// Band fingerprints of the last frame presented.
     presented: Vec<u64>,
-    atlas: Atlas,
-    /// The atlas image, one coverage byte per pixel.
+    pub glyphs: Glyphs,
+    layers: Layers,
+    /// The atlas image, one coverage byte per pixel; allocated when the
+    /// first glyph is drawn, and again when the atlas grows.
     atlas_pixels: Vec<u8>,
     /// The color atlas, premultiplied BGRA like the buffers; allocated when
     /// the first emoji is drawn.
     color_pixels: Vec<u8>,
-    pub fonts: Fonts,
     pub theme: Theme,
     size: (u32, u32),
 }
@@ -59,59 +67,58 @@ impl Renderer {
         log::info!("rendering on the CPU");
         Ok(Renderer {
             surface,
+            shm: Shm::from(shm.wl_shm().clone()),
             pool,
             buffers: Vec::new(),
             presented: Vec::new(),
-            atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
-            atlas_pixels: vec![0; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            glyphs: Glyphs {
+                fonts,
+                atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE, MAX_ATLAS_SIZE),
+            },
+            layers: Layers::default(),
+            atlas_pixels: Vec::new(),
             color_pixels: Vec::new(),
-            fonts,
             theme,
             size,
         })
     }
 
-    #[must_use]
-    pub fn cell(&self) -> CellMetrics {
-        self.fonts.metrics
-    }
-
     /// Resizes the drawable, in physical pixels.
     pub fn resize(&mut self, size: (u32, u32)) {
-        if size != self.size {
-            self.size = size;
-            self.buffers.clear();
-            self.presented.clear();
+        if size == self.size {
+            return;
+        }
+        self.size = size;
+        self.buffers.clear();
+        self.presented.clear();
+        // The pool only ever grows: after a window was large, most of it
+        // would stay mapped for nothing.
+        let len = (size.0.max(1) * size.1.max(1) * 4) as usize;
+        if self.pool.len() > len.saturating_mul(POOL_SLACK) {
+            match SlotPool::new(len, &self.shm) {
+                Ok(pool) => self.pool = pool,
+                Err(e) => log::debug!("keeping the large wl_shm pool: {e}"),
+            }
         }
     }
 
-    /// Replaces the fonts, after a config reload.
-    pub fn set_fonts(&mut self, fonts: Fonts) {
-        self.fonts = fonts;
-        self.atlas.clear();
-    }
-
-    /// Changes the font size; the glyph atlas starts over.
-    pub fn set_font_size(&mut self, px: f32) {
-        self.fonts.set_size(px);
-        self.atlas.clear();
-    }
-
-    /// Draws and presents a frame (this commits the surface). Returns
-    /// whether another frame is needed because the glyph atlas overflowed.
-    pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
-        let metrics = self.fonts.metrics;
+    /// Draws and presents a frame (this commits the surface).
+    pub fn draw(&mut self, frame: &Frame) -> Result<(), String> {
+        let metrics = self.glyphs.fonts.metrics;
         let theme = self.theme.effective(frame.screen);
         let pixels = &mut self.atlas_pixels;
         let color_pixels = &mut self.color_pixels;
-        let store = |x: u32, y: u32, glyph: &Glyph| {
+        // The image is (re)allocated when the atlas first needs it or has
+        // grown; a grown atlas was repacked, so nothing in it is kept.
+        let store = |x: u32, y: u32, side: u32, glyph: &Glyph| {
             let w = glyph.width as usize;
+            let side = side as usize;
             if glyph.color {
-                if color_pixels.is_empty() {
-                    color_pixels.resize((COLOR_ATLAS_SIZE * COLOR_ATLAS_SIZE * 4) as usize, 0);
+                if color_pixels.len() != side * side * 4 {
+                    *color_pixels = vec![0; side * side * 4];
                 }
                 for (row, src) in glyph.data.chunks_exact(w * 4).enumerate() {
-                    let start = ((y as usize + row) * COLOR_ATLAS_SIZE as usize + x as usize) * 4;
+                    let start = ((y as usize + row) * side + x as usize) * 4;
                     let dst = &mut color_pixels[start..start + w * 4];
                     for (d, &[r, g, b, a]) in dst
                         .as_chunks_mut::<4>()
@@ -124,28 +131,28 @@ impl Renderer {
                 }
                 return;
             }
+            if pixels.len() != side * side {
+                *pixels = vec![0; side * side];
+            }
             for (row, src) in glyph.data.chunks_exact(w).enumerate() {
-                let start = (y as usize + row) * ATLAS_SIZE as usize + x as usize;
+                let start = (y as usize + row) * side + x as usize;
                 pixels[start..start + w].copy_from_slice(src);
             }
         };
-        let batch = super::build(
-            frame,
-            &theme,
-            metrics,
-            &mut self.atlas.cache(&mut self.fonts, store),
-        );
+        self.glyphs.build(frame, &theme, &mut self.layers, store);
+        let batch = &self.layers.batch;
 
         let (w, h) = (self.size.0.max(1), self.size.1.max(1));
         let background = premultiply(theme.background.to_f32(), theme.opacity);
         let bands = bands(frame.origin.1, metrics.height, frame.screen.rows(), h);
-        let fingerprints = fingerprint(&batch, &bands, background, self.atlas.generation());
+        let generation = self.glyphs.atlas.generation();
+        let fingerprints = fingerprint(batch, &bands, background, generation);
         let damage = changed(&bands, &fingerprints, &self.presented);
         if damage.is_empty() {
             // Nothing changed; commit anyway so the frame callback fires.
             self.surface.damage_buffer(0, 0, 1, 1);
             self.surface.commit();
-            return Ok(self.atlas.take_overflowed());
+            return Ok(());
         }
 
         let free = self
@@ -184,7 +191,7 @@ impl Renderer {
             color: &self.color_pixels,
             images: &images,
         };
-        paint(&batch, &atlases, canvas, (w, h), background, &rows);
+        paint(batch, &atlases, canvas, (w, h), background, &rows);
         buffer
             .attach_to(&self.surface)
             .map_err(|e| format!("wl_shm attach: {e:?}"))?;
@@ -195,7 +202,7 @@ impl Renderer {
         self.surface.commit();
         *held = fingerprints.clone();
         self.presented = fingerprints;
-        Ok(self.atlas.take_overflowed())
+        Ok(())
     }
 }
 
@@ -279,13 +286,24 @@ fn changed(bands: &[(u32, u32)], new: &[u64], old: &[u64]) -> Vec<(u32, u32)> {
     ranges
 }
 
-/// The atlas images: coverage (`ATLAS_SIZE`²) and color emoji
-/// (`COLOR_ATLAS_SIZE`², BGRA; empty until needed), and the image of each
-/// image quad of the batch.
+/// The atlas images: coverage and color emoji (BGRA), both square and
+/// empty until needed, and the image of each image quad of the batch.
 struct Atlases<'pixels> {
     coverage: &'pixels [u8],
     color: &'pixels [u8],
     images: &'pixels [Option<&'pixels Image>],
+}
+
+impl Atlases<'_> {
+    /// The side of the coverage image, or of the color one.
+    fn side(&self, color: bool) -> i64 {
+        let pixels = if color {
+            self.color.len() / 4
+        } else {
+            self.coverage.len()
+        };
+        pixels.isqrt() as i64
+    }
 }
 
 /// Repaints the pixel rows of `canvas` (ARGB8888, `size` pixels, no row
@@ -338,11 +356,7 @@ fn paint(
             continue;
         }
         // Glyphs are drawn 1:1, so a pixel maps to one atlas texel.
-        let size = if mode == 2 {
-            COLOR_ATLAS_SIZE
-        } else {
-            ATLAS_SIZE
-        } as i64;
+        let size = atlases.side(mode == 2);
         let [u0, v0] = [first[2], first[3]].map(|t| (t * size as f32).round() as i64);
 
         for y in y0.max(0)..y1.min(height) {

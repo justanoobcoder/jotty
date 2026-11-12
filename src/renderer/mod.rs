@@ -11,6 +11,8 @@ pub mod software;
 
 use std::borrow::Cow;
 
+use atlas::Atlas;
+
 use crate::color::Rgb;
 use crate::config::Config;
 use crate::font::{self, CellMetrics, Fonts, Style};
@@ -26,12 +28,23 @@ pub enum Renderer {
 }
 
 impl Renderer {
+    fn glyphs(&self) -> &Glyphs {
+        match self {
+            Renderer::Gpu(r) => &r.glyphs,
+            Renderer::Cpu(r) => &r.glyphs,
+        }
+    }
+
+    fn glyphs_mut(&mut self) -> &mut Glyphs {
+        match self {
+            Renderer::Gpu(r) => &mut r.glyphs,
+            Renderer::Cpu(r) => &mut r.glyphs,
+        }
+    }
+
     #[must_use]
     pub fn cell(&self) -> CellMetrics {
-        match self {
-            Renderer::Gpu(r) => r.cell(),
-            Renderer::Cpu(r) => r.cell(),
-        }
+        self.glyphs().fonts.metrics
     }
 
     /// Resizes the drawable, in physical pixels.
@@ -44,18 +57,16 @@ impl Renderer {
 
     /// Changes the font size; the glyph atlas starts over.
     pub fn set_font_size(&mut self, px: f32) {
-        match self {
-            Renderer::Gpu(r) => r.set_font_size(px),
-            Renderer::Cpu(r) => r.set_font_size(px),
-        }
+        let glyphs = self.glyphs_mut();
+        glyphs.fonts.set_size(px);
+        glyphs.atlas.clear();
     }
 
     /// Replaces the fonts, after a config reload.
     pub fn set_fonts(&mut self, fonts: Fonts) {
-        match self {
-            Renderer::Gpu(r) => r.set_fonts(fonts),
-            Renderer::Cpu(r) => r.set_fonts(fonts),
-        }
+        let glyphs = self.glyphs_mut();
+        glyphs.fonts = fonts;
+        glyphs.atlas.clear();
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
@@ -65,12 +76,72 @@ impl Renderer {
         }
     }
 
-    /// Draws and presents a frame (this commits the surface). Returns
-    /// whether another frame is needed because the glyph atlas overflowed.
-    pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
+    /// Draws and presents a frame (this commits the surface).
+    pub fn draw(&mut self, frame: &Frame) -> Result<(), String> {
         match self {
             Renderer::Gpu(r) => r.draw(frame),
             Renderer::Cpu(r) => r.draw(frame),
+        }
+    }
+}
+
+/// The fonts and the atlas of glyphs rasterized from them, which each
+/// backend keeps.
+pub struct Glyphs {
+    pub fonts: Fonts,
+    pub atlas: Atlas,
+}
+
+impl Glyphs {
+    /// Builds the frame's quads into `layers`, rasterizing the glyphs it
+    /// needs with `store` (see [`Atlas::cache`]). When the atlas had to
+    /// start over on the way, the quads placed before that point in the
+    /// atlas are stale, so the frame is built once more before anything
+    /// is drawn.
+    pub fn build(
+        &mut self,
+        frame: &Frame,
+        theme: &Theme,
+        layers: &mut Layers,
+        mut store: impl FnMut(u32, u32, u32, &font::Glyph),
+    ) {
+        for _ in 0..2 {
+            let metrics = self.fonts.metrics;
+            build(
+                frame,
+                theme,
+                metrics,
+                &mut self.atlas.cache(&mut self.fonts, &mut store),
+                layers,
+            );
+            if !self.atlas.take_overflowed() {
+                break;
+            }
+        }
+    }
+}
+
+/// The batches a frame is built in, kept from frame to frame so that
+/// their vertex buffers are reused rather than grown again.
+#[derive(Debug, Default)]
+pub struct Layers {
+    back: Batch,
+    front: Batch,
+    overlay: Batch,
+    /// The finished frame, once built.
+    pub batch: Batch,
+}
+
+impl Layers {
+    fn clear(&mut self) {
+        for batch in [
+            &mut self.back,
+            &mut self.front,
+            &mut self.overlay,
+            &mut self.batch,
+        ] {
+            batch.vertices.clear();
+            batch.images.clear();
         }
     }
 }
@@ -320,11 +391,11 @@ impl Batch {
         self.vertices.len() / (6 * VERTEX_FLOATS)
     }
 
-    fn append(&mut self, mut other: Batch) {
+    fn append(&mut self, other: &Batch) {
         let base = self.vertices.len() / VERTEX_FLOATS;
         self.images
             .extend(other.images.iter().map(|&(first, uid)| (base + first, uid)));
-        self.vertices.append(&mut other.vertices);
+        self.vertices.extend_from_slice(&other.vertices);
     }
 }
 
@@ -473,16 +544,27 @@ fn style_of(cell: &Cell) -> Style {
     )
 }
 
-/// Turns a frame into quads: cell backgrounds, then glyphs, decorations
-/// and the cursor. Images go under the backgrounds, under the text or
-/// over it, by z-index.
-pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl GlyphCache) -> Batch {
+/// Turns a frame into quads, in `layers.batch`: cell backgrounds, then
+/// glyphs, decorations and the cursor. Images go under the backgrounds,
+/// under the text or over it, by z-index.
+pub fn build(
+    frame: &Frame,
+    theme: &Theme,
+    m: CellMetrics,
+    glyphs: &mut impl GlyphCache,
+    layers: &mut Layers,
+) {
     let screen = frame.screen;
     let (cw, ch) = (m.width as f32, m.height as f32);
     let (ox, oy) = (frame.origin.0 as f32, frame.origin.1 as f32);
     let stroke = m.stroke as f32;
-    let mut back = Batch::default();
-    let mut front = Batch::default();
+    layers.clear();
+    let Layers {
+        back,
+        front,
+        overlay,
+        batch,
+    } = layers;
 
     let cursor_visible =
         screen.cursor_visible() && frame.preedit.is_none() && frame.vi_cursor.is_none();
@@ -631,22 +713,20 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
         }
     }
 
-    let mut overlay = Batch::default();
     if let Some(label) = frame.label {
-        draw_label(&mut overlay, label, frame, theme, m, glyphs);
+        draw_label(overlay, label, frame, theme, m, glyphs);
     }
     if let Some(text) = frame.search {
-        draw_search_bar(&mut overlay, text, frame, theme, m, glyphs);
+        draw_search_bar(overlay, text, frame, theme, m, glyphs);
     } else if let Some(preedit) = frame.preedit {
-        draw_preedit(&mut overlay, preedit, frame, theme, cursor_color, m, glyphs);
+        draw_preedit(overlay, preedit, frame, theme, cursor_color, m, glyphs);
     }
 
     // Images go in three layers by z-index: under the cell backgrounds,
     // under the text, and over it; in placement order within a z-index.
     images.sort_by_key(|i| i.z);
-    let mut batch = Batch::default();
     let mut images = images.into_iter().peekable();
-    for (layer, end) in [(back, BELOW_BACKGROUNDS), (front, 0), (overlay, i32::MAX)] {
+    for (layer, end) in [(&*back, BELOW_BACKGROUNDS), (front, 0), (overlay, i32::MAX)] {
         while let Some(image) = images.next_if(|i| i.z < end) {
             batch.image(image.rect, image.uv, image.uid);
         }
@@ -655,7 +735,6 @@ pub fn build(frame: &Frame, theme: &Theme, m: CellMetrics, glyphs: &mut impl Gly
     for image in images {
         batch.image(image.rect, image.uv, image.uid);
     }
-    batch
 }
 
 /// Draws `text` over the right end of the top row, in inverse colors.
@@ -772,7 +851,8 @@ fn draw_preedit(
             break;
         }
         let w = cw * width as f32;
-        batch.fill(col_x(col), py, w, ch, theme.background, theme.opacity);
+        // Opaque: the grid text under the preedit would show through.
+        batch.rect(col_x(col), py, w, ch, theme.background);
         let mut chars = text.chars();
         let glyph = match (chars.next(), chars.next()) {
             (Some(c), None) => glyphs.glyph(c, Style::Regular, width == 2),
@@ -805,6 +885,18 @@ fn draw_preedit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `build` into fresh layers, returning the finished batch.
+    fn build_batch(
+        frame: &Frame,
+        theme: &Theme,
+        m: CellMetrics,
+        glyphs: &mut impl GlyphCache,
+    ) -> Batch {
+        let mut layers = Layers::default();
+        build(frame, theme, m, glyphs, &mut layers);
+        layers.batch
+    }
     use crate::terminal::Terminal;
 
     const METRICS: CellMetrics = CellMetrics {
@@ -866,7 +958,7 @@ mod tests {
         let mut t = Terminal::new(10, 1, 0);
         t.feed("e\u{301}🇻🇳x".as_bytes());
         let mut glyphs = FakeGlyphs::default();
-        build(&frame(t.screen()), &theme(), METRICS, &mut glyphs);
+        build_batch(&frame(t.screen()), &theme(), METRICS, &mut glyphs);
         let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
         assert_eq!(drawn, ['e', '🇻', 'x']);
     }
@@ -878,7 +970,7 @@ mod tests {
         let theme = theme();
         let mut f = frame(t.screen());
         f.mark = Some(Point { line: 0, col: 1 });
-        let batch = build(&f, &theme, METRICS, &mut FakeGlyphs::default());
+        let batch = build_batch(&f, &theme, METRICS, &mut FakeGlyphs::default());
         // One background quad: the marked cell, in the text color.
         let backgrounds: Vec<_> = batch
             .vertices
@@ -1039,7 +1131,7 @@ mod tests {
     fn program_cursor_color_overrides_theme() {
         let mut term = Terminal::new(4, 1, 0);
         term.feed(b"\x1b]12;#00ff00\x07");
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme(),
             METRICS,
@@ -1049,7 +1141,7 @@ mod tests {
 
         // Other cursor shapes and the unfocused outline use it too.
         term.feed(b"\x1b[6 q");
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme(),
             METRICS,
@@ -1058,7 +1150,7 @@ mod tests {
         assert_eq!(quad_at(&batch, 0).1, Rgb::new(0, 255, 0).to_f32());
 
         term.feed(b"\x1b]112\x07");
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme(),
             METRICS,
@@ -1083,7 +1175,7 @@ mod tests {
         let mut term = Terminal::new(4, 2, 0);
         term.feed(b"ab");
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.0, [('a', Style::Regular), ('b', Style::Regular)]);
         // Cursor background, then two glyphs.
         assert_eq!(batch.quads(), 3);
@@ -1099,7 +1191,7 @@ mod tests {
         let mut term = Terminal::new(6, 2, 0);
         term.feed("\u{F08C7} \u{F43A}\u{E0B0} \u{E7A8}".as_bytes());
         let mut glyphs = FakeGlyphs::default();
-        build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.2, ['\u{F08C7}']);
         // Powerline separators are not icons, even before a space.
         let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
@@ -1120,7 +1212,7 @@ mod tests {
         let mut glyphs = FakeGlyphs::default();
         // Over the text: last.
         let term = with_image(0);
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         let last = batch.quads() - 1;
         assert_eq!(batch.images.len(), 1);
         assert_eq!(batch.images[0].0, last * 6);
@@ -1131,7 +1223,7 @@ mod tests {
         assert_eq!((v[0], v[1], v[2], v[3]), (30.0, 20.0, 1.0, 1.0));
         // Under the text: before the glyph.
         let term = with_image(-1);
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         let (_, _, mode) = quad_at(&batch, batch.quads() - 1);
         assert_eq!(mode, 1.0);
         assert_eq!(quad_at(&batch, batch.images[0].0 / 6).2, 3.0);
@@ -1145,7 +1237,7 @@ mod tests {
         // Image 5 in the foreground; row 0, columns 0 and 1 (inherited).
         term.feed("\x1b[38;5;5m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}".as_bytes());
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert!(glyphs.0.is_empty());
         assert_eq!(batch.images.len(), 2);
         // The 2×2 image fits a 20×20 box in the 20×20 cells, centered.
@@ -1160,7 +1252,7 @@ mod tests {
         let mut term = Terminal::new(4, 1, 0);
         term.feed(b"\x1b[?25l\x1b[1;3;4mx");
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.0, [('x', Style::BoldItalic)]);
         assert_eq!(glyphs.1, [(Underline::Single, 1)]);
         // Glyph and underline, the underline in the text color.
@@ -1175,7 +1267,7 @@ mod tests {
         // Neovim's diagnostic style, on a narrow and a wide character.
         term.feed("\x1b[?25l\x1b[4:3;58:2::255:0:0ma中".as_bytes());
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&frame(term.screen()), &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.1, [(Underline::Curly, 1), (Underline::Curly, 2)]);
         // Each cell: glyph, then its underline in red.
         assert_eq!(quad_at(&batch, 1).1, Rgb::new(255, 0, 0).to_f32());
@@ -1184,7 +1276,7 @@ mod tests {
         // An indexed underline color resolves through the palette.
         let mut term = Terminal::new(6, 1, 0);
         term.feed(b"\x1b[?25l\x1b[4;58;5;4ma");
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme(),
             METRICS,
@@ -1199,7 +1291,7 @@ mod tests {
         term.feed(b"\x1b[41ma\x1b[0m");
         let mut theme = theme();
         theme.opacity = 0.5;
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme,
             METRICS,
@@ -1209,7 +1301,7 @@ mod tests {
         assert_eq!(alpha_at(&batch, 0), 1.0);
 
         theme.transparent_cells = true;
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme,
             METRICS,
@@ -1230,7 +1322,7 @@ mod tests {
         // A theme painting the configured background color explicitly.
         let mut term = Terminal::new(4, 1, 0);
         term.feed(format!("\x1b[?25l\x1b[48;2;{r};{g};{b}m ").as_bytes());
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme,
             METRICS,
@@ -1241,7 +1333,7 @@ mod tests {
         assert_eq!(alpha_at(&batch, 0), 1.0);
 
         theme.transparent_cells = true;
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme,
             METRICS,
@@ -1253,7 +1345,7 @@ mod tests {
         // color provides it.
         let mut term = Terminal::new(4, 1, 0);
         term.feed(b"\x1b[?25l ");
-        let batch = build(
+        let batch = build_batch(
             &frame(term.screen()),
             &theme,
             METRICS,
@@ -1267,7 +1359,7 @@ mod tests {
         let term = Terminal::new(4, 1, 0);
         let mut f = frame(term.screen());
         f.focused = false;
-        let batch = build(&f, &theme(), METRICS, &mut FakeGlyphs::default());
+        let batch = build_batch(&f, &theme(), METRICS, &mut FakeGlyphs::default());
         assert_eq!(batch.quads(), 4);
     }
 
@@ -1277,7 +1369,7 @@ mod tests {
         term.feed(b"\x1b[?25lx");
         let mut f = frame(term.screen());
         f.origin = (5, 7);
-        let batch = build(&f, &theme(), METRICS, &mut FakeGlyphs::default());
+        let batch = build_batch(&f, &theme(), METRICS, &mut FakeGlyphs::default());
         assert_eq!(quad_at(&batch, 0).0, (5.0, 7.0));
     }
 
@@ -1289,7 +1381,7 @@ mod tests {
         selection.update(Point { line: 0, col: 1 });
         let mut f = frame(term.screen());
         f.selection = Some(&selection);
-        let batch = build(&f, &theme(), METRICS, &mut FakeGlyphs::default());
+        let batch = build_batch(&f, &theme(), METRICS, &mut FakeGlyphs::default());
         // Two highlighted backgrounds come before the glyphs.
         assert_eq!(batch.quads(), 4);
         assert_eq!(quad_at(&batch, 0).1, theme().foreground.to_f32());
@@ -1307,7 +1399,7 @@ mod tests {
         let mut f = frame(term.screen());
         f.preedit = Some(&preedit);
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&f, &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&f, &theme(), METRICS, &mut glyphs);
         assert_eq!(
             glyphs
                 .0
@@ -1331,7 +1423,7 @@ mod tests {
         let mut f = frame(term.screen());
         f.preedit = Some(&preedit);
         let mut glyphs = FakeGlyphs::default();
-        let batch = build(&f, &theme(), METRICS, &mut glyphs);
+        let batch = build_batch(&f, &theme(), METRICS, &mut glyphs);
         let clusters = glyphs.3.clone();
         assert_eq!(clusters, ["e\u{301}"]);
         // The mark takes no cell: the cursor is after the one letter.
@@ -1350,7 +1442,7 @@ mod tests {
         let mut f = frame(term.screen());
         f.preedit = Some(&preedit);
         let mut glyphs = FakeGlyphs::default();
-        build(&f, &theme(), METRICS, &mut glyphs);
+        build_batch(&f, &theme(), METRICS, &mut glyphs);
         assert_eq!(glyphs.0.last(), Some(&('x', Style::Regular)));
     }
 }

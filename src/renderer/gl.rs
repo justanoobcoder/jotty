@@ -1,5 +1,6 @@
 //! OpenGL ES 3 rendering on a Wayland EGL surface.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,14 +11,17 @@ use wayland_client::backend::ObjectId;
 use wayland_egl::WlEglSurface;
 
 use super::atlas::Atlas;
-use super::{Batch, Frame, Theme, VERTEX_FLOATS};
-use crate::font::{CellMetrics, Fonts, Glyph};
+use super::{Frame, Glyphs, Layers, Theme, VERTEX_FLOATS};
+use crate::font::{Fonts, Glyph};
 use crate::terminal::graphics::Image;
 
 const PLATFORM_WAYLAND_KHR: egl::Enum = 0x31d8;
-const ATLAS_SIZE: u32 = 2048;
-/// The color emoji atlas (RGBA).
-const COLOR_ATLAS_SIZE: u32 = 1024;
+/// The glyph atlas to start with; it doubles when a screen needs more.
+const ATLAS_SIZE: u32 = 1024;
+/// The color emoji atlas (RGBA) to start with.
+const COLOR_ATLAS_SIZE: u32 = 512;
+/// The largest either atlas grows to (within the texture size limit).
+const MAX_ATLAS_SIZE: u32 = 4096;
 
 const VERTEX_SHADER: &str = r#"#version 300 es
 layout(location = 0) in vec2 a_pos;
@@ -38,7 +42,8 @@ void main() {
 "#;
 
 const FRAGMENT_SHADER: &str = r#"#version 300 es
-precision mediump float;
+// Texture coordinates into a 4096-texel atlas need more than mediump.
+precision highp float;
 in vec2 v_uv;
 in vec4 v_color;
 in float v_mode;
@@ -48,9 +53,8 @@ uniform sampler2D u_image;
 out vec4 o_color;
 void main() {
     if (v_mode > 2.5) {
-        // An image, straight alpha.
-        vec4 c = texture(u_image, v_uv);
-        o_color = vec4(c.rgb * c.a, c.a) * v_color.a;
+        // An image, premultiplied on upload.
+        o_color = texture(u_image, v_uv) * v_color.a;
         return;
     }
     if (v_mode > 1.5) {
@@ -235,14 +239,18 @@ pub struct Renderer {
     viewport_uniform: Option<glow::UniformLocation>,
     texture: Texture,
     color_texture: Texture,
+    /// The sides of the atlas textures as allocated; the atlas grows.
+    texture_size: u32,
+    color_texture_size: u32,
     /// Textures of the images drawn so far, by uid.
     images: HashMap<u64, Texture>,
     max_texture_size: u32,
-    /// Images too big for a texture, already reported.
-    oversized_images: HashSet<u64>,
-    atlas: Atlas,
+    /// Images that can't be uploaded (too big, or the upload failed),
+    /// already reported.
+    unloadable_images: HashSet<u64>,
     egl: Egl,
-    pub fonts: Fonts,
+    pub glyphs: Glyphs,
+    layers: Layers,
     pub theme: Theme,
     size: (u32, u32),
 }
@@ -306,13 +314,24 @@ unsafe fn create_texture(
 }
 
 /// Uploads an image as a texture on texture unit 2. Images are scaled, so
-/// they are sampled with `LINEAR`.
+/// they are sampled with `LINEAR`, and premultiplied first: filtering
+/// straight-alpha pixels bleeds the color of transparent neighbors in.
 ///
 /// # Safety
 /// The GL context of `gl` must be current on this thread.
 unsafe fn upload_image(gl: &glow::Context, image: &Image) -> Result<Texture, String> {
+    let premultiplied: Vec<u8> = image
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            let pre = |c: u8| ((u32::from(c) * u32::from(a) + 127) / 255) as u8;
+            [pre(r), pre(g), pre(b), a]
+        })
+        .collect();
     // SAFETY: the caller's GL context is current; `image.pixels` holds width × height RGBA
-    // pixels, which `decode` checked.
+    // pixels, which `decode` checked, and so does `premultiplied`.
     unsafe {
         let texture = gl.create_texture()?;
         gl.active_texture(glow::TEXTURE2);
@@ -326,7 +345,7 @@ unsafe fn upload_image(gl: &glow::Context, image: &Image) -> Result<Texture, Str
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            PixelUnpackData::Slice(Some(&image.pixels)),
+            PixelUnpackData::Slice(Some(&premultiplied)),
         );
         for (param, value) in [
             (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
@@ -424,20 +443,25 @@ impl Renderer {
                 viewport_uniform,
                 texture,
                 color_texture,
+                texture_size: ATLAS_SIZE,
+                color_texture_size: COLOR_ATLAS_SIZE,
                 images: HashMap::new(),
                 max_texture_size,
-                oversized_images: HashSet::new(),
-                atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE),
+                unloadable_images: HashSet::new(),
                 egl,
-                fonts,
+                glyphs: Glyphs {
+                    fonts,
+                    atlas: Atlas::new(
+                        ATLAS_SIZE,
+                        COLOR_ATLAS_SIZE,
+                        MAX_ATLAS_SIZE.min(max_texture_size),
+                    ),
+                },
+                layers: Layers::default(),
                 theme,
                 size,
             })
         }
-    }
-
-    pub fn cell(&self) -> CellMetrics {
-        self.fonts.metrics
     }
 
     /// Resizes the drawable, in physical pixels.
@@ -450,35 +474,46 @@ impl Renderer {
         }
     }
 
-    /// Replaces the fonts, after a config reload.
-    pub fn set_fonts(&mut self, fonts: Fonts) {
-        self.fonts = fonts;
-        self.atlas.clear();
-    }
-
-    /// Changes the font size; the glyph atlas starts over.
-    pub fn set_font_size(&mut self, px: f32) {
-        self.fonts.set_size(px);
-        self.atlas.clear();
-    }
-
-    /// Draws and presents a frame (this commits the surface). Returns
-    /// whether another frame is needed because the glyph atlas overflowed.
-    pub fn draw(&mut self, frame: &Frame) -> Result<bool, String> {
+    /// Draws and presents a frame (this commits the surface).
+    pub fn draw(&mut self, frame: &Frame) -> Result<(), String> {
         self.egl.make_current()?;
-        let metrics = self.fonts.metrics;
         let theme = self.theme.effective(frame.screen);
         let gl = &self.gl;
         let (texture, color_texture) = (self.texture, self.color_texture);
-        // SAFETY: the context is current; `store` gets positions inside the atlas textures.
-        let upload = |x: u32, y: u32, glyph: &Glyph| unsafe {
-            let (unit, texture, format) = if glyph.color {
-                (glow::TEXTURE1, color_texture, glow::RGBA)
+        let sizes = (
+            Cell::new(self.texture_size),
+            Cell::new(self.color_texture_size),
+        );
+        // SAFETY: the context is current; `store` gets positions inside the atlas images, whose
+        // textures are reallocated here when the atlas grew.
+        let upload = |x: u32, y: u32, side: u32, glyph: &Glyph| unsafe {
+            let (unit, texture, format, internal, allocated) = if glyph.color {
+                (
+                    glow::TEXTURE1,
+                    color_texture,
+                    glow::RGBA,
+                    glow::RGBA8,
+                    &sizes.1,
+                )
             } else {
-                (glow::TEXTURE0, texture, glow::RED)
+                (glow::TEXTURE0, texture, glow::RED, glow::R8, &sizes.0)
             };
             gl.active_texture(unit);
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            if allocated.get() != side {
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    internal as i32,
+                    side as i32,
+                    side as i32,
+                    0,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    PixelUnpackData::Slice(None),
+                );
+                allocated.set(side);
+            }
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -491,12 +526,10 @@ impl Renderer {
                 PixelUnpackData::Slice(Some(&glyph.data)),
             );
         };
-        let batch: Batch = super::build(
-            frame,
-            &theme,
-            metrics,
-            &mut self.atlas.cache(&mut self.fonts, upload),
-        );
+        self.glyphs.build(frame, &theme, &mut self.layers, upload);
+        self.texture_size = sizes.0.get();
+        self.color_texture_size = sizes.1.get();
+        let batch = &self.layers.batch;
 
         // Upload new images, and free those the program deleted.
         let screen = frame.screen;
@@ -508,18 +541,18 @@ impl Renderer {
             }
             live
         });
+        self.unloadable_images
+            .retain(|uid| screen.image(*uid).is_some());
         for &(_, uid) in &batch.images {
-            if self.images.contains_key(&uid) {
+            if self.images.contains_key(&uid) || self.unloadable_images.contains(&uid) {
                 continue;
             }
             let Some(image) = screen.image(uid) else {
                 continue;
             };
+            // Drawn every frame; once is enough to say so.
+            self.unloadable_images.insert(uid);
             if image.width.max(image.height) > self.max_texture_size {
-                // Drawn every frame; once is enough to say so.
-                if !self.oversized_images.insert(uid) {
-                    continue;
-                }
                 log::warn!(
                     "image of {}x{} exceeds the texture size limit",
                     image.width,
@@ -531,6 +564,7 @@ impl Renderer {
             match unsafe { upload_image(gl, image) } {
                 Ok(texture) => {
                     self.images.insert(uid, texture);
+                    self.unloadable_images.remove(&uid);
                 }
                 Err(e) => log::warn!("cannot upload image: {e}"),
             }
@@ -581,7 +615,7 @@ impl Renderer {
             .api
             .swap_buffers(self.egl.display, self.egl.surface)
             .map_err(|e| format!("eglSwapBuffers: {e}"))?;
-        Ok(self.atlas.take_overflowed())
+        Ok(())
     }
 }
 
