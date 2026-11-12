@@ -2756,14 +2756,14 @@ impl App {
             .or_else(crate::config::default_path);
         let overrides = crate::config::overrides_path();
         // Created up front: inotify can't watch a directory that doesn't
-        // exist yet, and `jotty config` would otherwise go unnoticed until
-        // the next window.
-        if let Some(dir) = overrides.as_deref().and_then(Path::parent)
-            && let Err(e) = std::fs::create_dir_all(dir)
-        {
-            log::info!("cannot create {}: {e}", dir.display());
-        }
+        // exist yet, and a config file written later, or `jotty config`,
+        // would otherwise go unnoticed until the next window.
         for path in path.into_iter().chain(overrides) {
+            if let Some(dir) = path.parent()
+                && let Err(e) = std::fs::create_dir_all(dir)
+            {
+                log::info!("cannot create {}: {e}", dir.display());
+            }
             self.watch_config_file(path);
         }
         match watch::sigusr1() {

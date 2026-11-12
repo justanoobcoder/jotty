@@ -110,8 +110,8 @@ extern "C" fn on_signal(_: libc::c_int) {
 }
 
 /// Returns a non-blocking descriptor that becomes readable when the process
-/// receives SIGUSR1 (read it empty with [`drain`]). Only the first call
-/// installs the handler.
+/// receives SIGUSR1 (read it empty with [`drain`]). Meant to be called
+/// once: each call makes a new pipe and points the handler at it.
 pub fn sigusr1() -> io::Result<File> {
     use std::os::fd::FromRawFd;
     let mut fds = [0; 2];
