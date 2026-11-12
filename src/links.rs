@@ -147,13 +147,32 @@ impl Detector {
 /// Length of `url` without trailing punctuation that belongs to the
 /// surrounding text, such as a final period or an unmatched `)`.
 fn trim_url(url: &str) -> usize {
+    // Counted once, then kept up to date as brackets are trimmed off.
+    let mut open = (0usize, 0usize);
+    let mut close = (0usize, 0usize);
+    for c in url.chars() {
+        match c {
+            '(' => open.0 += 1,
+            ')' => close.0 += 1,
+            '[' => open.1 += 1,
+            ']' => close.1 += 1,
+            _ => {}
+        }
+    }
     let mut end = url.len();
     while let Some(c) = url[..end].chars().next_back() {
-        let s = &url[..end];
         let trim = match c {
             '.' | ',' | ':' | ';' | '!' | '?' => true,
-            ')' => s.matches('(').count() < s.matches(')').count(),
-            ']' => s.matches('[').count() < s.matches(']').count(),
+            ')' => {
+                let unbalanced = open.0 < close.0;
+                close.0 -= unbalanced as usize;
+                unbalanced
+            }
+            ']' => {
+                let unbalanced = open.1 < close.1;
+                close.1 -= unbalanced as usize;
+                unbalanced
+            }
             _ => false,
         };
         if !trim {
@@ -248,6 +267,9 @@ mod tests {
         assert_eq!(trim_url("https://x.org/a)."), "https://x.org/a".len());
         assert_eq!(trim_url("https://x.org/(a)"), "https://x.org/(a)".len());
         assert_eq!(trim_url("https://x.org/a]"), "https://x.org/a".len());
+        assert_eq!(trim_url("https://x.org/(a))]."), "https://x.org/(a)".len());
+        let many = format!("https://x.org/a{}", ")".repeat(10_000));
+        assert_eq!(trim_url(&many), "https://x.org/a".len());
     }
 
     #[test]
