@@ -58,7 +58,18 @@ pub fn encode(key: &Key, mods: Modifiers, modes: KeyModes) -> Option<Vec<u8>> {
     if key.action == KeyAction::Release {
         return None;
     }
-    encode_key(key.keysym, key.text, mods, modes)
+    // xkb turns Ctrl+letter into a control character for ASCII symbols
+    // only; on a Cyrillic or Greek layout the key's text is the letter
+    // itself, so the key's base symbol stands in for it.
+    let base_text: String;
+    let text = match (key.text, key.base.and_then(Keysym::key_char)) {
+        (Some(text), Some(base)) if mods.ctrl && !text.is_ascii() && base.is_ascii() => {
+            base_text = base.to_string();
+            Some(base_text.as_str())
+        }
+        _ => key.text,
+    };
+    encode_key(key.keysym, text, mods, modes)
 }
 
 /// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl + 8·super.
@@ -856,6 +867,22 @@ mod tests {
         assert_eq!(enc(Keysym::space, Some(" "), CTRL), b"\x00");
         assert_eq!(enc(Keysym::bracketleft, Some("["), CTRL), b"\x1b");
         assert_eq!(enc(Keysym::slash, Some("/"), CTRL), b"\x1f");
+    }
+
+    #[test]
+    fn ctrl_on_a_non_latin_layout_uses_the_base_key() {
+        let key = Key {
+            keysym: Keysym::Cyrillic_es,
+            base: Some(Keysym::c),
+            text: Some("\u{441}"),
+            action: KeyAction::Press,
+        };
+        assert_eq!(encode(&key, CTRL, KeyModes::default()).unwrap(), b"\x03");
+        // Without Ctrl the letter is typed as it is.
+        assert_eq!(
+            encode(&key, NONE, KeyModes::default()).unwrap(),
+            "\u{441}".as_bytes()
+        );
     }
 
     #[test]
