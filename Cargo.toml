@@ -30,7 +30,7 @@ unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 # Fork with `Perform::print_ascii`; see docs/architecture.md.
-vte = { git = "https://github.com/justanoobcoder/vte", rev = "ef778131e9761aaffecc296d387ce3a3b879d4de", default-features = false }
+vte = { git = "https://github.com/justanoobcoder/vte", rev = "922c2e098c2dfabb38a07f2c3d4261f476b3e48a", default-features = false }
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }
