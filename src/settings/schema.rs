@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 use crate::color::Rgb;
+use crate::config;
 
 /// The config's sections, in the order the TUI lists them.
 pub const SECTIONS: [&str; 7] = [
@@ -98,7 +99,7 @@ impl Key {
     }
 }
 
-/// The keys of the fixed sections. Limits are those `Config::sanitize`
+/// The keys of the fixed sections, with the limits `Config::sanitize`
 /// clamps to.
 const STATIC: &[(&str, &str, Kind, &str)] = {
     use Kind::*;
@@ -113,8 +114,8 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "font",
             "size",
             Float {
-                min: 4.0,
-                max: 200.0,
+                min: *config::FONT_SIZE.start() as f64,
+                max: *config::FONT_SIZE.end() as f64,
             },
             "Size in points at 96 DPI, multiplied by the output scale.",
         ),
@@ -122,8 +123,8 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "font",
             "size_step",
             Float {
-                min: 0.1,
-                max: 10.0,
+                min: *config::FONT_SIZE_STEP.start() as f64,
+                max: *config::FONT_SIZE_STEP.end() as f64,
             },
             "Points that font_larger and font_smaller add or remove.",
         ),
@@ -148,13 +149,19 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         (
             "window",
             "padding",
-            Int { min: 0, max: 1000 },
+            Int {
+                min: 0,
+                max: config::MAX_PADDING as i64,
+            },
             "Space around the grid, in logical pixels.",
         ),
         (
             "window",
             "opacity",
-            Float { min: 0.0, max: 1.0 },
+            Float {
+                min: *config::OPACITY.start() as f64,
+                max: *config::OPACITY.end() as f64,
+            },
             "Background opacity. Text, the cursor and the selection stay opaque.",
         ),
         (
@@ -196,13 +203,19 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         (
             "window",
             "columns",
-            Int { min: 2, max: 2000 },
+            Int {
+                min: *config::COLUMNS.start() as i64,
+                max: *config::COLUMNS.end() as i64,
+            },
             "Initial width in cells. Applies to new windows.",
         ),
         (
             "window",
             "lines",
-            Int { min: 1, max: 2000 },
+            Int {
+                min: *config::LINES.start() as i64,
+                max: *config::LINES.end() as i64,
+            },
             "Initial height in cells. Applies to new windows.",
         ),
         (
@@ -222,7 +235,7 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "scrollback",
             Int {
                 min: 0,
-                max: 10_000_000,
+                max: config::MAX_SCROLLBACK as i64,
             },
             "Lines kept in the scrollback history. Applies to new windows.",
         ),

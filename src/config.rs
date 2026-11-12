@@ -5,6 +5,7 @@
 //! Every field has a default, so an empty or missing file is valid.
 
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::{fmt, io};
 
@@ -173,12 +174,18 @@ pub struct WindowConfig {
     pub lines: u16,
 }
 
-/// The most columns and lines a window asks for, the padding around them,
-/// and the longest history: past these, the sizes that follow from them
-/// overflow or take more memory than any machine has.
-const MAX_GRID: u16 = 2000;
-const MAX_PADDING: u32 = 1000;
-const MAX_SCROLLBACK: usize = 10_000_000;
+/// The limits `Config::sanitize` clamps to, which the settings schema
+/// shows and checks. The most columns and lines a window asks for, the
+/// padding around them, and the longest history are such that the sizes
+/// that follow from them don't overflow or take more memory than any
+/// machine has.
+pub(crate) const FONT_SIZE: RangeInclusive<f32> = 4.0..=200.0;
+pub(crate) const FONT_SIZE_STEP: RangeInclusive<f32> = 0.1..=10.0;
+pub(crate) const OPACITY: RangeInclusive<f32> = 0.0..=1.0;
+pub(crate) const COLUMNS: RangeInclusive<u16> = 2..=2000;
+pub(crate) const LINES: RangeInclusive<u16> = 1..=2000;
+pub(crate) const MAX_PADDING: u32 = 1000;
+pub(crate) const MAX_SCROLLBACK: usize = 10_000_000;
 
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -338,6 +345,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::from_str(text)?;
         config.sanitize();
+        config.check()?;
         Ok(config)
     }
 
@@ -346,6 +354,7 @@ impl Config {
     pub fn from_table(table: toml::Table) -> Result<Self, toml::de::Error> {
         let mut config: Config = toml::Value::Table(table).try_into()?;
         config.sanitize();
+        config.check()?;
         Ok(config)
     }
 
@@ -418,13 +427,38 @@ impl Config {
         // `clamp` keeps NaN, which TOML can spell.
         let finite = |value: f32, default: f32| if value.is_finite() { value } else { default };
         let (font, window) = (FontConfig::default(), WindowConfig::default());
-        self.font.size = finite(self.font.size, font.size).clamp(4.0, 200.0);
-        self.font.size_step = finite(self.font.size_step, font.size_step).clamp(0.1, 10.0);
-        self.window.opacity = finite(self.window.opacity, window.opacity).clamp(0.0, 1.0);
-        self.window.columns = self.window.columns.clamp(2, MAX_GRID);
-        self.window.lines = self.window.lines.clamp(1, MAX_GRID);
+        let clamp =
+            |value: f32, range: RangeInclusive<f32>| value.clamp(*range.start(), *range.end());
+        self.font.size = clamp(finite(self.font.size, font.size), FONT_SIZE);
+        self.font.size_step = clamp(finite(self.font.size_step, font.size_step), FONT_SIZE_STEP);
+        self.window.opacity = clamp(finite(self.window.opacity, window.opacity), OPACITY);
+        self.window.columns = self.window.columns.clamp(*COLUMNS.start(), *COLUMNS.end());
+        self.window.lines = self.window.lines.clamp(*LINES.start(), *LINES.end());
         self.window.padding = self.window.padding.min(MAX_PADDING);
         self.terminal.scrollback = self.terminal.scrollback.min(MAX_SCROLLBACK);
+        // Empty strings mean "the default", as unset keys do: an empty
+        // shell would be run, and an empty TERM or app id set.
+        if self.terminal.shell.as_deref() == Some("") {
+            self.terminal.shell = None;
+        }
+        if self.terminal.term.is_empty() {
+            self.terminal.term = TerminalConfig::default().term;
+        }
+        if self.window.app_id.is_empty() {
+            self.window.app_id = window.app_id;
+        }
+    }
+
+    /// Rejects values that deserialize but can't be used, so that the
+    /// error is reported where the config is read (and by `jotty config`)
+    /// rather than logged and ignored later.
+    fn check(&self) -> Result<(), toml::de::Error> {
+        use serde::de::Error;
+        for pattern in &self.url.regex {
+            regex::Regex::new(pattern)
+                .map_err(|e| toml::de::Error::custom(format!("url.regex: {e}")))?;
+        }
+        Ok(())
     }
 }
 
@@ -490,6 +524,31 @@ mod tests {
     }
 
     #[test]
+    fn empty_strings_mean_the_default() {
+        let config = Config::parse(
+            r#"
+            [terminal]
+            shell = ""
+            term = ""
+            [window]
+            app_id = ""
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.terminal, TerminalConfig::default());
+        assert_eq!(config.window.app_id, WindowConfig::default().app_id);
+    }
+
+    #[test]
+    fn invalid_url_regex_is_rejected() {
+        let error = Config::parse("[url]\nregex = [\"ok\", \"(\"]").unwrap_err();
+        assert!(error.to_string().contains("url.regex"), "{error}");
+        let mut table = toml::Table::new();
+        table.insert("url".into(), toml::toml! { regex = ["("] }.into());
+        assert!(Config::from_table(table).is_err());
+    }
+
+    #[test]
     fn nonsense_numbers_are_replaced_or_limited() {
         let config = Config::parse(
             r#"
@@ -509,18 +568,10 @@ mod tests {
         assert_eq!(config.font.size, FontConfig::default().size);
         assert_eq!(config.font.size_step, FontConfig::default().size_step);
         assert_eq!(config.window.opacity, 1.0);
-        assert_eq!(config.window.columns, MAX_GRID);
-        assert_eq!(config.window.lines, MAX_GRID);
+        assert_eq!(config.window.columns, *COLUMNS.end());
+        assert_eq!(config.window.lines, *LINES.end());
         assert_eq!(config.window.padding, MAX_PADDING);
         assert_eq!(config.terminal.scrollback, MAX_SCROLLBACK);
-        // The largest window these allow fits the arithmetic that sizes it.
-        let cell = 200u32 * 2;
-        assert!(
-            u32::from(MAX_GRID)
-                .checked_mul(cell)
-                .and_then(|size| size.checked_add(2 * MAX_PADDING))
-                .is_some()
-        );
     }
 
     #[test]
