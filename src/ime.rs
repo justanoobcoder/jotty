@@ -51,6 +51,17 @@ impl Surrounding {
         s
     }
 
+    /// `text` with the cursor at its end, as for a query being typed.
+    #[must_use]
+    pub fn at_end(text: &str) -> Surrounding {
+        let mut s = Surrounding {
+            text: text.to_owned(),
+            cursor: text.len(),
+        };
+        s.limit(MAX_SURROUNDING_BYTES);
+        s
+    }
+
     /// Trims text far from the cursor until it fits in `max` bytes.
     fn limit(&mut self, max: usize) {
         if self.text.len() <= max {
@@ -138,8 +149,6 @@ pub struct ImeState {
     pub surrounding: Surrounding,
     /// Content type last sent to the input method.
     pub content: Content,
-    /// Number of `commit` requests sent, used to recognize stale events.
-    pub serial: u32,
     pending_preedit: Option<Preedit>,
     pending_commit: Option<String>,
     pending_delete: Option<(usize, usize)>,
@@ -178,6 +187,23 @@ impl ImeState {
         }
         self.preedit = self.pending_preedit.take();
         out
+    }
+
+    /// Applies pending events to text jotty edits itself, the search query,
+    /// whose end the input method was told is the cursor (`at_end`): the
+    /// deletion shortens it and the committed text is appended.
+    pub fn done_into(&mut self, text: &mut String) {
+        if let Some((before, _)) = self.pending_delete.take() {
+            let mut start = text.len().saturating_sub(before);
+            while !text.is_char_boundary(start) {
+                start -= 1;
+            }
+            text.truncate(start);
+        }
+        if let Some(commit) = self.pending_commit.take() {
+            text.extend(commit.chars().filter(|c| !c.is_control()));
+        }
+        self.preedit = self.pending_preedit.take();
     }
 
     /// Forgets the preedit and every pending event, when the input method
@@ -290,6 +316,24 @@ mod tests {
         // A done without new events clears the preedit.
         assert!(ime.done().is_empty());
         assert_eq!(ime.preedit, None);
+    }
+
+    #[test]
+    fn done_into_edits_the_query_instead_of_sending_keys() {
+        let mut ime = ImeState {
+            surrounding: Surrounding::at_end("vi\u{ea}"),
+            ..ImeState::default()
+        };
+        let mut query = String::from("vi\u{ea}");
+        // Recomposing the syllable: drop "i\u{ea}" (3 bytes), commit "i\u{1ec7}t".
+        ime.set_delete(3, 0);
+        ime.set_commit(Some("i\u{1ec7}t\x07".into()));
+        ime.done_into(&mut query);
+        assert_eq!(query, "vi\u{1ec7}t");
+        // A deletion that cuts into a character takes the whole character.
+        ime.set_delete(1, 0);
+        ime.done_into(&mut query);
+        assert_eq!(query, "vi\u{1ec7}");
     }
 
     #[test]

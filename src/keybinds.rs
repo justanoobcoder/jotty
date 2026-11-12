@@ -41,6 +41,32 @@ pub enum Action {
 }
 
 impl Action {
+    /// Whether holding the key down runs the action again and again, as
+    /// scrolling does. Opening windows, reloading the config or toggling
+    /// modes at the repeat rate is never meant.
+    #[must_use]
+    pub fn repeats(self) -> bool {
+        match self {
+            Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::ScrollPageUp
+            | Action::ScrollPageDown
+            | Action::ScrollToTop
+            | Action::ScrollToBottom
+            | Action::FontLarger
+            | Action::FontSmaller
+            | Action::FontReset
+            // Falls through to the program (Ctrl+C) once nothing is selected.
+            | Action::CopyOrInterrupt => true,
+            Action::Copy
+            | Action::Paste
+            | Action::Search
+            | Action::NewWindow
+            | Action::ViMode
+            | Action::ReloadConfig => false,
+        }
+    }
+
     const ALL: [(&'static str, Action); 16] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
@@ -378,6 +404,22 @@ mod tests {
     fn binds(toml: &str) -> Result<Keybinds, String> {
         let map: BTreeMap<String, Vec<String>> = toml::from_str(toml).map_err(|e| e.to_string())?;
         Keybinds::with_overrides(&map)
+    }
+
+    #[test]
+    fn one_shot_actions_do_not_repeat() {
+        for (_, action) in Action::ALL {
+            let one_shot = matches!(
+                action,
+                Action::NewWindow
+                    | Action::ReloadConfig
+                    | Action::ViMode
+                    | Action::Search
+                    | Action::Copy
+                    | Action::Paste
+            );
+            assert_eq!(action.repeats(), !one_shot, "{action:?}");
+        }
     }
 
     #[test]

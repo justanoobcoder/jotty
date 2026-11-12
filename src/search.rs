@@ -44,7 +44,16 @@ pub fn find_wrapping(
                 col: 0,
             },
         };
-        find(screen, query, edge, direction, /* inclusive= */ true)
+        // The lines past `from` were just searched; its own line may still
+        // hold a match on the other side of it.
+        find_until(
+            screen,
+            query,
+            edge,
+            direction,
+            /* inclusive= */ true,
+            Some(from.line),
+        )
     })
 }
 
@@ -60,6 +69,19 @@ pub fn find(
     from: Point,
     direction: Direction,
     inclusive: bool,
+) -> Option<(Point, Point)> {
+    find_until(screen, query, from, direction, inclusive, None)
+}
+
+/// [`find`], giving up after the line `stop` (when given) instead of at
+/// the end of the history or screen.
+fn find_until(
+    screen: &Screen,
+    query: &str,
+    from: Point,
+    direction: Direction,
+    inclusive: bool,
+    stop: Option<isize>,
 ) -> Option<(Point, Point)> {
     use unicode_normalization::UnicodeNormalization;
     use unicode_width::UnicodeWidthChar;
@@ -107,8 +129,12 @@ pub fn find(
             return found;
         }
         line = match direction {
-            Direction::Older if text.first > top => text.first - 1,
-            Direction::Newer if text.last < bottom => text.last + 1,
+            Direction::Older if text.first > top && stop.is_none_or(|s| text.first > s) => {
+                text.first - 1
+            }
+            Direction::Newer if text.last < bottom && stop.is_none_or(|s| text.last < s) => {
+                text.last + 1
+            }
             _ => return None,
         };
     }

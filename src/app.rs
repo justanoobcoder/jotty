@@ -1,7 +1,7 @@
 //! The Wayland application: window, input, clipboard, input method and the
 //! event loop tying them to the terminal and the renderer.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::OsString;
@@ -46,7 +46,7 @@ use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::cl
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::channel;
-use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::generic::{Generic, NoIoDrop};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
     EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
@@ -119,6 +119,9 @@ const BTN_MIDDLE: u32 = 0x112;
 struct Search {
     query: String,
     found: Option<(Point, Point)>,
+    /// A query that matched nothing, while the screen hasn't changed: any
+    /// query that extends it matches nothing either, without a search.
+    failed: Option<String>,
     /// Which way typing searches: up the scrollback (`?`, the `search`
     /// binding) or down (`/` in vi mode).
     direction: Direction,
@@ -138,6 +141,16 @@ impl Search {
     }
 }
 
+/// A path from the text that was checked for a hovered link.
+struct ResolvedPath {
+    /// The path as written.
+    text: String,
+    /// The working directory it was relative to, if it was relative.
+    dir: Option<PathBuf>,
+    /// The file it names, if there is one.
+    file: Option<String>,
+}
+
 /// Clicks on the same cell within this many milliseconds of each other make
 /// a double or triple click.
 const DOUBLE_CLICK_MS: u32 = 400;
@@ -150,6 +163,10 @@ const READ_BUDGET: usize = 1 << 20;
 const CHILD_EXIT_WAIT: Duration = Duration::from_millis(100);
 /// The most clipboard data pasted; a client that keeps sending gets dropped.
 const MAX_PASTE: usize = 64 << 20;
+/// How long a paste may go without data before it is given up on: a
+/// client that offers data and never sends it would otherwise keep its
+/// pipe open for as long as the window.
+const PASTE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a client asking for the selection may take nothing.
 const SELECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait after a frame failed to draw, and how many failures in a
@@ -385,6 +402,12 @@ pub struct TermWindow {
     vi: Option<ViMode>,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
+    /// The last path checked for a hovered link, with its working
+    /// directory and what it resolved to; checking touches the file system.
+    resolved_path: Option<ResolvedPath>,
+    /// Whether the compositor was asked for attention since the window
+    /// was last focused: once is enough, and a bell per byte isn't.
+    attention_requested: bool,
     /// The cell the pointer was last checked for a link in.
     hover_cell: Option<Point>,
     /// When a link was last clicked.
@@ -734,6 +757,8 @@ impl TermWindow {
             last_search: None,
             vi: None,
             hovered_link: None,
+            resolved_path: None,
+            attention_requested: false,
             hover_cell: None,
             last_link_click: None,
             pointer_inside: false,
@@ -1105,6 +1130,10 @@ impl TermWindow {
             if self.hovered_link.is_some() {
                 self.update_hovered_link(shared);
             }
+            // New text may match what didn't match before.
+            if let Some(search) = &mut self.search {
+                search.failed = None;
+            }
             let screen = self.term.screen();
             let delta = screen.grid().scrolled.wrapping_sub(scrolled_before) as isize;
             // Another buffer means other text; history and alternate
@@ -1180,7 +1209,11 @@ impl TermWindow {
                 Ok(PostAction::Remove)
             }
         });
-        self.pty_writer = inserted.ok();
+        match inserted {
+            Ok(token) => self.pty_writer = Some(token),
+            // The input stays queued until the next `send` flushes it.
+            Err(e) => log::warn!("cannot wait for the pty to take input: {e}"),
+        }
     }
 
     fn request_redraw(&mut self) {
@@ -1314,13 +1347,17 @@ impl TermWindow {
             return self.request_redraw();
         }
         let base = shared.base_keysym(event.raw_code);
-        if let Some(action) = self
+        if let Some(bound) = self
             .config
             .keybinds
             .lookup(event.keysym, base, shared.modifiers)
-            && self.run_action(shared, action)
         {
-            return;
+            if action == KeyAction::Repeat && !bound.repeats() {
+                return;
+            }
+            if self.run_action(shared, bound) {
+                return;
+            }
         }
         // In vi mode, keys move the vi cursor and never reach the program.
         if self.vi.is_some() {
@@ -1429,6 +1466,7 @@ impl TermWindow {
         self.search = Some(Search {
             query: String::new(),
             found: None,
+            failed: None,
             direction,
             origin,
         });
@@ -1443,6 +1481,17 @@ impl TermWindow {
         let Some(search) = &mut self.search else {
             return;
         };
+        if inclusive
+            && search.found.is_none()
+            && search
+                .failed
+                .as_ref()
+                .is_some_and(|failed| search.query.starts_with(failed.as_str()))
+        {
+            // Typing on after a miss: every keystroke would scan the whole
+            // history again for nothing.
+            return;
+        }
         let screen = self.term.screen();
         let (from, inclusive) = match search.found {
             Some(found) => (found.0, inclusive),
@@ -1451,6 +1500,7 @@ impl TermWindow {
         match search::find_wrapping(screen, &search.query, from, direction, inclusive) {
             Some(found) => {
                 search.found = Some(found);
+                search.failed = None;
                 self.selection = Some(Selection::span(found.0, found.1, Unit::Word));
                 self.term.screen_mut().show_line(found.0.line);
             }
@@ -1458,6 +1508,7 @@ impl TermWindow {
             // matches nothing clears it.
             None if inclusive => {
                 search.found = None;
+                search.failed = (!search.query.is_empty()).then(|| search.query.clone());
                 self.selection = None;
             }
             None => {}
@@ -1669,22 +1720,42 @@ impl TermWindow {
     fn update_hovered_link(&mut self, shared: &mut Shared) {
         let link = if shared.modifiers.ctrl && self.pointer_inside && !self.reporting_mouse(shared)
         {
-            let cwd = std::cell::OnceCell::new();
-            let resolve = |path: &str| {
-                let path = match path.strip_prefix("~/") {
+            let cwd = OnceCell::new();
+            // Checking a path touches the file system, which may be slow
+            // (a network mount): the same path in the same directory is
+            // checked once, not on every pointer move and pty read.
+            let cache = RefCell::new(self.resolved_path.take());
+            let resolve = |text: &str| {
+                let path = match text.strip_prefix("~/") {
                     Some(rest) => std::env::home_dir()?.join(rest),
-                    None => {
-                        let path = Path::new(path);
-                        cwd.get_or_init(|| self.pty.foreground_cwd())
-                            .as_ref()
-                            .map_or(path.to_path_buf(), |dir| dir.join(path))
-                    }
+                    None => Path::new(text).to_path_buf(),
                 };
-                path.is_file().then(|| path.to_string_lossy().into_owned())
+                let dir = if path.is_relative() {
+                    cwd.get_or_init(|| self.pty.foreground_cwd()).clone()
+                } else {
+                    None
+                };
+                if let Some(cached) = &*cache.borrow()
+                    && cached.text == text
+                    && cached.dir == dir
+                {
+                    return cached.file.clone();
+                }
+                let full = dir.as_ref().map_or(path.clone(), |dir| dir.join(&path));
+                let file = full.is_file().then(|| full.to_string_lossy().into_owned());
+                *cache.borrow_mut() = Some(ResolvedPath {
+                    text: text.to_owned(),
+                    dir,
+                    file: file.clone(),
+                });
+                file
             };
-            shared
-                .links
-                .link_at(self.term.screen(), self.point_at(self.pointer_pos), resolve)
+            let link =
+                shared
+                    .links
+                    .link_at(self.term.screen(), self.point_at(self.pointer_pos), resolve);
+            self.resolved_path = cache.into_inner();
+            link
         } else {
             None
         };
@@ -2013,47 +2084,86 @@ impl TermWindow {
 
     /// Reads pasted text from another client without blocking, then sends it.
     fn paste_from(&mut self, pipe: ReadPipe) {
-        use std::io::Read;
         let mut data = Vec::new();
         let id = self.id;
+        // When data last arrived, and whether the pipe's source is gone,
+        // for the timeout below.
+        let last_read = Rc::new(Cell::new(Instant::now()));
+        let finished = Rc::new(Cell::new(false));
+        let (read_at, done) = (Rc::clone(&last_read), Rc::clone(&finished));
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
-            // The window closed before the paste arrived.
-            let Some(window) = app.window_mut(id) else {
-                return PostAction::Remove;
-            };
-            // SAFETY: the file is only read, never closed or replaced.
-            let file: &mut File = unsafe { file.get_mut() };
-            let mut buf = [0u8; 1 << 14];
-            match file.read(&mut buf) {
-                Ok(0) => {
-                    window.paste_text(&String::from_utf8_lossy(&data));
-                    PostAction::Remove
-                }
-                Ok(n) if data.len() + n > MAX_PASTE => {
-                    log::warn!("clipboard data over {MAX_PASTE} bytes; not pasting it");
-                    data = Vec::new();
-                    PostAction::Remove
-                }
-                Ok(n) => {
-                    data.extend_from_slice(&buf[..n]);
-                    PostAction::Continue
-                }
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    PostAction::Continue
-                }
-                Err(e) => {
-                    log::warn!("cannot read clipboard: {e}");
-                    PostAction::Remove
-                }
+            let action = Self::read_paste(file, app, id, &mut data);
+            read_at.set(Instant::now());
+            if matches!(action, PostAction::Remove) {
+                done.set(true);
             }
+            action
+        });
+        let token = match inserted {
+            Ok(token) => token,
+            Err(e) => return log::warn!("cannot read clipboard: {e}"),
+        };
+        let handle = self.loop_handle.clone();
+        let timer = Timer::from_duration(PASTE_TIMEOUT);
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, _| {
+            if finished.get() {
+                return TimeoutAction::Drop;
+            }
+            let idle = last_read.get().elapsed();
+            if idle < PASTE_TIMEOUT {
+                return TimeoutAction::ToDuration(PASTE_TIMEOUT - idle);
+            }
+            log::warn!("the clipboard owner stopped sending; dropping the paste");
+            handle.remove(token);
+            TimeoutAction::Drop
         });
         if let Err(e) = inserted {
-            log::warn!("cannot read clipboard: {e}");
+            log::warn!("cannot time out the paste: {e}");
+        }
+    }
+
+    /// Reads what the clipboard owner sent so far into `data`, and pastes
+    /// it once the pipe closes.
+    fn read_paste(
+        file: &mut NoIoDrop<File>,
+        app: &mut App,
+        id: WindowId,
+        data: &mut Vec<u8>,
+    ) -> PostAction {
+        use std::io::Read;
+        // The window closed before the paste arrived.
+        let Some(window) = app.window_mut(id) else {
+            return PostAction::Remove;
+        };
+        // SAFETY: the file is only read, never closed or replaced.
+        let file: &mut File = unsafe { file.get_mut() };
+        let mut buf = [0u8; 1 << 14];
+        match file.read(&mut buf) {
+            Ok(0) => {
+                window.paste_text(&String::from_utf8_lossy(data));
+                PostAction::Remove
+            }
+            Ok(n) if data.len() + n > MAX_PASTE => {
+                log::warn!("clipboard data over {MAX_PASTE} bytes; not pasting it");
+                *data = Vec::new();
+                PostAction::Remove
+            }
+            Ok(n) => {
+                data.extend_from_slice(&buf[..n]);
+                PostAction::Continue
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                PostAction::Continue
+            }
+            Err(e) => {
+                log::warn!("cannot read clipboard: {e}");
+                PostAction::Remove
+            }
         }
     }
 
@@ -2068,6 +2178,10 @@ impl TermWindow {
     }
 
     fn request_attention(&mut self, shared: &mut Shared) {
+        if self.attention_requested {
+            return;
+        }
+        self.attention_requested = true;
         if let Some(activation) = &shared.activation {
             activation.request_token(
                 &self.qh,
@@ -2181,7 +2295,6 @@ impl TermWindow {
             Event::Leave { .. } => {
                 text_input.disable();
                 text_input.commit();
-                self.ime.serial = self.ime.serial.wrapping_add(1);
                 self.ime.reset();
                 self.text_input = None;
                 self.request_redraw();
@@ -2197,16 +2310,21 @@ impl TermWindow {
                 after_length,
             } => self.ime.set_delete(before_length, after_length),
             Event::Done { .. } => {
-                let bytes = self.ime.done();
-                if self.search.is_some() {
-                    self.search_type(&String::from_utf8_lossy(&bytes));
-                } else if self.vi.is_some() {
-                    // Vi mode takes keys, not text, and the program isn't
-                    // the one being typed to.
-                } else if !bytes.is_empty() {
-                    self.ime_caused_change = true;
-                    self.scroll_to_bottom();
-                    self.send(&bytes);
+                if let Some(search) = &mut self.search {
+                    // The query is the text being edited, not the screen.
+                    self.ime.done_into(&mut search.query);
+                    let direction = search.direction;
+                    self.search_step(direction, /* inclusive= */ true);
+                } else {
+                    let bytes = self.ime.done();
+                    if self.vi.is_some() {
+                        // Vi mode takes keys, not text, and the program
+                        // isn't the one being typed to.
+                    } else if !bytes.is_empty() {
+                        self.ime_caused_change = true;
+                        self.scroll_to_bottom();
+                        self.send(&bytes);
+                    }
                 }
                 self.request_redraw();
             }
@@ -2225,8 +2343,11 @@ impl TermWindow {
         };
         let screen = self.term.screen();
         let (row, col) = screen.cursor();
-        let surrounding =
-            Surrounding::from_row(&screen.grid().rows[row], screen.input_start(), col);
+        let surrounding = match &self.search {
+            // The search bar is what is typed into; the IME deletes from it.
+            Some(search) => Surrounding::at_end(&search.query),
+            None => Surrounding::from_row(&screen.grid().rows[row], screen.input_start(), col),
+        };
         let cell = self.renderer.cell();
         let pad = self.padding();
         let logical = |px: u32| (f64::from(px) / self.scale) as i32;
@@ -2269,7 +2390,6 @@ impl TermWindow {
         text_input.set_text_change_cause(cause);
         text_input.set_cursor_rectangle(rect.0, rect.1, rect.2, rect.3);
         text_input.commit();
-        self.ime.serial = self.ime.serial.wrapping_add(1);
         self.ime.surrounding = surrounding;
         self.ime_cursor_rect = rect;
         self.ime.content = content;
@@ -3065,6 +3185,7 @@ impl KeyboardHandler for App {
         shared.keyboard_focus = Some(window.id);
         shared.last_serial = serial;
         window.focused = true;
+        window.attention_requested = false;
         if window.term.screen().modes.focus_events {
             window.send(b"\x1b[I");
         }
@@ -3085,6 +3206,8 @@ impl KeyboardHandler for App {
         if shared.keyboard_focus == Some(window.id) {
             shared.keyboard_focus = None;
         }
+        // Releases of keys pressed here go elsewhere now.
+        shared.sent_keys.clear();
         window.focused = false;
         if window.term.screen().modes.focus_events {
             window.send(b"\x1b[O");
@@ -3217,8 +3340,11 @@ impl TermWindow {
             PointerEventKind::Motion { .. } if self.selecting => {
                 let point = self.point_at(event.position);
                 if let Some(selection) = &mut self.selection {
+                    let before = *selection;
                     selection.extend(self.term.screen(), point);
-                    self.request_redraw();
+                    if *selection != before {
+                        self.request_redraw();
+                    }
                 }
             }
             PointerEventKind::Motion { .. } if self.reporting_mouse(shared) => {
