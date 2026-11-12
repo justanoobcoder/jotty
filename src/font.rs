@@ -398,14 +398,23 @@ impl Fonts {
         if let Some(&face) = self.fallback.get(&(c, style)) {
             return face;
         }
-        let families: Vec<String> = self
-            .fallback_families
-            .iter()
-            .cloned()
-            .chain([String::new()])
-            .collect();
-        let face = families.iter().find_map(|family| {
-            let face = self.find_and_load(family, style, Some(c)).ok()?;
+        // A fallback face loaded for another character often has this one
+        // too, and asking fontconfig is a blocking match per family.
+        let loaded = (0..self.faces.len())
+            .filter(|&face| {
+                self.loaded
+                    .iter()
+                    .any(|(&(_, s), &i)| i == face && s == style)
+            })
+            .find(|&face| has_glyph(&self.faces[face], c));
+        if loaded.is_some() {
+            self.fallback.insert((c, style), loaded);
+            return loaded;
+        }
+        // The configured families, then any font.
+        let face = (0..=self.fallback_families.len()).find_map(|i| {
+            let family = self.fallback_families.get(i).cloned().unwrap_or_default();
+            let face = self.find_and_load(&family, style, Some(c)).ok()?;
             has_glyph(&self.faces[face], c).then_some(face)
         });
         if face.is_none() {
