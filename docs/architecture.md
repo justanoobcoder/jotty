@@ -65,7 +65,11 @@ jotty uses its own fork of vte (`justanoobcoder/vte`),
 which adds `Perform::print_ascii`: vte passes each run of printable ASCII in
 one call instead of calling `print` per character. `Screen` writes such a run
 to the grid a row at a time, which is most of what output is. Everything else
-still comes through `print`, one character at a time.
+still comes through `print`, one character at a time. The fork also drops
+upstream's `ansi` module (jotty has its own terminal), skips invalid UTF-8
+in place rather than rescanning the buffer, executes C1 controls split
+across reads, and lets CAN and SUB abandon an OSC string instead of
+dispatching it truncated.
 
 `Screen` holds:
 
@@ -188,9 +192,12 @@ sequences:
   `CSI 1;m X` when modifiers are held;
 - `CSI n ~` for the editing keys and F5–F12;
 - Alt adds an ESC prefix; Ctrl+key maps to control characters when xkb didn't
-  already.
+  already. xkb only does so for ASCII symbols, so on a Cyrillic or Greek
+  layout the key's base symbol (the Latin letter at that position) is used.
 
-Key repeat is done client-side by SCTK's calloop timer.
+Key repeat is done client-side by SCTK's calloop timer. A repeat runs a
+bound action again only if it makes sense repeated (`Action::repeats`):
+scrolling and font size, not opening a window or reloading the config.
 
 **Kitty keyboard protocol.** A program can turn on the protocol's
 progressive enhancements with `CSI > flags u` (and restore them with

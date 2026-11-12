@@ -3,6 +3,21 @@ CHANGELOG
 
 ## Unreleased
 
+- The glyph atlas grows as a screen needs it, instead of being cleared on
+    every frame when a screen doesn't fit, and starts smaller
+- Ctrl+letter sends the control character on non-Latin keyboard layouts
+- `{count}G` goes to that line in vi mode
+- Hyperlinks longer than 2 KiB are ignored; empty `shell`, `term` and
+    `app_id` mean the default; an invalid `url.regex` is a config error
+- Fixed held keys repeating one-shot actions (a new window per repeat)
+- Fixed a bell per byte flooding the compositor with attention requests
+- Fixed input-method deletions corrupting the search query
+- Fixed images of the alternate screen staying in memory after leaving it
+- Fixed long stalls on output with many distinct underline colors, links
+    or clusters once their tables were full
+- Fixed the vte parser taking quadratic time on invalid UTF-8
+- Fixed notification bodies escaped for daemons that don't read markup
+
 ## 2.1.0
 
 - Display sixel images

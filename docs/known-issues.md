@@ -36,7 +36,9 @@ nothing surprises you.
 - **Reflow** applies to the normal screen and its history when the width
   changes. Full-screen programs (on the alternate screen) are cut off or
   padded instead; they redraw on resize. Reflowing a long history takes a
-  moment on every resize step.
+  moment on every resize step. When the cursor sits above a full screen of
+  text, the rows below the screen that no longer fit are dropped, so that
+  the cursor stays visible.
 - Mouse reporting supports X10 (`?9`), normal (`?1000`), button-motion
   (`?1002`) and any-motion (`?1003`) tracking in the SGR (`?1006`) and
   legacy encodings. Not supported: the UTF-8 (`?1005`) and urxvt (`?1015`)
@@ -143,6 +145,10 @@ nothing surprises you.
 - **The windows of a process go down together.** Ctrl+Shift+N, and every
   window of a single instance, run in one process, so a crash closes all
   of them.
+- `--single-instance` leaves its lock file in `$XDG_RUNTIME_DIR` (removing
+  it would race with a jotty starting at the same time), and a jotty that
+  starts while the serving one is stalled waits on the lock instead of
+  opening a window of its own.
 - With `--single-instance`, the jotty that hands its window over exits at
   once: it doesn't wait for the window, and its exit status isn't the
   program's. Run it without single instance to wait (`jotty -e cmd` in a
