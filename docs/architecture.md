@@ -21,6 +21,19 @@ on the CPU.
              └──────────────────────────────────────────────────────────┘
 ```
 
+**Contents**
+
+- [Modules](#modules)
+- [Terminal emulation (`terminal/`)](#terminal-emulation-terminal)
+- [PTY (`pty.rs`)](#pty-ptyrs)
+- [Input (`input.rs`)](#input-inputrs)
+- [Input method (`ime.rs`, `app.rs`)](#input-method-imers-apprs)
+- [Rendering (`renderer/`, `font.rs`)](#rendering-renderer-fontrs)
+- [Windows and single instance (`app.rs`, `instance.rs`)](#windows-and-single-instance-apprs-instancers)
+- [Window and scaling (`app.rs`)](#window-and-scaling-apprs)
+- [Clipboard (`app.rs`)](#clipboard-apprs)
+- [Lifetimes and safety](#lifetimes-and-safety)
+
 ## Modules
 
 | Module | Responsibility | Depends on Wayland/GL? |

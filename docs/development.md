@@ -1,5 +1,18 @@
 # Development
 
+**Contents**
+
+- [Environment](#environment)
+- [Checks](#checks)
+- [Continuous integration](#continuous-integration)
+- [Licenses](#licenses)
+- [Releasing](#releasing)
+  - [AUR](#aur)
+- [Tests](#tests)
+- [Running jotty headless](#running-jotty-headless)
+- [Debugging](#debugging)
+- [Code layout and conventions](#code-layout-and-conventions)
+
 ## Environment
 
 The flake's dev shell provides the Rust toolchain (cargo, rustc, clippy,

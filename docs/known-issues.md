@@ -3,6 +3,16 @@
 jotty is deliberately small. This page lists what it doesn't do (yet), so
 nothing surprises you.
 
+**Contents**
+
+- [Text and fonts](#text-and-fonts)
+- [Terminal emulation](#terminal-emulation)
+- [Input method (text-input-v3)](#input-method-text-input-v3)
+- [Wayland integration](#wayland-integration)
+- [Rendering and performance](#rendering-and-performance)
+- [`jotty config`](#jotty-config)
+- [Platform](#platform)
+
 ## Text and fonts
 
 - **Cell widths follow `wcwidth`.** Grapheme clusters are kept together,

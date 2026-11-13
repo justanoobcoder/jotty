@@ -29,6 +29,27 @@ only apply to new windows, which jotty logs when they change:
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
 
+**Contents**
+
+- [Overrides and `jotty config`](#overrides-and-jotty-config)
+- [`[font]`](#font)
+- [`[window]`](#window)
+  - [Transparency](#transparency)
+  - [Notifications](#notifications)
+  - [Single instance](#single-instance)
+  - [Renderer](#renderer)
+- [`[terminal]`](#terminal)
+  - [`TERM` and terminfo](#term-and-terminfo)
+- [`[colors]`](#colors)
+- [`[keybinds]`](#keybinds)
+  - [Searching](#searching)
+  - [Vi mode](#vi-mode)
+  - [Mouse](#mouse)
+- [`[url]`](#url)
+- [`[files]`](#files)
+- [Shell integration](#shell-integration)
+- [Logging](#logging)
+
 ## Overrides and `jotty config`
 
 `jotty config` opens a TUI that lists every option with its current value
