@@ -23,14 +23,14 @@
 - **Support both CPU and GPU renderer:** By default it draws on the CPU into
   shared memory, repainting only the rows that changed, in about 30+ MiB.
   With `renderer = "gpu"` it draws with OpenGL ES 3 instead (one draw call
-  per frame), at the cost of the 100+ MiB a GPU driver takes.
+  per frame), at the cost of the 130+ MiB a GPU driver takes.
 - **Vi mode:** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
 - **Live config reload:** Saving the config file reloads every running
   window, with no restart.
 - **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
 - **Single instance:** With `--single-instance`, new windows open in the
-  jotty already running, as in kitty, instead of starting another process.
+  jotty already running instead of starting another process.
   See [Single instance](docs/configuration.md#single-instance).
 
 ## Keybinds
