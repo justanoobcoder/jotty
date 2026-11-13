@@ -1369,13 +1369,13 @@ fn osc_9_conemu_subcommands_are_not_notifications() {
 #[test]
 fn osc_777_notification() {
     let mut t = term(10, 1);
-    t.feed(b"\x1b]777;notify;Claude Code;Done; all tests pass\x1b\\");
+    t.feed(b"\x1b]777;notify;make;Done; all tests pass\x1b\\");
     t.feed(b"\x1b]777;notify;;No title\x07\x1b]777;notify;Only title\x07");
     assert_eq!(
         t.screen_mut().take_notifications(),
         [
             Notification {
-                title: Some("Claude Code".into()),
+                title: Some("make".into()),
                 body: "Done; all tests pass".into()
             },
             Notification {
