@@ -255,9 +255,8 @@ A terminal doesn't know what text is being edited; the shell does. The
 surrounding text is therefore approximated as **the cursor's row**, starting
 right after the prompt when the shell marked it with OSC 133;B, and trimmed of
 trailing blank cells. Without the marker, the prompt is part of the
-surrounding text. For a dead-key or Telex-style IME (such as Vietnamese
-Unikey or Bamboo) that is harmless, because only the last word before the
-cursor matters.
+surrounding text. For an input method that recomposes the word being typed
+that is harmless, because only the last word before the cursor matters.
 
 ## Rendering (`renderer/`, `font.rs`)
 

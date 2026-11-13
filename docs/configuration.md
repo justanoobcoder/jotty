@@ -181,9 +181,6 @@ For example, to be told when a long command finishes:
 make; printf '\e]777;notify;make;finished with status %d\a' $?
 ```
 
-In Claude Code, choose the `ghostty` notification channel (`/config`, then
-*Notifications*), which sends `OSC 777`; `iterm2` sends `OSC 9`.
-
 ### Single instance
 
 With `single_instance = true`, or when started with `--single-instance`,
