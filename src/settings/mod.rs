@@ -156,7 +156,6 @@ pub fn remove_path(table: &mut toml::Table, path: &[String]) {
 }
 
 /// Runs a `jotty config` subcommand.
-#[must_use]
 pub fn run(command: ConfigCommand, config_path: Option<&Path>) -> ExitCode {
     match run_command(command, config_path) {
         Ok(()) => ExitCode::SUCCESS,
