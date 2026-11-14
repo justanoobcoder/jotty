@@ -197,6 +197,10 @@ nothing surprises you.
   link).
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
   be dropped into a window. A drag carries one file.
+- wlroots-based compositors don't send the keyboard modifiers again after a
+  drag, so jotty asks for the keyboard again once its own drag ends (or the
+  Ctrl of Ctrl+drag would stay held). Programs reporting focus don't see
+  this as a focus change.
 - The kitty graphics medium `t=s` removes the shared memory object it is
   given, whichever it is, as kitty does; `t=f` reads any regular file the
   user can read, and shows it as an image at most.

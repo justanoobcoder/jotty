@@ -3249,17 +3249,7 @@ impl SeatHandler for App {
         let shared = &mut self.shared;
         match capability {
             Capability::Keyboard if shared.keyboard.is_none() => {
-                let keyboard = shared.seat_state.get_keyboard_with_repeat(
-                    qh,
-                    &seat,
-                    None,
-                    shared.loop_handle.clone(),
-                    Box::new(|app, _, event| app.key(event, KeyAction::Repeat)),
-                );
-                match keyboard {
-                    Ok(keyboard) => shared.keyboard = Some(keyboard),
-                    Err(e) => log::warn!("cannot use keyboard: {e}"),
-                }
+                shared.bind_keyboard(&seat);
                 if let (None, Some(manager)) = (&shared.data_device, &shared.data_device_manager) {
                     shared.data_device = Some(manager.get_data_device(qh, &seat));
                 }
@@ -3336,9 +3326,11 @@ impl KeyboardHandler for App {
         };
         shared.keyboard_focus = Some(window.id);
         shared.last_serial = serial;
-        window.focused = true;
+        // A keyboard asked for again enters a window that already had
+        // the focus; see `renew_keyboard`.
+        let was_focused = std::mem::replace(&mut window.focused, true);
         window.attention_requested = false;
-        if window.term.screen().modes.focus_events {
+        if !was_focused && window.term.screen().modes.focus_events {
             window.send(b"\x1b[I");
         }
         window.request_redraw();
@@ -3975,6 +3967,43 @@ impl App {
             .is_some_and(|d| d.source.inner() == source)
         {
             self.shared.drag_out = None;
+            self.shared.renew_keyboard();
+        }
+    }
+}
+
+impl Shared {
+    /// Starts using the keyboard of `seat`.
+    fn bind_keyboard(&mut self, seat: &WlSeat) {
+        let keyboard = self.seat_state.get_keyboard_with_repeat(
+            &self.qh,
+            seat,
+            None,
+            self.loop_handle.clone(),
+            Box::new(|app, _, event| app.key(event, KeyAction::Repeat)),
+        );
+        match keyboard {
+            Ok(keyboard) => self.keyboard = Some(keyboard),
+            Err(e) => log::warn!("cannot use keyboard: {e}"),
+        }
+    }
+
+    /// Asks for the keyboard again, after a drag. The compositor has the
+    /// keyboard during a drag, and wlroots-based ones don't send the
+    /// modifiers again once it ends: the Ctrl that started a Ctrl+drag
+    /// would stay held for good. A new keyboard gets the keymap, the
+    /// focus and the modifiers as they are now.
+    fn renew_keyboard(&mut self) {
+        let Some(old) = self.keyboard.take() else {
+            return;
+        };
+        old.release();
+        // Releases of keys pressed before can't come any more.
+        self.sent_keys.clear();
+        self.modifiers = Modifiers::default();
+        match self.seat_state.seats().next() {
+            Some(seat) => self.bind_keyboard(&seat),
+            None => log::warn!("no seat to ask for the keyboard again"),
         }
     }
 }
