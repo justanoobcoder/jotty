@@ -1825,6 +1825,13 @@ impl TermWindow {
         self.shift_press = false;
         self.last_click = None;
         self.request_redraw();
+        // Compositors (wlroots ones, at least) keep the cursor the window
+        // set last for the whole drag, as no window has the pointer then.
+        if let Some(pointer) = &shared.pointer
+            && let Err(e) = pointer.set_cursor(&shared.conn, CursorIcon::Grabbing)
+        {
+            log::debug!("cannot set cursor: {e}");
+        }
         let source = manager.create_drag_and_drop_source(&self.qh, DRAG_MIMES, DndAction::Copy);
         source.start_drag(device, self.window.wl_surface(), None, serial);
         log::info!("dragging {}", path.display());
