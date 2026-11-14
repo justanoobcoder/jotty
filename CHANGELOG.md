@@ -9,6 +9,9 @@ CHANGELOG
     kinds for an extension they share
 - Ctrl+drag a file or directory named in the output (such as `ls` output)
     to drop it into another application; its name follows the pointer
+- Ctrl+right click or drag marks files and directories, and Ctrl+drag
+    from a mark drags all of them; `colors.mark_foreground` and
+    `colors.mark_background` set their colors
 - Ctrl+click opens a link when the button is released, not when pressed
 
 ## 2.2.0

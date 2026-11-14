@@ -50,6 +50,7 @@
 | Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
 | Ctrl+click             | Open a link, URL, or image, video, audio or document file (Ctrl+hover underlines it) |
 | Ctrl+drag              | Drag a file or directory named in the output (as `ls` prints it) into another application |
+| Ctrl+right click/drag  | Mark files and directories to drag together (Ctrl+drag one of them); Escape clears the marks |
 
 These are the defaults; key bindings can be changed in the
 [`[keybinds]`](docs/configuration.md#keybinds) section.

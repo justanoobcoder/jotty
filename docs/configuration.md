@@ -309,6 +309,8 @@ The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 | `cursor_text` | `"#rrggbb"` | the cell's background | Color of the character under a block cursor. |
 | `selection_foreground` | `"#rrggbb"` | inverse | Text color of selected cells. Unset means the cell's background color. |
 | `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
+| `mark_foreground` | `"#rrggbb"` | the cell's own | Text color of files marked for dragging. |
+| `mark_background` | `"#rrggbb"` | palette blue | Background of files marked for dragging. |
 | `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
 
 Programs can override colors while they run, and query them:
@@ -519,6 +521,15 @@ names with spaces), with a trailing `ls -F` indicator (such as `/`, `*` or
 `@`) dropped if needed. A relative name is taken from the current directory
 of the program in the foreground, and the file must exist. A Ctrl+press
 elsewhere selects as usual.
+
+**Dragging several files.** Ctrl+right click a name to mark it (again to
+unmark it), or Ctrl+right drag over output to mark every existing file and
+directory named in it. Marks are drawn in `colors.mark_background` and keep
+the path they had when marked, even after a `cd`. Ctrl+drag starting on a
+marked name drags all of them; starting on another name drags just that
+one. If a marked file is gone by then, nothing is dragged. Escape clears
+the marks (and only then doesn't reach the program), as does a finished
+drop.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,

@@ -189,8 +189,13 @@ nothing surprises you.
 - Vi mode has motions, visual modes, yank and search, but not vim's text
   objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
   screen.
-- While a program has mouse reporting on, Ctrl+click and Ctrl+drag go to
-  the program; hold Shift as well to open a link or drag a file.
+- While a program has mouse reporting on, Ctrl+click, Ctrl+drag and
+  Ctrl+right click go to the program; hold Shift as well to open a link or
+  drag or mark files.
+- Marks of files for dragging are dropped when their text changes, the
+  window is resized or the alternate screen switches. Ctrl+right dragging
+  over `ls -l` output may also mark files that other columns (a user name,
+  a month) happen to name. At most 1000 files are marked.
 - Relative file paths are resolved in the directory the foreground program
   is in now, not where the path was printed. After a `cd`, or over SSH,
   older output may point to the wrong place (or nowhere, and then isn't a
