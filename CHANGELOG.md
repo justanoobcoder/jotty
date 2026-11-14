@@ -4,10 +4,9 @@ CHANGELOG
 ## Unreleased
 
 - Ctrl+click opens audio files and documents (PDF, EPUB, office files),
-    with the new built-in `files.audio` and `files.document` kinds. A kind
-    of your own with one of their extensions (such as `[files.pdf]`) now
-    loses to them, which come first alphabetically: set `extensions = []`
-    on the built-in kind, or move the extensions there
+    with the new built-in `files.audio` and `files.document` kinds
+- File kinds added in the config under new names win over the built-in
+    kinds for an extension they share
 
 ## 2.2.0
 

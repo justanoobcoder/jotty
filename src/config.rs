@@ -110,6 +110,21 @@ impl Default for Files {
     }
 }
 
+impl Files {
+    /// The kinds in the order links try them: the ones the user adds
+    /// first, then the built-in ones, each in name order. So a kind of the
+    /// user's own wins an extension it shares with a built-in kind.
+    pub fn by_precedence(&self) -> Vec<&FileKind> {
+        let defaults = Files::default().0;
+        let (built_in, own): (Vec<&String>, Vec<&String>) =
+            self.0.keys().partition(|name| defaults.contains_key(*name));
+        own.into_iter()
+            .chain(built_in)
+            .map(|name| &self.0[name])
+            .collect()
+    }
+}
+
 impl From<BTreeMap<String, FileKindOverride>> for Files {
     fn from(overrides: BTreeMap<String, FileKindOverride>) -> Files {
         let mut files = Files::default();
@@ -706,6 +721,37 @@ mod tests {
         assert!(files["pdf"].launcher.is_empty());
         assert!(files["image"].extensions.is_empty());
         assert!(Config::parse("[files.video]\nprogram = []").is_err());
+    }
+
+    #[test]
+    fn own_file_kinds_win_over_built_in_ones() {
+        let config =
+            Config::parse("[files.pdf]\nextensions = [\"pdf\"]\nlauncher = [\"zathura\"]").unwrap();
+        let kinds = config.files.by_precedence();
+        let first = kinds
+            .iter()
+            .find(|k| k.extensions.iter().any(|e| e == "pdf"))
+            .unwrap();
+        assert_eq!(first.launcher, ["zathura"]);
+        assert_eq!(kinds.len(), config.files.0.len());
+    }
+
+    /// Own kinds come first, then the built-in ones, each in name order;
+    /// a built-in kind the config changes keeps its place.
+    #[test]
+    fn file_kinds_by_precedence_order() {
+        let config = Config::parse(
+            "[files.zzz]\nlauncher = [\"z\"]\n[files.aaa]\nlauncher = [\"a\"]\n[files.image]\nlauncher = [\"i\"]",
+        )
+        .unwrap();
+        let launchers: Vec<&str> = config
+            .files
+            .by_precedence()
+            .iter()
+            .map(|k| k.launcher.first().map_or("", String::as_str))
+            .collect();
+        // aaa, zzz, audio, document, image, video.
+        assert_eq!(launchers, ["a", "z", "", "", "i", ""]);
     }
 
     /// When an extension is in several kinds, the first kind wins, so

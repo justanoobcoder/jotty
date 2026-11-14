@@ -589,7 +589,11 @@ A path can be absolute, start with `~/`, or be relative to the current
 directory of the program running in the terminal (usually the shell).
 Names that `ls` quotes because of spaces (`'my clip.mp4'`) work too. Only
 files that exist are links. When an extension is in several kinds, the
-first kind in alphabetical order wins.
+kinds you add under new names win over the built-in ones, and otherwise
+the first kind in alphabetical order wins. So `[files.pdf]` with
+`extensions = ["pdf"]` takes PDFs from `document`. A built-in kind you
+change keeps its place: to move `pdf` from `document` to `image`, also
+remove it from `document`'s extensions.
 
 ## Shell integration
 
