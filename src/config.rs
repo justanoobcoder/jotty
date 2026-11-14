@@ -25,7 +25,7 @@ pub struct Config {
     /// Key bindings for jotty's actions; see `keybinds.rs`.
     pub keybinds: Keybinds,
     pub url: UrlConfig,
-    /// Kinds of files that Ctrl+click opens, such as images and videos.
+    /// Kinds of files that Ctrl+click opens, such as images, videos and documents.
     pub files: Files,
 }
 
@@ -48,9 +48,9 @@ impl Default for UrlConfig {
     }
 }
 
-/// Kinds of files whose paths are links, by name: `image` and `video`
-/// built in, and any the user adds. A kind in the config only overrides
-/// the fields it sets.
+/// Kinds of files whose paths are links, by name: `audio`, `document`,
+/// `image` and `video` built in, and any the user adds. A kind in the
+/// config only overrides the fields it sets.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
@@ -78,6 +78,20 @@ impl Default for Files {
             launcher: Vec::new(),
         };
         Files(BTreeMap::from([
+            (
+                "audio".to_string(),
+                kind(&[
+                    "mp3", "flac", "ogg", "oga", "opus", "wav", "m4a", "aac", "wma", "aiff", "aif",
+                    "ape", "alac", "mka",
+                ]),
+            ),
+            (
+                "document".to_string(),
+                kind(&[
+                    "pdf", "epub", "djvu", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods",
+                    "ppt", "pptx", "odp",
+                ]),
+            ),
             (
                 "image".to_string(),
                 kind(&[
@@ -692,6 +706,21 @@ mod tests {
         assert!(files["pdf"].launcher.is_empty());
         assert!(files["image"].extensions.is_empty());
         assert!(Config::parse("[files.video]\nprogram = []").is_err());
+    }
+
+    /// When an extension is in several kinds, the first kind wins, so
+    /// the built-in kinds must not share one.
+    #[test]
+    fn default_file_kinds_share_no_extension() {
+        let mut seen = std::collections::HashSet::new();
+        for kind in Files::default().0.values() {
+            for extension in &kind.extensions {
+                assert!(
+                    seen.insert(extension.to_lowercase()),
+                    "{extension} is in two kinds"
+                );
+            }
+        }
     }
 
     #[test]

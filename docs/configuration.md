@@ -506,8 +506,9 @@ following its text as it scrolls into the history.
 **Links.** Hold Ctrl over a link to underline it, and Ctrl+click to open
 it with `url.launcher`. Links are hyperlinks that programs set (OSC 8, as
 `ls --hyperlink`, `gcc` and `delta` emit), URLs in the text, which may
-wrap across rows, and paths of image and video files; see [`[url]`](#url)
-and [`[files]`](#files) to change launchers or add kinds.
+wrap across rows, and paths of image, video, audio and document files;
+see [`[url]`](#url) and [`[files]`](#files) to change launchers or add
+kinds.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
@@ -553,30 +554,35 @@ a table `[files.<name>]` with its own extensions and launcher:
 | `extensions` | list of strings | File name extensions, matched case-insensitively. `[]` turns the kind off. |
 | `launcher` | list of strings | Command that opens these files, with the absolute path added as the last argument. Empty (the default) means `url.launcher`. |
 
-Two kinds are built in:
+Four kinds are built in:
 
+- `audio`: mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, aiff, aif, ape,
+  alac, mka
+- `document`: pdf, epub, djvu, doc, docx, odt, rtf, xls, xlsx, ods, ppt,
+  pptx, odp
 - `image`: png, jpg, jpeg, gif, webp, avif, jxl, heic, heif, bmp, tif,
   tiff, svg, ico
 - `video`: mp4, mkv, webm, mov, avi, m4v, wmv, flv, mpg, mpeg, ogv, 3gp
 
 A kind in the config changes only the keys it sets, so this keeps the
-default extensions and opens videos in mpv and images in imv, while URLs
-still go to `xdg-open`:
+default extensions and opens videos in mpv and PDFs and other documents in
+zathura, while URLs still go to `xdg-open`:
 
 ```toml
 [files.video]
 launcher = ["mpv"]
 
-[files.image]
-launcher = ["imv"]
+[files.document]
+launcher = ["zathura"]
 ```
 
-Add other kinds with new names:
+Text files such as CSV or HTML aren't built in, since they are usually
+opened in an editor. Add them, or any other kind, with new names:
 
 ```toml
-[files.document]
-extensions = ["pdf", "epub"]
-launcher = ["zathura"]
+[files.sheet]
+extensions = ["csv", "tsv"]
+launcher = ["libreoffice", "--calc"]
 ```
 
 A path can be absolute, start with `~/`, or be relative to the current

@@ -133,6 +133,20 @@ regex = []
 # current directory of the program in the terminal). Each kind has its own
 # launcher; empty means url.launcher. Add kinds with [files.<name>]; a kind
 # here only changes the fields it sets, and extensions = [] turns it off.
+[files.audio]
+extensions = [
+    "mp3", "flac", "ogg", "oga", "opus", "wav", "m4a", "aac", "wma", "aiff", "aif",
+    "ape", "alac", "mka",
+]
+launcher = []      # e.g. ["mpv"]
+
+[files.document]
+extensions = [
+    "pdf", "epub", "djvu", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt",
+    "pptx", "odp",
+]
+launcher = []      # e.g. ["zathura"]
+
 [files.image]
 extensions = [
     "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp", "tif",
