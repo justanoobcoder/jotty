@@ -1379,7 +1379,8 @@ impl TermWindow {
             self.shift_mark = None;
             return self.request_redraw();
         }
-        if !self.file_marks.is_empty() && event.keysym == Keysym::Escape {
+        // Vi mode takes Escape for itself.
+        if !self.file_marks.is_empty() && self.vi.is_none() && event.keysym == Keysym::Escape {
             self.file_marks.clear();
             return self.request_redraw();
         }

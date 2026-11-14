@@ -196,12 +196,15 @@ nothing surprises you.
   window is resized or the alternate screen switches. Ctrl+right dragging
   over `ls -l` output may also mark files that other columns (a user name,
   a month) happen to name. At most 1000 files are marked.
+- Marking and dragging files check them on the file system from the event
+  loop: a sweep tries up to 10000 names. On a slow network mount, every
+  window waits meanwhile.
 - Relative file paths are resolved in the directory the foreground program
   is in now, not where the path was printed. After a `cd`, or over SSH,
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
-  be dropped into a window. A drag carries one file.
+  be dropped into a window.
 - A dragged file is offered as a `file://` URI only, not through the
   document portal (`application/vnd.portal.filetransfer`). Sandboxed
   applications, such as Flatpaks, may not be able to read it when it lies

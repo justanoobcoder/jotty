@@ -528,8 +528,8 @@ directory named in it. Marks are drawn in `colors.mark_background` and keep
 the path they had when marked, even after a `cd`. Ctrl+drag starting on a
 marked name drags all of them; starting on another name drags just that
 one. If a marked file is gone by then, nothing is dragged. Escape clears
-the marks (and only then doesn't reach the program), as does dropping
-them.
+the marks (and only then doesn't reach the program; not in vi mode), as
+does dropping them.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
