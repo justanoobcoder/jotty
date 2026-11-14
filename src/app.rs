@@ -2920,16 +2920,8 @@ impl App {
             }
         }
         if (&old.url, &old.files) != (&new.url, &new.files) {
-            let kinds: Vec<Vec<String>> = new
-                .files
-                .by_precedence()
-                .iter()
-                .map(|k| k.extensions.clone())
-                .collect();
-            match Detector::try_new(&kinds, &new.url.regex) {
-                Ok(links) => shared.links = links,
-                Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
-            }
+            // `Config::load` has already checked url.regex.
+            shared.links = links_detector(&new);
         }
         let new = Rc::new(new);
         shared.config = Rc::clone(&new);
