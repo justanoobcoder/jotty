@@ -3,6 +3,11 @@ CHANGELOG
 
 ## Unreleased
 
+- Ctrl+click opens audio files and documents (PDF, EPUB, office files),
+    with the new built-in `files.audio` and `files.document` kinds
+- File kinds added in the config under new names win over the built-in
+    kinds for an extension they share
+
 ## 2.2.0
 
 - The glyph atlas grows as a screen needs it, instead of being cleared on

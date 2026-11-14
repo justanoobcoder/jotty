@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::color::Rgb;
 use crate::keybinds::Keybinds;
+use crate::links::Detector;
 
 /// The config file. Every key is optional; missing keys keep their defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -25,7 +26,7 @@ pub struct Config {
     /// Key bindings for jotty's actions; see `keybinds.rs`.
     pub keybinds: Keybinds,
     pub url: UrlConfig,
-    /// Kinds of files that Ctrl+click opens, such as images and videos.
+    /// Kinds of files that Ctrl+click opens, such as images, videos and documents.
     pub files: Files,
 }
 
@@ -48,9 +49,9 @@ impl Default for UrlConfig {
     }
 }
 
-/// Kinds of files whose paths are links, by name: `image` and `video`
-/// built in, and any the user adds. A kind in the config only overrides
-/// the fields it sets.
+/// Kinds of files whose paths are links, by name: `audio`, `document`,
+/// `image` and `video` built in, and any the user adds. A kind in the
+/// config only overrides the fields it sets.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(from = "BTreeMap<String, FileKindOverride>")]
 pub struct Files(pub BTreeMap<String, FileKind>);
@@ -79,6 +80,20 @@ impl Default for Files {
         };
         Files(BTreeMap::from([
             (
+                "audio".to_string(),
+                kind(&[
+                    "mp3", "flac", "ogg", "oga", "opus", "wav", "m4a", "aac", "wma", "aiff", "aif",
+                    "ape", "alac", "mka",
+                ]),
+            ),
+            (
+                "document".to_string(),
+                kind(&[
+                    "pdf", "epub", "djvu", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods",
+                    "ppt", "pptx", "odp",
+                ]),
+            ),
+            (
                 "image".to_string(),
                 kind(&[
                     "png", "jpg", "jpeg", "gif", "webp", "avif", "jxl", "heic", "heif", "bmp",
@@ -93,6 +108,29 @@ impl Default for Files {
                 ]),
             ),
         ]))
+    }
+}
+
+impl Files {
+    /// The kinds in the order links try them: the ones the user adds
+    /// first, then the built-in ones, each in name order. So a kind of the
+    /// user's own wins an extension it shares with a built-in kind.
+    pub fn by_precedence(&self) -> Vec<&FileKind> {
+        let defaults = Files::default().0;
+        let (built_in, own): (Vec<&String>, Vec<&String>) =
+            self.0.keys().partition(|name| defaults.contains_key(*name));
+        own.into_iter()
+            .chain(built_in)
+            .map(|name| &self.0[name])
+            .collect()
+    }
+
+    /// The extensions of each kind, in [`Files::by_precedence`] order.
+    pub fn extensions_by_precedence(&self) -> Vec<Vec<String>> {
+        self.by_precedence()
+            .iter()
+            .map(|k| k.extensions.clone())
+            .collect()
     }
 }
 
@@ -458,6 +496,9 @@ impl Config {
             regex::Regex::new(pattern)
                 .map_err(|e| toml::de::Error::custom(format!("url.regex: {e}")))?;
         }
+        // The extensions become one regex, which can be too large.
+        Detector::try_new(&self.files.extensions_by_precedence(), &[])
+            .map_err(|e| toml::de::Error::custom(format!("files: {e}")))?;
         Ok(())
     }
 }
@@ -692,6 +733,65 @@ mod tests {
         assert!(files["pdf"].launcher.is_empty());
         assert!(files["image"].extensions.is_empty());
         assert!(Config::parse("[files.video]\nprogram = []").is_err());
+    }
+
+    /// A file regex the regex crate refuses (here too large) is a config
+    /// error, not a panic when the link detector is built.
+    #[test]
+    fn too_many_file_extensions_are_rejected() {
+        let mut config = Config::default();
+        config.files.0.get_mut("image").unwrap().extensions = vec!["a".repeat(100_000)];
+        let error = config.check().unwrap_err().to_string();
+        assert!(
+            error.contains("files") && error.contains("size limit"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn own_file_kinds_win_over_built_in_ones() {
+        let config =
+            Config::parse("[files.pdf]\nextensions = [\"pdf\"]\nlauncher = [\"zathura\"]").unwrap();
+        let kinds = config.files.by_precedence();
+        let first = kinds
+            .iter()
+            .find(|k| k.extensions.iter().any(|e| e == "pdf"))
+            .unwrap();
+        assert_eq!(first.launcher, ["zathura"]);
+        assert_eq!(kinds.len(), config.files.0.len());
+    }
+
+    /// Own kinds come first, then the built-in ones, each in name order;
+    /// a built-in kind the config changes keeps its place.
+    #[test]
+    fn file_kinds_by_precedence_order() {
+        let config = Config::parse(
+            "[files.zzz]\nlauncher = [\"z\"]\n[files.aaa]\nlauncher = [\"a\"]\n[files.image]\nlauncher = [\"i\"]",
+        )
+        .unwrap();
+        let launchers: Vec<&str> = config
+            .files
+            .by_precedence()
+            .iter()
+            .map(|k| k.launcher.first().map_or("", String::as_str))
+            .collect();
+        // aaa, zzz, audio, document, image, video.
+        assert_eq!(launchers, ["a", "z", "", "", "i", ""]);
+    }
+
+    /// When an extension is in several kinds, the first kind wins, so
+    /// the built-in kinds must not share one.
+    #[test]
+    fn default_file_kinds_share_no_extension() {
+        let mut seen = std::collections::HashSet::new();
+        for kind in Files::default().0.values() {
+            for extension in &kind.extensions {
+                assert!(
+                    seen.insert(extension.to_lowercase()),
+                    "{extension} is in two kinds"
+                );
+            }
+        }
     }
 
     #[test]

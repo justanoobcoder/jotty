@@ -1,6 +1,6 @@
 //! Links in the terminal: hyperlinks set by programs (OSC 8), URLs and
-//! paths of files such as images and videos recognized in the text.
-//! Ctrl+click opens them.
+//! paths of files such as images, videos, audio files and documents
+//! recognized in the text. Ctrl+click opens them.
 
 use regex::Regex;
 

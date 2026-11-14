@@ -564,12 +564,7 @@ pub fn run(
 
 /// The link detector for the file kinds and URL patterns in `config`.
 fn links_detector(config: &Config) -> Detector {
-    let kinds: Vec<Vec<String>> = config
-        .files
-        .0
-        .values()
-        .map(|k| k.extensions.clone())
-        .collect();
+    let kinds = config.files.extensions_by_precedence();
     Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
         Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
@@ -1803,7 +1798,7 @@ impl TermWindow {
         let target = &link.target;
         let launcher = link
             .kind
-            .and_then(|i| self.config.files.0.values().nth(i))
+            .and_then(|i| self.config.files.by_precedence().get(i).copied())
             .map(|kind| &kind.launcher)
             .filter(|launcher| !launcher.is_empty())
             .unwrap_or(&self.config.url.launcher);
@@ -2920,12 +2915,8 @@ impl App {
             }
         }
         if (&old.url, &old.files) != (&new.url, &new.files) {
-            let kinds: Vec<Vec<String>> =
-                new.files.0.values().map(|k| k.extensions.clone()).collect();
-            match Detector::try_new(&kinds, &new.url.regex) {
-                Ok(links) => shared.links = links,
-                Err(e) => log::error!("invalid url.regex, keeping the previous patterns: {e}"),
-            }
+            // `Config::load` has already checked that the detector builds.
+            shared.links = links_detector(&new);
         }
         let new = Rc::new(new);
         shared.config = Rc::clone(&new);
