@@ -1798,6 +1798,9 @@ impl TermWindow {
             } else {
                 path
             };
+            // Without `.` components or a trailing `/`, which some
+            // applications don't take in a URI.
+            let path: PathBuf = path.components().collect();
             path.exists().then_some(path)
         };
         links::path_at(self.term.screen(), self.point_at(position), resolve)
@@ -1811,10 +1814,16 @@ impl TermWindow {
             log::warn!("cannot drag (wl_data_device_manager missing)");
             return;
         };
+        // Drag sources set their actions, which needs version 3.
+        if manager.data_device_manager().version() < 3 {
+            log::warn!("cannot drag (wl_data_device_manager older than version 3)");
+            return;
+        }
         // The press started no selection that the drag should leave behind.
         self.selection = None;
         self.selecting = false;
         self.shift_press = false;
+        self.last_click = None;
         self.request_redraw();
         let source = manager.create_drag_and_drop_source(&self.qh, DRAG_MIMES, DndAction::Copy);
         source.start_drag(device, self.window.wl_surface(), None, serial);
@@ -3352,8 +3361,6 @@ impl KeyboardHandler for App {
 
 /// A Ctrl+press that may become a drag; see [`TermWindow::ctrl_press`].
 struct CtrlPress {
-    /// The file or directory under the pointer.
-    path: Option<PathBuf>,
     /// The link to open on release.
     link: Option<Link>,
     serial: u32,
@@ -3417,9 +3424,11 @@ impl TermWindow {
                     event.position.0 - press.position.0,
                     event.position.1 - press.position.1,
                 );
+                // The file system is only looked at once the press becomes
+                // a drag: it may be slow (a network mount).
                 if dx.hypot(dy) >= DRAG_THRESHOLD {
                     let press = self.ctrl_press.take().expect("checked by the match guard");
-                    if let Some(path) = press.path {
+                    if let Some(path) = self.path_at(press.position) {
                         self.start_drag(shared, path, press.serial);
                     }
                 }
@@ -3483,7 +3492,6 @@ impl TermWindow {
                     .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
                 self.last_link_click = Some(*time);
                 self.ctrl_press = Some(CtrlPress {
-                    path: self.path_at(event.position),
                     link: self.hovered_link.clone().filter(|_| !again),
                     serial: *serial,
                     position: event.position,
@@ -3539,17 +3547,13 @@ impl TermWindow {
                 };
                 self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
                 self.selecting = true;
-                self.ctrl_press = shared
-                    .modifiers
-                    .ctrl
-                    .then(|| self.path_at(event.position))
-                    .flatten()
-                    .map(|path| CtrlPress {
-                        path: Some(path),
-                        link: None,
-                        serial: *serial,
-                        position: event.position,
-                    });
+                // A double or triple Ctrl+click selects; only a single one
+                // may drag.
+                self.ctrl_press = (shared.modifiers.ctrl && clicks == 1).then_some(CtrlPress {
+                    link: None,
+                    serial: *serial,
+                    position: event.position,
+                });
                 self.request_redraw();
             }
             PointerEventKind::Release {
@@ -3827,7 +3831,12 @@ impl App {
 
 /// What a dragged file or directory is offered as.
 const URI_LIST_MIME: &str = "text/uri-list";
-const DRAG_MIMES: [&str; 2] = [URI_LIST_MIME, "text/plain;charset=utf-8"];
+const DRAG_MIMES: [&str; 4] = [
+    URI_LIST_MIME,
+    PASTE_MIMES[0],
+    PASTE_MIMES[1],
+    PASTE_MIMES[2],
+];
 
 /// `path`, which is absolute, as a `file://` URI.
 fn file_uri(path: &Path) -> String {
@@ -3882,10 +3891,10 @@ impl DataSourceHandler for App {
             .as_ref()
             .filter(|(s, _)| s.inner() == source)
         {
-            let data = if mime == URI_LIST_MIME {
-                format!("{}\r\n", file_uri(path))
-            } else {
-                path.to_string_lossy().into_owned()
+            let data = match mime.as_str() {
+                URI_LIST_MIME => format!("{}\r\n", file_uri(path)),
+                m if PASTE_MIMES.contains(&m) => path.to_string_lossy().into_owned(),
+                _ => return,
             };
             write_in_background(pipe, data);
         }
