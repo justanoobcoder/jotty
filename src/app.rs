@@ -1875,7 +1875,9 @@ impl TermWindow {
                 let (buffer, canvas) = pool
                     .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
                     .map_err(|e| e.to_string())?;
-                canvas.copy_from_slice(&label.pixels);
+                // sctk rounds slots up to 64 bytes: the canvas may be
+                // longer than the image.
+                canvas[..label.pixels.len()].copy_from_slice(&label.pixels);
                 Ok((buffer, pool))
             });
         let (buffer, pool) = match drawn {
