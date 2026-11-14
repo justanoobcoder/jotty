@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::color::Rgb;
 use crate::keybinds::Keybinds;
+use crate::links::Detector;
 
 /// The config file. Every key is optional; missing keys keep their defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -121,6 +122,14 @@ impl Files {
         own.into_iter()
             .chain(built_in)
             .map(|name| &self.0[name])
+            .collect()
+    }
+
+    /// The extensions of each kind, in [`Files::by_precedence`] order.
+    pub fn extensions_by_precedence(&self) -> Vec<Vec<String>> {
+        self.by_precedence()
+            .iter()
+            .map(|k| k.extensions.clone())
             .collect()
     }
 }
@@ -487,6 +496,9 @@ impl Config {
             regex::Regex::new(pattern)
                 .map_err(|e| toml::de::Error::custom(format!("url.regex: {e}")))?;
         }
+        // The extensions become one regex, which can be too large.
+        Detector::try_new(&self.files.extensions_by_precedence(), &[])
+            .map_err(|e| toml::de::Error::custom(format!("files: {e}")))?;
         Ok(())
     }
 }
@@ -721,6 +733,19 @@ mod tests {
         assert!(files["pdf"].launcher.is_empty());
         assert!(files["image"].extensions.is_empty());
         assert!(Config::parse("[files.video]\nprogram = []").is_err());
+    }
+
+    /// A file regex the regex crate refuses (here too large) is a config
+    /// error, not a panic when the link detector is built.
+    #[test]
+    fn too_many_file_extensions_are_rejected() {
+        let mut config = Config::default();
+        config.files.0.get_mut("image").unwrap().extensions = vec!["a".repeat(100_000)];
+        let error = config.check().unwrap_err().to_string();
+        assert!(
+            error.contains("files") && error.contains("size limit"),
+            "{error}"
+        );
     }
 
     #[test]

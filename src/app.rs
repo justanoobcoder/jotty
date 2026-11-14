@@ -564,12 +564,7 @@ pub fn run(
 
 /// The link detector for the file kinds and URL patterns in `config`.
 fn links_detector(config: &Config) -> Detector {
-    let kinds: Vec<Vec<String>> = config
-        .files
-        .by_precedence()
-        .iter()
-        .map(|k| k.extensions.clone())
-        .collect();
+    let kinds = config.files.extensions_by_precedence();
     Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
         Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
@@ -2920,7 +2915,7 @@ impl App {
             }
         }
         if (&old.url, &old.files) != (&new.url, &new.files) {
-            // `Config::load` has already checked url.regex.
+            // `Config::load` has already checked that the detector builds.
             shared.links = links_detector(&new);
         }
         let new = Rc::new(new);
