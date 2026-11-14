@@ -7,6 +7,7 @@
 
 pub mod atlas;
 pub mod gl;
+pub mod label;
 pub mod software;
 
 use std::borrow::Cow;
@@ -15,6 +16,7 @@ use atlas::Atlas;
 
 use crate::color::Rgb;
 use crate::config::Config;
+use crate::file_marks::FileMarks;
 use crate::font::{self, CellMetrics, Fonts, Style};
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
@@ -83,6 +85,17 @@ impl Renderer {
             Renderer::Cpu(r) => r.draw(frame),
         }
     }
+
+    /// `text` on its own, in the window's font and default colors; see
+    /// [`label::draw`].
+    pub fn label(&mut self, text: &str, padding: u32, multiple: u32) -> label::Label {
+        let (foreground, background) = match self {
+            Renderer::Gpu(r) => (r.theme.foreground, r.theme.background),
+            Renderer::Cpu(r) => (r.theme.foreground, r.theme.background),
+        };
+        let fonts = &mut self.glyphs_mut().fonts;
+        label::draw(fonts, text, foreground, background, padding, multiple)
+    }
 }
 
 /// The fonts and the atlas of glyphs rasterized from them, which each
@@ -148,6 +161,16 @@ impl Layers {
     }
 }
 
+/// How a cell stands out from the text around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Highlight {
+    None,
+    /// Selected, or marked by Shift+click.
+    Selected,
+    /// A file marked for dragging out.
+    Marked,
+}
+
 /// The colors and opacity a frame is drawn with.
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -158,6 +181,10 @@ pub struct Theme {
     pub cursor_text: Option<Rgb>,
     pub selection_foreground: Option<Rgb>,
     pub selection_background: Option<Rgb>,
+    /// Colors of files marked for dragging; the background defaults to
+    /// palette blue, the text to the default background.
+    pub mark_foreground: Option<Rgb>,
+    pub mark_background: Option<Rgb>,
     pub palette: [Rgb; 16],
     pub bold_is_bright: bool,
     /// Opacity of the default background.
@@ -179,6 +206,8 @@ impl Theme {
             cursor_text: config.colors.cursor_text,
             selection_foreground: config.colors.selection_foreground,
             selection_background: config.colors.selection_background,
+            mark_foreground: config.colors.mark_foreground,
+            mark_background: config.colors.mark_background,
             palette: config.colors.palette(),
             bold_is_bright: config.terminal.bold_is_bright,
             opacity: config.window.opacity,
@@ -242,7 +271,7 @@ impl Theme {
     pub fn cell_colors(
         &self,
         cell: &Cell,
-        selected: bool,
+        highlight: Highlight,
         block_cursor: Option<Rgb>,
     ) -> (Rgb, Rgb) {
         let mut fg = match cell.fg {
@@ -266,11 +295,20 @@ impl Theme {
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
-        if selected {
-            // Each selection color defaults to inverse video, like foot.
-            let (inverse_fg, inverse_bg) = (bg, fg);
-            fg = self.selection_foreground.unwrap_or(inverse_fg);
-            bg = self.selection_background.unwrap_or(inverse_bg);
+        match highlight {
+            Highlight::None => {}
+            Highlight::Selected => {
+                // Each selection color defaults to inverse video, like foot.
+                let (inverse_fg, inverse_bg) = (bg, fg);
+                fg = self.selection_foreground.unwrap_or(inverse_fg);
+                bg = self.selection_background.unwrap_or(inverse_bg);
+            }
+            Highlight::Marked => {
+                // The background reads on palette blue, where text often
+                // is blue itself (directories in `ls`).
+                fg = self.mark_foreground.unwrap_or(self.background);
+                bg = self.mark_background.unwrap_or_else(|| self.indexed(4));
+            }
         }
         if let Some(cursor) = block_cursor {
             // Without a configured text color, the character takes the
@@ -531,6 +569,8 @@ pub struct Frame<'frame> {
     pub link: Option<(Point, Point)>,
     /// A cell marked by Shift+click, drawn like the selection.
     pub mark: Option<Point>,
+    /// Files marked for dragging out.
+    pub file_marks: Option<&'frame FileMarks>,
     /// The vi mode cursor, drawn as a block instead of the terminal's.
     pub vi_cursor: Option<Point>,
     /// A short label drawn in the top-right corner, such as vi mode's.
@@ -611,15 +651,22 @@ pub fn build(
             } else {
                 1.0
             };
-            let selected = frame
-                .selection
-                .is_some_and(|s| s.contains(Point { line, col: x }))
-                || frame.mark == Some(Point { line, col: x });
+            let point = Point { line, col: x };
+            let highlight = if frame.selection.is_some_and(|s| s.contains(point))
+                || frame.mark == Some(point)
+            {
+                Highlight::Selected
+            } else if frame.file_marks.is_some_and(|m| m.at(point).is_some()) {
+                Highlight::Marked
+            } else {
+                Highlight::None
+            };
+            let selected = highlight != Highlight::None;
             let is_cursor = match frame.vi_cursor {
                 Some(vi) => vi == Point { line, col: x },
                 None => block_cursor && y == cursor_row && x == cursor_col,
             };
-            let (fg, bg) = theme.cell_colors(&cell, selected, is_cursor.then_some(cursor_color));
+            let (fg, bg) = theme.cell_colors(&cell, highlight, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
 
             // Whether the program chose this background, as opposed to the
@@ -1010,6 +1057,7 @@ mod tests {
             origin: (0, 0),
             link: None,
             mark: None,
+            file_marks: None,
             vi_cursor: None,
             label: None,
             search: None,
@@ -1046,22 +1094,19 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, /* selected= */ false, None),
+            t.cell_colors(&cell, Highlight::None, None),
             (t.palette[1], t.background)
         );
         cell.flags.insert(Flags::BOLD);
-        assert_eq!(
-            t.cell_colors(&cell, /* selected= */ false, None).0,
-            t.palette[9]
-        );
+        assert_eq!(t.cell_colors(&cell, Highlight::None, None).0, t.palette[9]);
         cell.flags.insert(Flags::INVERSE);
         assert_eq!(
-            t.cell_colors(&cell, /* selected= */ false, None),
+            t.cell_colors(&cell, Highlight::None, None),
             (t.background, t.palette[9])
         );
         // Selecting inverted text un-inverts it.
         assert_eq!(
-            t.cell_colors(&cell, /* selected= */ true, None),
+            t.cell_colors(&cell, Highlight::Selected, None),
             (t.palette[9], t.background)
         );
 
@@ -1069,7 +1114,7 @@ mod tests {
             flags: Flags::HIDDEN,
             ..Cell::default()
         };
-        let (fg, bg) = t.cell_colors(&hidden, /* selected= */ false, None);
+        let (fg, bg) = t.cell_colors(&hidden, Highlight::None, None);
         assert_eq!(fg, bg);
     }
 
@@ -1083,12 +1128,12 @@ mod tests {
         // Only the background configured: the text is still inverted.
         t.selection_background = Some(Rgb::new(1, 2, 3));
         assert_eq!(
-            t.cell_colors(&red, /* selected= */ true, None),
+            t.cell_colors(&red, Highlight::Selected, None),
             (t.background, Rgb::new(1, 2, 3))
         );
         t.selection_foreground = Some(Rgb::new(4, 5, 6));
         assert_eq!(
-            t.cell_colors(&red, /* selected= */ true, None),
+            t.cell_colors(&red, Highlight::Selected, None),
             (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Inverse cells use the configured colors too.
@@ -1097,12 +1142,12 @@ mod tests {
             ..red
         };
         assert_eq!(
-            t.cell_colors(&inverse, /* selected= */ true, None),
+            t.cell_colors(&inverse, Highlight::Selected, None),
             (Rgb::new(4, 5, 6), Rgb::new(1, 2, 3))
         );
         // Unselected cells are unaffected.
         assert_eq!(
-            t.cell_colors(&red, /* selected= */ false, None),
+            t.cell_colors(&red, Highlight::None, None),
             (t.palette[1], t.background)
         );
     }
@@ -1110,7 +1155,7 @@ mod tests {
     #[test]
     fn block_cursor_colors() {
         let t = theme();
-        let (fg, bg) = t.cell_colors(&Cell::default(), /* selected= */ false, Some(t.cursor));
+        let (fg, bg) = t.cell_colors(&Cell::default(), Highlight::None, Some(t.cursor));
         assert_eq!(bg, t.cursor);
         assert_eq!(fg, t.background);
     }
@@ -1124,7 +1169,7 @@ mod tests {
             ..Cell::default()
         };
         assert_eq!(
-            t.cell_colors(&cell, /* selected= */ false, Some(Rgb::new(9, 9, 9))),
+            t.cell_colors(&cell, Highlight::None, Some(Rgb::new(9, 9, 9))),
             (Rgb::new(1, 2, 3), Rgb::new(9, 9, 9))
         );
     }
@@ -1168,7 +1213,7 @@ mod tests {
             flags: Flags::DIM,
             ..Cell::default()
         };
-        let fg = t.cell_colors(&cell, /* selected= */ false, None).0;
+        let fg = t.cell_colors(&cell, Highlight::None, None).0;
         assert!(fg.r < t.foreground.r && fg.r > t.background.r);
     }
 
@@ -1388,6 +1433,36 @@ mod tests {
         assert_eq!(batch.quads(), 4);
         assert_eq!(quad_at(&batch, 0).1, theme().foreground.to_f32());
         assert_eq!(quad_at(&batch, 2).1, theme().background.to_f32());
+    }
+
+    #[test]
+    fn marked_files_have_their_own_colors() {
+        use std::path::PathBuf;
+
+        use crate::file_marks::FileMark;
+        let mut term = Terminal::new(10, 1, 0);
+        term.feed(b"ab");
+        let mut marks = FileMarks::default();
+        marks.add(FileMark {
+            start: Point { line: 0, col: 1 },
+            end: Point { line: 0, col: 1 },
+            path: PathBuf::from("b"),
+        });
+        let mut f = frame(term.screen());
+        f.file_marks = Some(&marks);
+        let mut t = theme();
+        let batch = build_batch(&f, &t, METRICS, &mut FakeGlyphs::default());
+        // One highlighted background, in palette blue, before the glyphs.
+        assert_eq!(quad_at(&batch, 0).1, t.indexed(4).to_f32());
+        t.mark_background = Some(Rgb::new(1, 2, 3));
+        let batch = build_batch(&f, &t, METRICS, &mut FakeGlyphs::default());
+        assert_eq!(quad_at(&batch, 0).1, Rgb::new(1, 2, 3).to_f32());
+        // The selection wins over a mark.
+        let mut selection = Selection::new(Point { line: 0, col: 0 });
+        selection.update(Point { line: 0, col: 1 });
+        f.selection = Some(&selection);
+        let batch = build_batch(&f, &t, METRICS, &mut FakeGlyphs::default());
+        assert_eq!(quad_at(&batch, 1).1, t.foreground.to_f32());
     }
 
     #[test]

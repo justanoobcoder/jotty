@@ -24,7 +24,7 @@ use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::cl
 use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
 use smithay_client_toolkit::data_device_manager::data_source::{
-    CopyPasteSource, DataSourceHandler,
+    CopyPasteSource, DataSourceHandler, DragSource,
 };
 use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
 use smithay_client_toolkit::activation::{ActivationHandler, ActivationState, RequestData};
@@ -55,7 +55,7 @@ use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
     Keymap,
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -74,6 +74,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::subcompositor::SubcompositorState;
 use sctk_adwaita::theme::ColorTheme;
 use sctk_adwaita::{AdwaitaFrame, FrameConfig};
+use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals;
@@ -89,12 +90,13 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 };
 
 use crate::config::{Config, RendererKind};
+use crate::file_marks::{FileMark, FileMarks};
 use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::instance::{self, Client, DecodeError, Received, Reply, Server};
 use crate::keybinds::{Action, Wheel};
-use crate::links::{Detector, Link};
+use crate::links::{self, Detector, Link};
 use crate::notify::{self, Bus, RateLimit};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
@@ -110,6 +112,7 @@ use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_shm;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 const BTN_LEFT: u32 = 0x110;
@@ -330,6 +333,8 @@ pub struct Shared {
     pointer: Option<ThemedPointer>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
+    /// A file or directory being dragged out, until the drop is done.
+    drag_out: Option<DragOut>,
     /// The primary selection: set by selecting text, pasted by middle click.
     primary_device: Option<PrimarySelectionDevice>,
     primary_source: Option<(PrimarySelectionSource, String)>,
@@ -424,12 +429,21 @@ pub struct TermWindow {
     frame_cursor: Option<CursorIcon>,
     /// A cell marked by Shift+click; the next Shift+click selects from it.
     shift_mark: Option<Point>,
+    /// Files and directories marked with Ctrl+right click or drag, to
+    /// drag out together.
+    file_marks: FileMarks,
+    /// Where the current Ctrl+right press started marking.
+    mark_sweep: Option<Point>,
     /// The current left press was a Shift+click (it marks a cell unless
     /// it becomes a drag).
     shift_press: bool,
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
+    /// The current left press was a Ctrl+press: on a file or directory it
+    /// becomes a drag once the pointer moves, on a link it opens it unless
+    /// the pointer moves.
+    ctrl_press: Option<CtrlPress>,
 
     /// The seat's text input, while the input method works in this window.
     text_input: Option<ZwpTextInputV3>,
@@ -535,6 +549,7 @@ pub fn run(
             pointer: None,
             data_device: None,
             copy_source: None,
+            drag_out: None,
             primary_device: None,
             primary_source: None,
             text_input: None,
@@ -765,7 +780,10 @@ impl TermWindow {
             pointer_inside: false,
             frame_cursor: None,
             last_click: None,
+            ctrl_press: None,
             shift_mark: None,
+            file_marks: FileMarks::default(),
+            mark_sweep: None,
             shift_press: false,
             text_input: None,
             ime: ImeState::default(),
@@ -860,6 +878,7 @@ impl TermWindow {
         if !same_grid {
             self.selection = None;
             self.shift_mark = None;
+            self.file_marks.clear();
         }
         self.vi_refresh();
         self.request_redraw();
@@ -1070,6 +1089,7 @@ impl TermWindow {
             (screen.grid().scrolled, screen.is_alt_screen())
         };
         let selected = self.selection.map(|s| s.live_rows(self.term.screen()));
+        let marked = self.file_marks.live_rows(self.term.screen());
         let mut buf = [0u8; 1 << 16];
         let mut total = 0;
         while total < READ_BUDGET {
@@ -1147,6 +1167,11 @@ impl TermWindow {
                     self.selecting = false;
                 }
             }
+            if same_buffer {
+                self.file_marks.follow_output(screen, &marked, delta);
+            } else {
+                self.file_marks.clear();
+            }
             if let Some(vi) = &mut self.vi {
                 if same_buffer {
                     vi.scroll(delta, screen);
@@ -1165,6 +1190,15 @@ impl TermWindow {
                 mark.line -= delta;
                 if !same_buffer || screen.row_at(mark.line).is_none() {
                     self.shift_mark = None;
+                }
+            }
+            // The start of a Ctrl+right sweep follows its text, as the
+            // selection showing the sweep does.
+            if let Some(sweep) = &mut self.mark_sweep {
+                sweep.line -= delta;
+                if !same_buffer || screen.row_at(sweep.line).is_none() {
+                    self.mark_sweep = None;
+                    self.selection = None;
                 }
             }
             self.request_redraw();
@@ -1276,6 +1310,7 @@ impl TermWindow {
             origin: (pad, pad),
             link: self.hovered_link.as_ref().map(|l| (l.start, l.end)),
             mark: self.shift_mark,
+            file_marks: Some(&self.file_marks),
             vi_cursor: self.vi.as_ref().map(|vi| vi.cursor),
             label: self.vi.as_ref().map(|vi| match vi.visual() {
                 None => "VI",
@@ -1342,6 +1377,11 @@ impl TermWindow {
         }
         if self.shift_mark.is_some() && event.keysym == Keysym::Escape {
             self.shift_mark = None;
+            return self.request_redraw();
+        }
+        // Vi mode takes Escape for itself.
+        if !self.file_marks.is_empty() && self.vi.is_none() && event.keysym == Keysym::Escape {
+            self.file_marks.clear();
             return self.request_redraw();
         }
         let base = shared.base_keysym(event.raw_code);
@@ -1726,10 +1766,7 @@ impl TermWindow {
             // checked once, not on every pointer move and pty read.
             let cache = RefCell::new(self.resolved_path.take());
             let resolve = |text: &str| {
-                let path = match text.strip_prefix("~/") {
-                    Some(rest) => std::env::home_dir()?.join(rest),
-                    None => Path::new(text).to_path_buf(),
-                };
+                let path = expand_home(text)?;
                 let dir = if path.is_relative() {
                     cwd.get_or_init(|| self.pty.foreground_cwd()).clone()
                 } else {
@@ -1776,6 +1813,218 @@ impl TermWindow {
             log::debug!("cannot set cursor: {e}");
         }
         self.hovered_link = link;
+        self.request_redraw();
+    }
+
+    /// The existing file or directory named at `point`, and whether it is
+    /// a directory; see [`TermWindow::resolve_name`].
+    fn path_at(&self, point: Point) -> Option<links::Found<(PathBuf, bool)>> {
+        let cwd = OnceCell::new();
+        links::path_at(self.term.screen(), point, |text| {
+            self.resolve_name(text, &cwd)
+        })
+    }
+
+    /// The existing file or directory that `text` names, and whether it is
+    /// a directory. A relative name is taken from the current directory of
+    /// the program in the foreground, which `cwd` keeps once asked for.
+    fn resolve_name(&self, text: &str, cwd: &OnceCell<Option<PathBuf>>) -> Option<(PathBuf, bool)> {
+        let path = expand_home(text)?;
+        let path = if path.is_relative() {
+            cwd.get_or_init(|| self.pty.foreground_cwd())
+                .as_ref()?
+                .join(path)
+        } else {
+            path
+        };
+        // Without `.` components or a trailing `/`, which some
+        // applications don't take in a URI.
+        let path: PathBuf = path.components().collect();
+        let is_dir = std::fs::metadata(&path).ok()?.is_dir();
+        Some((path, is_dir))
+    }
+
+    /// Marks the file or directory at `start` (or unmarks it), or, when the
+    /// pointer moved to `end`, every one named in between.
+    fn mark_files(&mut self, start: Point, end: Point) {
+        if start == end {
+            // A mark is unmarked even when its file is gone.
+            if self.file_marks.remove_at(start) {
+                return;
+            }
+            if let Some(found) = self.path_at(start) {
+                self.file_marks.toggle(FileMark {
+                    start: found.start,
+                    end: found.end,
+                    path: found.value.0,
+                });
+            }
+            return;
+        }
+        let cwd = OnceCell::new();
+        let found = links::paths_in(
+            self.term.screen(),
+            start.min(end),
+            start.max(end),
+            MAX_FILE_MARKS.saturating_sub(self.file_marks.len()),
+            |text| self.resolve_name(text, &cwd),
+        );
+        for found in found {
+            self.file_marks.add(FileMark {
+                start: found.start,
+                end: found.end,
+                path: found.value.0,
+            });
+        }
+    }
+
+    /// Drags `paths` out of the window, for another application to drop
+    /// (as a copy). `serial` is that of the press that started it.
+    /// `paths` aren't empty; `label` says what follows the pointer, and
+    /// `marks` whether they are the window's marks.
+    fn start_drag(
+        &mut self,
+        shared: &mut Shared,
+        paths: Vec<PathBuf>,
+        marks: bool,
+        label: &str,
+        serial: u32,
+    ) {
+        let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
+        else {
+            log::warn!("cannot drag (wl_data_device_manager missing)");
+            return;
+        };
+        // Drag sources set their actions, which needs version 3.
+        if manager.data_device_manager().version() < 3 {
+            log::warn!("cannot drag (wl_data_device_manager older than version 3)");
+            return;
+        }
+        // The press started no selection that the drag should leave behind.
+        self.selection = None;
+        self.selecting = false;
+        self.shift_press = false;
+        self.last_click = None;
+        self.request_redraw();
+        // Compositors (wlroots ones, at least) keep the cursor the window
+        // set last for the whole drag, as no window has the pointer then.
+        if let Some(pointer) = &shared.pointer
+            && let Err(e) = pointer.set_cursor(&shared.conn, CursorIcon::Grabbing)
+        {
+            log::debug!("cannot set cursor: {e}");
+        }
+        let source = manager.create_drag_and_drop_source(&self.qh, DRAG_MIMES, DndAction::Copy);
+        // The icon's content is committed once it has its role, which
+        // starting the drag gives it.
+        let icon = shared.compositor.create_surface(&self.qh);
+        source.start_drag(device, self.window.wl_surface(), Some(&icon), serial);
+        log::info!(
+            "dragging {} file(s), from {}",
+            paths.len(),
+            paths[0].display()
+        );
+        let icon = self.draw_drag_icon(shared, icon, label);
+        shared.drag_out = Some(DragOut {
+            source,
+            paths,
+            window: self.id,
+            marks,
+            _icon: icon,
+        });
+    }
+
+    /// Drags every marked file out, if they all still exist.
+    fn drag_marks(&mut self, shared: &mut Shared, serial: u32) {
+        let mut first_is_dir = false;
+        for (i, path) in self.file_marks.paths().enumerate() {
+            match std::fs::metadata(path) {
+                Ok(metadata) => first_is_dir |= i == 0 && metadata.is_dir(),
+                Err(e) => {
+                    log::warn!("not dragging the marked files: {}: {e}", path.display());
+                    return;
+                }
+            }
+        }
+        let paths: Vec<PathBuf> = self.file_marks.paths().map(Path::to_path_buf).collect();
+        let label = marks_label(&paths[0], first_is_dir, paths.len());
+        self.start_drag(shared, paths, /* marks= */ true, &label, serial);
+    }
+
+    /// Shows `text` on `surface`, the icon of a drag, in the window's font
+    /// and colors, below and right of the pointer.
+    fn draw_drag_icon(&mut self, shared: &Shared, surface: WlSurface, text: &str) -> DragIcon {
+        let mut icon = DragIcon {
+            surface,
+            viewport: None,
+            buffer: None,
+        };
+        // With fractional scaling, a viewport maps the buffer to the
+        // logical size; otherwise the integer buffer scale does.
+        let fractional = self.viewport.is_some();
+        let multiple = if fractional {
+            1
+        } else {
+            (self.scale as u32).max(1)
+        };
+        let padding = (DRAG_ICON_PADDING * self.scale).round() as u32;
+        let label = self.renderer.label(text, padding, multiple);
+        let (width, height) = (label.width as i32, label.height as i32);
+        let drawn = SlotPool::new(label.pixels.len(), &shared.shm)
+            .map_err(|e| e.to_string())
+            .and_then(|mut pool| {
+                let (buffer, canvas) = pool
+                    .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
+                    .map_err(|e| e.to_string())?;
+                // sctk rounds slots up to 64 bytes: the canvas may be
+                // longer than the image.
+                canvas[..label.pixels.len()].copy_from_slice(&label.pixels);
+                Ok((buffer, pool))
+            });
+        let (buffer, pool) = match drawn {
+            Ok(drawn) => drawn,
+            Err(e) => {
+                log::warn!("cannot draw the drag icon: {e}");
+                return icon;
+            }
+        };
+        let surface = &icon.surface;
+        if fractional {
+            if let Some(viewporter) = &shared.viewporter {
+                let viewport = viewporter.get_viewport(surface, &self.qh, ScaleData);
+                let logical = |px: i32| ((f64::from(px) / self.scale).round() as i32).max(1);
+                viewport.set_destination(logical(width), logical(height));
+                icon.viewport = Some(viewport);
+            }
+        } else {
+            surface.set_buffer_scale(multiple as i32);
+        }
+        if let Err(e) = buffer.attach_to(surface) {
+            log::warn!("cannot attach the drag icon: {e}");
+            return icon;
+        }
+        let (x, y) = DRAG_ICON_OFFSET;
+        if surface.version() >= 5 {
+            surface.offset(x, y);
+        } else {
+            surface.attach(Some(buffer.wl_buffer()), x, y);
+        }
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+        icon.buffer = Some((buffer, pool));
+        icon
+    }
+
+    /// Loses the keyboard focus.
+    fn lose_keyboard(&mut self, shared: &mut Shared) {
+        if shared.keyboard_focus == Some(self.id) {
+            shared.keyboard_focus = None;
+        }
+        // Releases of keys pressed here go elsewhere now.
+        shared.sent_keys.clear();
+        self.focused = false;
+        if self.term.screen().modes.focus_events {
+            self.send(b"\x1b[O");
+        }
         self.request_redraw();
     }
 
@@ -3114,17 +3363,7 @@ impl SeatHandler for App {
         let shared = &mut self.shared;
         match capability {
             Capability::Keyboard if shared.keyboard.is_none() => {
-                let keyboard = shared.seat_state.get_keyboard_with_repeat(
-                    qh,
-                    &seat,
-                    None,
-                    shared.loop_handle.clone(),
-                    Box::new(|app, _, event| app.key(event, KeyAction::Repeat)),
-                );
-                match keyboard {
-                    Ok(keyboard) => shared.keyboard = Some(keyboard),
-                    Err(e) => log::warn!("cannot use keyboard: {e}"),
-                }
+                shared.bind_keyboard(&seat);
                 if let (None, Some(manager)) = (&shared.data_device, &shared.data_device_manager) {
                     shared.data_device = Some(manager.get_data_device(qh, &seat));
                 }
@@ -3217,29 +3456,22 @@ impl KeyboardHandler for App {
         surface: &WlSurface,
         _: u32,
     ) {
-        let Some((shared, window)) = self.split_by_surface(surface) else {
-            return;
-        };
-        if shared.keyboard_focus == Some(window.id) {
-            shared.keyboard_focus = None;
+        if let Some((shared, window)) = self.split_by_surface(surface) {
+            window.lose_keyboard(shared);
         }
-        // Releases of keys pressed here go elsewhere now.
-        shared.sent_keys.clear();
-        window.focused = false;
-        if window.term.screen().modes.focus_events {
-            window.send(b"\x1b[O");
-        }
-        window.request_redraw();
     }
 
     fn press_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         serial: u32,
         event: KeyEvent,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         self.shared.last_serial = serial;
         self.key(event, KeyAction::Press);
     }
@@ -3259,10 +3491,13 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         if let Some((shared, window)) = self.split_focused() {
             window.release(shared, event);
         }
@@ -3272,12 +3507,15 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
         layout: u32,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         let shared = &mut self.shared;
         shared.modifiers = modifiers;
         shared.layout = layout;
@@ -3305,6 +3543,92 @@ impl KeyboardHandler for App {
             log::warn!("cannot compile the keymap; key bindings match shifted symbols only");
         }
     }
+}
+
+/// A Ctrl+press that may become a drag; see [`TermWindow::ctrl_press`].
+struct CtrlPress {
+    /// The link to open on release.
+    link: Option<Link>,
+    serial: u32,
+    position: (f64, f64),
+}
+
+/// How many files can be marked in a window at once, so that sweeping
+/// over a long history doesn't stall the window.
+const MAX_FILE_MARKS: usize = 1000;
+
+/// How far, in logical pixels, the pointer moves before a press is a drag.
+const DRAG_THRESHOLD: f64 = 4.0;
+
+/// Where the icon of a drag sits from the pointer's hotspot, and the room
+/// around its text, in logical pixels.
+const DRAG_ICON_OFFSET: (i32, i32) = (14, 14);
+const DRAG_ICON_PADDING: f64 = 6.0;
+
+/// How many columns of a name a drag icon shows.
+const DRAG_LABEL_COLUMNS: usize = 40;
+
+/// A file or directory being dragged out.
+struct DragOut {
+    source: DragSource,
+    paths: Vec<PathBuf>,
+    /// The window it started in.
+    window: WindowId,
+    /// The window's marks are dragged, which a drop clears.
+    marks: bool,
+    /// Only kept until the drag ends, which destroys it.
+    _icon: DragIcon,
+}
+
+/// The surface following the pointer during a drag, and what it shows
+/// (`None` if it couldn't be drawn).
+struct DragIcon {
+    surface: WlSurface,
+    viewport: Option<WpViewport>,
+    buffer: Option<(Buffer, SlotPool)>,
+}
+
+impl Drop for DragIcon {
+    fn drop(&mut self) {
+        if let Some(viewport) = &self.viewport {
+            viewport.destroy();
+        }
+        self.surface.destroy();
+    }
+}
+
+/// What a drag icon says for `path`: its last component, with a `/` for
+/// a directory, cut to [`DRAG_LABEL_COLUMNS`] columns. Control characters
+/// show as `?`.
+fn drag_label(path: &Path, is_dir: bool) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let mut name: String = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if is_dir && !name.ends_with('/') {
+        name.push('/');
+    }
+    // As the label draws them: every cluster takes at least a cell.
+    let width = |g: &str| g.width().max(1);
+    if name.graphemes(true).map(width).sum::<usize>() <= DRAG_LABEL_COLUMNS {
+        return name;
+    }
+    let mut cut = String::new();
+    let mut columns = 0;
+    for grapheme in name.graphemes(true) {
+        columns += width(grapheme);
+        if columns > DRAG_LABEL_COLUMNS - 1 {
+            break;
+        }
+        cut.push_str(grapheme);
+    }
+    cut.push('…');
+    cut
 }
 
 impl PointerHandler for App {
@@ -3351,6 +3675,45 @@ impl TermWindow {
             PointerEventKind::Leave { .. } => {
                 self.pointer_inside = false;
                 self.update_hovered_link(shared);
+            }
+            PointerEventKind::Motion { .. } if self.mark_sweep.is_some() => {
+                let point = self.point_at(event.position);
+                if let Some(selection) = &mut self.selection {
+                    let before = *selection;
+                    selection.extend(self.term.screen(), point);
+                    if *selection != before {
+                        self.request_redraw();
+                    }
+                }
+            }
+            PointerEventKind::Motion { .. } if self.ctrl_press.is_some() => {
+                let press = self
+                    .ctrl_press
+                    .as_ref()
+                    .expect("checked by the match guard");
+                let (dx, dy) = (
+                    event.position.0 - press.position.0,
+                    event.position.1 - press.position.1,
+                );
+                // The file system is only looked at once the press becomes
+                // a drag: it may be slow (a network mount).
+                if dx.hypot(dy) >= DRAG_THRESHOLD {
+                    let press = self.ctrl_press.take().expect("checked by the match guard");
+                    let point = self.point_at(press.position);
+                    if self.file_marks.at(point).is_some() {
+                        self.drag_marks(shared, press.serial);
+                    } else if let Some(found) = self.path_at(point) {
+                        let (path, is_dir) = found.value;
+                        let label = drag_label(&path, is_dir);
+                        self.start_drag(
+                            shared,
+                            vec![path],
+                            /* marks= */ false,
+                            &label,
+                            press.serial,
+                        );
+                    }
+                }
             }
             // A drag that started as a selection stays one, even if
             // Shift goes up on the way.
@@ -3410,9 +3773,11 @@ impl TermWindow {
                     .last_link_click
                     .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
                 self.last_link_click = Some(*time);
-                if !again && let Some(link) = &self.hovered_link {
-                    self.open_link(link);
-                }
+                self.ctrl_press = Some(CtrlPress {
+                    link: self.hovered_link.clone().filter(|_| !again),
+                    serial: *serial,
+                    position: event.position,
+                });
             }
             // The second Shift+click: select from the marked cell.
             PointerEventKind::Press {
@@ -3464,11 +3829,21 @@ impl TermWindow {
                 };
                 self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
                 self.selecting = true;
+                // A double or triple Ctrl+click selects; only a single one
+                // may drag.
+                self.ctrl_press = (shared.modifiers.ctrl && clicks == 1).then_some(CtrlPress {
+                    link: None,
+                    serial: *serial,
+                    position: event.position,
+                });
                 self.request_redraw();
             }
             PointerEventKind::Release {
                 button: BTN_LEFT, ..
             } => {
+                if let Some(link) = self.ctrl_press.take().and_then(|press| press.link) {
+                    self.open_link(&link);
+                }
                 self.selecting = false;
                 if let Some(selection) = self.selection.filter(|s| s.is_empty()) {
                     self.selection = None;
@@ -3486,6 +3861,29 @@ impl TermWindow {
             } => {
                 shared.last_serial = *serial;
                 self.paste_primary(shared);
+            }
+            // Ctrl+right click or drag marks files; the sweep shows as a
+            // selection meanwhile.
+            PointerEventKind::Press {
+                button: BTN_RIGHT,
+                serial,
+                ..
+            } if shared.modifiers.ctrl => {
+                shared.last_serial = *serial;
+                let point = self.point_at(event.position);
+                self.mark_sweep = Some(point);
+                self.selection = Some(Selection::new(point));
+                self.selecting = false;
+                self.request_redraw();
+            }
+            PointerEventKind::Release {
+                button: BTN_RIGHT, ..
+            } if self.mark_sweep.is_some() => {
+                let start = self.mark_sweep.take().expect("checked by the match guard");
+                let end = self.point_at(event.position);
+                self.selection = None;
+                self.mark_files(start, end);
+                self.request_redraw();
             }
             _ => {}
         }
@@ -3722,6 +4120,150 @@ fn write_with_timeout<W: Write + AsRawFd>(
     Ok(())
 }
 
+impl App {
+    /// Forgets the drag of `source`, once dropped (`finished`, which clears
+    /// the marks if they were what was dragged) or cancelled.
+    fn end_drag(&mut self, source: &WlDataSource, finished: bool) {
+        let Some(drag) = self.shared.drag_out.take_if(|d| d.source.inner() == source) else {
+            return;
+        };
+        if finished
+            && drag.marks
+            && let Some(window) = self.window_mut(drag.window)
+        {
+            window.file_marks.clear();
+            window.request_redraw();
+        }
+        drop(drag);
+        self.renew_keyboard();
+    }
+
+    /// Asks for the keyboard again, after a drag. The compositor has the
+    /// keyboard during a drag, and wlroots-based ones don't send the
+    /// modifiers again once it ends: the Ctrl that started a Ctrl+drag
+    /// would stay held for good. A new keyboard gets the keymap, the
+    /// focus and the modifiers as they are now.
+    fn renew_keyboard(&mut self) {
+        let shared = &mut self.shared;
+        // `release` needs version 3; an older keyboard is kept.
+        let Some(seat) = shared
+            .keyboard
+            .as_ref()
+            .filter(|k| k.version() >= 3)
+            .and_then(|k| k.data::<KeyboardData<App, ()>>())
+            .map(|data| data.seat().clone())
+        else {
+            return;
+        };
+        if let Some(old) = shared.keyboard.take() {
+            old.release();
+        }
+        shared.modifiers = Modifiers::default();
+        // No leave comes for a released keyboard. The new one enters the
+        // window that has the focus now, which the drop may have moved.
+        if let Some((shared, window)) = self.split_focused() {
+            window.lose_keyboard(shared);
+        }
+        self.shared.sent_keys.clear();
+        // Without Ctrl, no link stays underlined.
+        let shared = &mut self.shared;
+        for window in &mut self.windows {
+            window.update_hovered_link(shared);
+        }
+        shared.bind_keyboard(&seat);
+    }
+}
+
+impl Shared {
+    /// Starts using the keyboard of `seat`.
+    fn bind_keyboard(&mut self, seat: &WlSeat) {
+        let keyboard = self.seat_state.get_keyboard_with_repeat(
+            &self.qh,
+            seat,
+            None,
+            self.loop_handle.clone(),
+            // A released keyboard's repeat timer may still fire.
+            Box::new(|app, keyboard, event| {
+                if app.shared.is_current_keyboard(keyboard) {
+                    app.key(event, KeyAction::Repeat);
+                }
+            }),
+        );
+        match keyboard {
+            Ok(keyboard) => self.keyboard = Some(keyboard),
+            Err(e) => log::warn!("cannot use keyboard: {e}"),
+        }
+    }
+
+    /// Whether events of `keyboard` are to be handled: not those of a
+    /// keyboard released by `renew_keyboard`, still queued.
+    fn is_current_keyboard(&self, keyboard: &WlKeyboard) -> bool {
+        self.keyboard.as_ref() == Some(keyboard)
+    }
+}
+
+/// What a dragged file or directory is offered as.
+const URI_LIST_MIME: &str = "text/uri-list";
+const DRAG_MIMES: [&str; 4] = [
+    URI_LIST_MIME,
+    PASTE_MIMES[0],
+    PASTE_MIMES[1],
+    PASTE_MIMES[2],
+];
+
+/// What a drag of `paths` gives for `mime`: a URI list, or the paths one
+/// per line as text. `None` for a type that wasn't offered.
+fn drag_data(paths: &[PathBuf], mime: &str) -> Option<String> {
+    match mime {
+        URI_LIST_MIME => Some(
+            paths
+                .iter()
+                .map(|p| format!("{}\r\n", file_uri(p)))
+                .collect(),
+        ),
+        m if PASTE_MIMES.contains(&m) => Some(
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+/// What the icon of a drag of `count` marked files says, the first being
+/// `first`.
+fn marks_label(first: &Path, is_dir: bool, count: usize) -> String {
+    let label = drag_label(first, is_dir);
+    match count {
+        0 | 1 => label,
+        _ => format!("{label} + {} more", count - 1),
+    }
+}
+
+/// `path`, which is absolute, as a `file://` URI.
+fn file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
+}
+
+/// `text` as a path, with a leading `~/` replaced by the home directory.
+fn expand_home(text: &str) -> Option<PathBuf> {
+    match text.strip_prefix("~/") {
+        Some(rest) => Some(std::env::home_dir()?.join(rest)),
+        None => Some(PathBuf::from(text)),
+    }
+}
+
 impl DataSourceHandler for App {
     fn accept_mime(
         &mut self,
@@ -3737,7 +4279,7 @@ impl DataSourceHandler for App {
         _: &Connection,
         _: &QueueHandle<Self>,
         source: &WlDataSource,
-        _: String,
+        mime: String,
         pipe: WritePipe,
     ) {
         if let Some((_, text)) = self
@@ -3747,10 +4289,19 @@ impl DataSourceHandler for App {
             .filter(|(s, _)| s.inner() == source)
         {
             write_in_background(pipe, text.clone());
+        } else if let Some(DragOut { paths, .. }) = self
+            .shared
+            .drag_out
+            .as_ref()
+            .filter(|d| d.source.inner() == source)
+            && let Some(data) = drag_data(paths, &mime)
+        {
+            write_in_background(pipe, data);
         }
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source, /* finished= */ false);
         if self
             .shared
             .copy_source
@@ -3763,7 +4314,9 @@ impl DataSourceHandler for App {
 
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source, /* finished= */ true);
+    }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
@@ -3905,5 +4458,46 @@ mod tests {
         assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
         // Killed by SIGTERM.
         assert_eq!(exit_code(ExitStatus::from_raw(15)), 143);
+    }
+
+    #[test]
+    fn file_uris_escape_reserved_bytes() {
+        assert_eq!(
+            file_uri(Path::new("/home/u/a b/café#1.png")),
+            "file:///home/u/a%20b/caf%C3%A9%231.png"
+        );
+    }
+
+    #[test]
+    fn drag_labels_show_the_name_cut_to_fit() {
+        let label = |path: &str, is_dir| drag_label(Path::new(path), is_dir);
+        assert_eq!(label("/nowhere/a b.txt", false), "a b.txt");
+        assert_eq!(label("/nowhere/src", true), "src/");
+        assert_eq!(label("/", true), "/");
+        assert_eq!(label("/nowhere/a\nb\x1b", false), "a?b?");
+        let long = format!("/nowhere/{}.txt", "x".repeat(60));
+        assert_eq!(
+            label(&long, false),
+            format!("{}…", "x".repeat(DRAG_LABEL_COLUMNS - 1))
+        );
+        let wide = format!("/nowhere/{}", "中".repeat(30));
+        assert_eq!(label(&wide, false), format!("{}…", "中".repeat(19)));
+    }
+
+    #[test]
+    fn drags_give_every_path() {
+        let paths = [PathBuf::from("/a b"), PathBuf::from("/c")];
+        assert_eq!(
+            drag_data(&paths, "text/uri-list").as_deref(),
+            Some("file:///a%20b\r\nfile:///c\r\n")
+        );
+        assert_eq!(drag_data(&paths, "text/plain").as_deref(), Some("/a b\n/c"));
+        assert_eq!(drag_data(&paths, "image/png"), None);
+    }
+
+    #[test]
+    fn marks_labels_count_the_others() {
+        assert_eq!(marks_label(Path::new("/x/a.png"), false, 1), "a.png");
+        assert_eq!(marks_label(Path::new("/x/src"), true, 3), "src/ + 2 more");
     }
 }

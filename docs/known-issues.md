@@ -189,13 +189,30 @@ nothing surprises you.
 - Vi mode has motions, visual modes, yank and search, but not vim's text
   objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
   screen.
-- While a program has mouse reporting on, Ctrl+click goes to the program;
-  hold Shift as well to open a link.
+- While a program has mouse reporting on, Ctrl+click, Ctrl+drag and
+  Ctrl+right click go to the program; hold Shift as well to open a link or
+  drag or mark files.
+- Marks of files for dragging are dropped when their text changes, the
+  window is resized or the alternate screen switches. Ctrl+right dragging
+  over `ls -l` output may also mark files that other columns (a user name,
+  a month) happen to name. At most 1000 files are marked.
+- Marking and dragging files check them on the file system from the event
+  loop: a sweep tries up to 10000 names. On a slow network mount, every
+  window waits meanwhile.
 - Relative file paths are resolved in the directory the foreground program
   is in now, not where the path was printed. After a `cd`, or over SSH,
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
-- No `idle-inhibit`. Drag-and-drop is not accepted.
+- No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
+  be dropped into a window.
+- A dragged file is offered as a `file://` URI only, not through the
+  document portal (`application/vnd.portal.filetransfer`). Sandboxed
+  applications, such as Flatpaks, may not be able to read it when it lies
+  outside their sandbox.
+- wlroots-based compositors don't send the keyboard modifiers again after a
+  drag, so jotty asks for the keyboard again once its own drag ends (or the
+  Ctrl of Ctrl+drag would stay held). Programs that ask for focus reports
+  see the window lose and regain the focus then.
 - The kitty graphics medium `t=s` removes the shared memory object it is
   given, whichever it is, as kitty does; `t=f` reads any regular file the
   user can read, and shows it as an image at most.

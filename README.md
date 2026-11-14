@@ -26,6 +26,10 @@
   per frame), at the cost of the 130+ MiB a GPU driver takes.
 - **Vi mode:** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
+- **Drag files out:** Ctrl+drag a file or directory named in the output,
+  as `ls` prints it, into a file manager, a browser or a chat. Mark several
+  with Ctrl+right click or drag to drag them together.
+  See [Dragging files out](docs/configuration.md#mouse).
 - **Live config reload:** Saving the config file reloads every running
   window, with no restart.
 - **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
@@ -49,6 +53,8 @@
 | Ctrl+Shift+N           | New window in the current directory           |
 | Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
 | Ctrl+click             | Open a link, URL, or image, video, audio or document file (Ctrl+hover underlines it) |
+| Ctrl+drag              | Drag a file or directory named in the output (as `ls` prints it) into another application |
+| Ctrl+right click/drag  | Mark files and directories to drag together (Ctrl+drag one of them); Escape clears the marks |
 
 These are the defaults; key bindings can be changed in the
 [`[keybinds]`](docs/configuration.md#keybinds) section.

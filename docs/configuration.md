@@ -309,6 +309,8 @@ The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 | `cursor_text` | `"#rrggbb"` | the cell's background | Color of the character under a block cursor. |
 | `selection_foreground` | `"#rrggbb"` | inverse | Text color of selected cells. Unset means the cell's background color. |
 | `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
+| `mark_foreground` | `"#rrggbb"` | the background | Text color of files marked for dragging. |
+| `mark_background` | `"#rrggbb"` | palette blue | Background of files marked for dragging. |
 | `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
 
 Programs can override colors while they run, and query them:
@@ -508,12 +510,31 @@ it with `url.launcher`. Links are hyperlinks that programs set (OSC 8, as
 `ls --hyperlink`, `gcc` and `delta` emit), URLs in the text, which may
 wrap across rows, and paths of image, video, audio and document files;
 see [`[url]`](#url) and [`[files]`](#files) to change launchers or add
-kinds.
+kinds. A link opens when the button is released, unless the pointer moved.
+
+**Dragging files out.** Ctrl+press on the name of a file or directory and
+drag it into another application (a file manager, a browser's upload, a
+chat) to give it that file, as a copy; its name follows the pointer. Any
+name in the output works, not just links: the whitespace-delimited word
+under the pointer, or the name in single quotes around it (as `ls` quotes
+names with spaces), with a trailing `ls -F` indicator (such as `/`, `*` or
+`@`) dropped if needed. A relative name is taken from the current directory
+of the program in the foreground, and the file must exist. A Ctrl+press
+elsewhere selects as usual.
+
+**Dragging several files.** Ctrl+right click a name to mark it (again to
+unmark it), or Ctrl+right drag over output to mark every existing file and
+directory named in it. Marks are drawn in `colors.mark_background` and keep
+the path they had when marked, even after a `cd`. Ctrl+drag starting on a
+marked name drags all of them; starting on another name drags just that
+one. If a marked file is gone by then, nothing is dragged. Escape clears
+the marks (and only then doesn't reach the program; not in vi mode), as
+does dropping them.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
 scroll the history, paste with the middle button, or (with Ctrl) open
-links in jotty instead.
+links and drag files in jotty instead.
 
 Any other key goes to the program. Typing, pasting or committing input-method
 text scrolls back to the bottom.
