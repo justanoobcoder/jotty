@@ -74,6 +74,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::subcompositor::SubcompositorState;
 use sctk_adwaita::theme::ColorTheme;
 use sctk_adwaita::{AdwaitaFrame, FrameConfig};
+use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::globals;
@@ -110,6 +111,7 @@ use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_shm;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 const BTN_LEFT: u32 = 0x110;
@@ -331,7 +333,7 @@ pub struct Shared {
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
     /// A file or directory being dragged out, until the drop is done.
-    drag_source: Option<(DragSource, PathBuf)>,
+    drag_out: Option<DragOut>,
     /// The primary selection: set by selecting text, pasted by middle click.
     primary_device: Option<PrimarySelectionDevice>,
     primary_source: Option<(PrimarySelectionSource, String)>,
@@ -541,7 +543,7 @@ pub fn run(
             pointer: None,
             data_device: None,
             copy_source: None,
-            drag_source: None,
+            drag_out: None,
             primary_device: None,
             primary_source: None,
             text_input: None,
@@ -1833,9 +1835,79 @@ impl TermWindow {
             log::debug!("cannot set cursor: {e}");
         }
         let source = manager.create_drag_and_drop_source(&self.qh, DRAG_MIMES, DndAction::Copy);
-        source.start_drag(device, self.window.wl_surface(), None, serial);
+        // The icon's content is committed once it has its role, which
+        // starting the drag gives it.
+        let icon = shared.compositor.create_surface(&self.qh);
+        source.start_drag(device, self.window.wl_surface(), Some(&icon), serial);
         log::info!("dragging {}", path.display());
-        shared.drag_source = Some((source, path));
+        let icon = self.draw_drag_icon(shared, icon, &path);
+        shared.drag_out = Some(DragOut {
+            source,
+            path,
+            _icon: icon,
+        });
+    }
+
+    /// Shows the name of `path` on `surface`, the icon of a drag, in the
+    /// window's font and colors, below and right of the pointer.
+    fn draw_drag_icon(&mut self, shared: &Shared, surface: WlSurface, path: &Path) -> DragIcon {
+        let mut icon = DragIcon {
+            surface,
+            viewport: None,
+            buffer: None,
+        };
+        // With fractional scaling, a viewport maps the buffer to the
+        // logical size; otherwise the integer buffer scale does.
+        let fractional = self.viewport.is_some();
+        let multiple = if fractional {
+            1
+        } else {
+            (self.scale as u32).max(1)
+        };
+        let padding = (DRAG_ICON_PADDING * self.scale).round() as u32;
+        let label = self.renderer.label(&drag_label(path), padding, multiple);
+        let (width, height) = (label.width as i32, label.height as i32);
+        let drawn = SlotPool::new(label.pixels.len(), &shared.shm)
+            .map_err(|e| e.to_string())
+            .and_then(|mut pool| {
+                let (buffer, canvas) = pool
+                    .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
+                    .map_err(|e| e.to_string())?;
+                canvas.copy_from_slice(&label.pixels);
+                Ok((buffer, pool))
+            });
+        let (buffer, pool) = match drawn {
+            Ok(drawn) => drawn,
+            Err(e) => {
+                log::warn!("cannot draw the drag icon: {e}");
+                return icon;
+            }
+        };
+        let surface = &icon.surface;
+        if fractional {
+            if let Some(viewporter) = &shared.viewporter {
+                let viewport = viewporter.get_viewport(surface, &self.qh, ScaleData);
+                let logical = |px: i32| ((f64::from(px) / self.scale).round() as i32).max(1);
+                viewport.set_destination(logical(width), logical(height));
+                icon.viewport = Some(viewport);
+            }
+        } else {
+            surface.set_buffer_scale(multiple as i32);
+        }
+        if let Err(e) = buffer.attach_to(surface) {
+            log::warn!("cannot attach the drag icon: {e}");
+            return icon;
+        }
+        let (x, y) = DRAG_ICON_OFFSET;
+        if surface.version() >= 5 {
+            surface.offset(x, y);
+        } else {
+            surface.attach(Some(buffer.wl_buffer()), x, y);
+        }
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+        icon.buffer = Some((buffer, pool));
+        icon
     }
 
     /// Opens another window in the current directory of the program in
@@ -3377,6 +3449,67 @@ struct CtrlPress {
 /// How far, in logical pixels, the pointer moves before a press is a drag.
 const DRAG_THRESHOLD: f64 = 4.0;
 
+/// Where the icon of a drag sits from the pointer's hotspot, and the room
+/// around its text, in logical pixels.
+const DRAG_ICON_OFFSET: (i32, i32) = (14, 14);
+const DRAG_ICON_PADDING: f64 = 6.0;
+
+/// How many columns of a name a drag icon shows.
+const DRAG_LABEL_COLUMNS: usize = 40;
+
+/// A file or directory being dragged out.
+struct DragOut {
+    source: DragSource,
+    path: PathBuf,
+    /// Only kept until the drag ends, which destroys it.
+    _icon: DragIcon,
+}
+
+/// The surface following the pointer during a drag, and what it shows
+/// (`None` if it couldn't be drawn).
+struct DragIcon {
+    surface: WlSurface,
+    viewport: Option<WpViewport>,
+    buffer: Option<(Buffer, SlotPool)>,
+}
+
+impl Drop for DragIcon {
+    fn drop(&mut self) {
+        if let Some(viewport) = &self.viewport {
+            viewport.destroy();
+        }
+        self.surface.destroy();
+    }
+}
+
+/// What a drag icon says for `path`: its last component, with a `/` for
+/// a directory, cut to [`DRAG_LABEL_COLUMNS`] columns.
+fn drag_label(path: &Path) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let mut name = path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    if path.is_dir() && !name.ends_with('/') {
+        name.push('/');
+    }
+    if name.width() <= DRAG_LABEL_COLUMNS {
+        return name;
+    }
+    let mut cut = String::new();
+    let mut columns = 0;
+    for grapheme in name.graphemes(true) {
+        columns += grapheme.width();
+        if columns > DRAG_LABEL_COLUMNS - 1 {
+            break;
+        }
+        cut.push_str(grapheme);
+    }
+    cut.push('…');
+    cut
+}
+
 impl PointerHandler for App {
     fn pointer_frame(
         &mut self,
@@ -3827,11 +3960,11 @@ impl App {
     fn end_drag(&mut self, source: &WlDataSource) {
         if self
             .shared
-            .drag_source
+            .drag_out
             .as_ref()
-            .is_some_and(|(s, _)| s.inner() == source)
+            .is_some_and(|d| d.source.inner() == source)
         {
-            self.shared.drag_source = None;
+            self.shared.drag_out = None;
         }
     }
 }
@@ -3892,11 +4025,11 @@ impl DataSourceHandler for App {
             .filter(|(s, _)| s.inner() == source)
         {
             write_in_background(pipe, text.clone());
-        } else if let Some((_, path)) = self
+        } else if let Some(DragOut { path, .. }) = self
             .shared
-            .drag_source
+            .drag_out
             .as_ref()
-            .filter(|(s, _)| s.inner() == source)
+            .filter(|d| d.source.inner() == source)
         {
             let data = match mime.as_str() {
                 URI_LIST_MIME => format!("{}\r\n", file_uri(path)),
@@ -4072,6 +4205,20 @@ mod tests {
         assert_eq!(
             file_uri(Path::new("/home/u/a b/café#1.png")),
             "file:///home/u/a%20b/caf%C3%A9%231.png"
+        );
+    }
+
+    #[test]
+    fn drag_labels_show_the_name_cut_to_fit() {
+        assert_eq!(drag_label(Path::new("/nowhere/a b.txt")), "a b.txt");
+        assert_eq!(drag_label(Path::new("/")), "/");
+        let long = format!("/nowhere/{}.txt", "x".repeat(60));
+        let label = drag_label(Path::new(&long));
+        assert_eq!(label, format!("{}…", "x".repeat(DRAG_LABEL_COLUMNS - 1)));
+        let wide = format!("/nowhere/{}", "中".repeat(30));
+        assert_eq!(
+            drag_label(Path::new(&wide)),
+            format!("{}…", "中".repeat(19))
         );
     }
 }

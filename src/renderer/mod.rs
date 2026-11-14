@@ -7,6 +7,7 @@
 
 pub mod atlas;
 pub mod gl;
+pub mod label;
 pub mod software;
 
 use std::borrow::Cow;
@@ -82,6 +83,17 @@ impl Renderer {
             Renderer::Gpu(r) => r.draw(frame),
             Renderer::Cpu(r) => r.draw(frame),
         }
+    }
+
+    /// `text` on its own, in the window's font and default colors; see
+    /// [`label::draw`].
+    pub fn label(&mut self, text: &str, padding: u32, multiple: u32) -> label::Label {
+        let (foreground, background) = match self {
+            Renderer::Gpu(r) => (r.theme.foreground, r.theme.background),
+            Renderer::Cpu(r) => (r.theme.foreground, r.theme.background),
+        };
+        let fonts = &mut self.glyphs_mut().fonts;
+        label::draw(fonts, text, foreground, background, padding, multiple)
     }
 }
 
