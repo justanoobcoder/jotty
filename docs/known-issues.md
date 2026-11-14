@@ -196,7 +196,7 @@ nothing surprises you.
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
-  be dropped into a window. A drag carries one file, without an icon.
+  be dropped into a window. A drag carries one file.
 - The kitty graphics medium `t=s` removes the shared memory object it is
   given, whichever it is, as kitty does; `t=f` reads any regular file the
   user can read, and shows it as an image at most.

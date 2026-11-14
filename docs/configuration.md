@@ -512,12 +512,13 @@ kinds. A link opens when the button is released, unless the pointer moved.
 
 **Dragging files out.** Ctrl+press on the name of a file or directory and
 drag it into another application (a file manager, a browser's upload, a
-chat) to give it that file, as a copy. Any name in the output works, not
-just links: the whitespace-delimited word under the pointer, or the name in
-single quotes around it (as `ls` quotes names with spaces), with a trailing
-`ls -F` indicator (such as `/`, `*` or `@`) dropped if needed. A relative
-name is taken from the current directory of the program in the foreground,
-and the file must exist. A Ctrl+press elsewhere selects as usual.
+chat) to give it that file, as a copy; its name follows the pointer. Any
+name in the output works, not just links: the whitespace-delimited word
+under the pointer, or the name in single quotes around it (as `ls` quotes
+names with spaces), with a trailing `ls -F` indicator (such as `/`, `*` or
+`@`) dropped if needed. A relative name is taken from the current directory
+of the program in the foreground, and the file must exist. A Ctrl+press
+elsewhere selects as usual.
 
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
