@@ -7,6 +7,9 @@ CHANGELOG
     with the new built-in `files.audio` and `files.document` kinds
 - File kinds added in the config under new names win over the built-in
     kinds for an extension they share
+- Ctrl+drag a file or directory named in the output (such as `ls` output)
+    to drop it into another application
+- Ctrl+click opens a link when the button is released, not when pressed
 
 ## 2.2.0
 

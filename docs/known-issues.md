@@ -189,13 +189,14 @@ nothing surprises you.
 - Vi mode has motions, visual modes, yank and search, but not vim's text
   objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
   screen.
-- While a program has mouse reporting on, Ctrl+click goes to the program;
-  hold Shift as well to open a link.
+- While a program has mouse reporting on, Ctrl+click and Ctrl+drag go to
+  the program; hold Shift as well to open a link or drag a file.
 - Relative file paths are resolved in the directory the foreground program
   is in now, not where the path was printed. After a `cd`, or over SSH,
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
-- No `idle-inhibit`. Drag-and-drop is not accepted.
+- No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
+  be dropped into a window. A drag carries one file, without an icon.
 - The kitty graphics medium `t=s` removes the shared memory object it is
   given, whichever it is, as kitty does; `t=f` reads any regular file the
   user can read, and shows it as an image at most.
