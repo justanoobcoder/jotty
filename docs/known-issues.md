@@ -203,8 +203,8 @@ nothing surprises you.
   outside their sandbox.
 - wlroots-based compositors don't send the keyboard modifiers again after a
   drag, so jotty asks for the keyboard again once its own drag ends (or the
-  Ctrl of Ctrl+drag would stay held). Programs reporting focus don't see
-  this as a focus change.
+  Ctrl of Ctrl+drag would stay held). Programs that ask for focus reports
+  see the window lose and regain the focus then.
 - The kitty graphics medium `t=s` removes the shared memory object it is
   given, whichever it is, as kitty does; `t=f` reads any regular file the
   user can read, and shows it as an image at most.

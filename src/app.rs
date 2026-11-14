@@ -55,7 +55,7 @@ use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
     Keymap,
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -1914,6 +1914,20 @@ impl TermWindow {
         icon
     }
 
+    /// Loses the keyboard focus.
+    fn lose_keyboard(&mut self, shared: &mut Shared) {
+        if shared.keyboard_focus == Some(self.id) {
+            shared.keyboard_focus = None;
+        }
+        // Releases of keys pressed here go elsewhere now.
+        shared.sent_keys.clear();
+        self.focused = false;
+        if self.term.screen().modes.focus_events {
+            self.send(b"\x1b[O");
+        }
+        self.request_redraw();
+    }
+
     /// Opens another window in the current directory of the program in
     /// the foreground.
     fn new_window(&self, shared: &mut Shared) {
@@ -3326,11 +3340,9 @@ impl KeyboardHandler for App {
         };
         shared.keyboard_focus = Some(window.id);
         shared.last_serial = serial;
-        // A keyboard asked for again enters a window that already had
-        // the focus; see `renew_keyboard`.
-        let was_focused = std::mem::replace(&mut window.focused, true);
+        window.focused = true;
         window.attention_requested = false;
-        if !was_focused && window.term.screen().modes.focus_events {
+        if window.term.screen().modes.focus_events {
             window.send(b"\x1b[I");
         }
         window.request_redraw();
@@ -3344,29 +3356,22 @@ impl KeyboardHandler for App {
         surface: &WlSurface,
         _: u32,
     ) {
-        let Some((shared, window)) = self.split_by_surface(surface) else {
-            return;
-        };
-        if shared.keyboard_focus == Some(window.id) {
-            shared.keyboard_focus = None;
+        if let Some((shared, window)) = self.split_by_surface(surface) {
+            window.lose_keyboard(shared);
         }
-        // Releases of keys pressed here go elsewhere now.
-        shared.sent_keys.clear();
-        window.focused = false;
-        if window.term.screen().modes.focus_events {
-            window.send(b"\x1b[O");
-        }
-        window.request_redraw();
     }
 
     fn press_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         serial: u32,
         event: KeyEvent,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         self.shared.last_serial = serial;
         self.key(event, KeyAction::Press);
     }
@@ -3386,10 +3391,13 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         if let Some((shared, window)) = self.split_focused() {
             window.release(shared, event);
         }
@@ -3399,12 +3407,15 @@ impl KeyboardHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlKeyboard,
+        keyboard: &WlKeyboard,
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
         layout: u32,
     ) {
+        if !self.shared.is_current_keyboard(keyboard) {
+            return;
+        }
         let shared = &mut self.shared;
         shared.modifiers = modifiers;
         shared.layout = layout;
@@ -3967,8 +3978,43 @@ impl App {
             .is_some_and(|d| d.source.inner() == source)
         {
             self.shared.drag_out = None;
-            self.shared.renew_keyboard();
+            self.renew_keyboard();
         }
+    }
+
+    /// Asks for the keyboard again, after a drag. The compositor has the
+    /// keyboard during a drag, and wlroots-based ones don't send the
+    /// modifiers again once it ends: the Ctrl that started a Ctrl+drag
+    /// would stay held for good. A new keyboard gets the keymap, the
+    /// focus and the modifiers as they are now.
+    fn renew_keyboard(&mut self) {
+        let shared = &mut self.shared;
+        // `release` needs version 3; an older keyboard is kept.
+        let Some(seat) = shared
+            .keyboard
+            .as_ref()
+            .filter(|k| k.version() >= 3)
+            .and_then(|k| k.data::<KeyboardData<App, ()>>())
+            .map(|data| data.seat().clone())
+        else {
+            return;
+        };
+        if let Some(old) = shared.keyboard.take() {
+            old.release();
+        }
+        shared.modifiers = Modifiers::default();
+        // No leave comes for a released keyboard. The new one enters the
+        // window that has the focus now, which the drop may have moved.
+        if let Some((shared, window)) = self.split_focused() {
+            window.lose_keyboard(shared);
+        }
+        self.shared.sent_keys.clear();
+        // Without Ctrl, no link stays underlined.
+        let shared = &mut self.shared;
+        for window in &mut self.windows {
+            window.update_hovered_link(shared);
+        }
+        shared.bind_keyboard(&seat);
     }
 }
 
@@ -3980,7 +4026,12 @@ impl Shared {
             seat,
             None,
             self.loop_handle.clone(),
-            Box::new(|app, _, event| app.key(event, KeyAction::Repeat)),
+            // A released keyboard's repeat timer may still fire.
+            Box::new(|app, keyboard, event| {
+                if app.shared.is_current_keyboard(keyboard) {
+                    app.key(event, KeyAction::Repeat);
+                }
+            }),
         );
         match keyboard {
             Ok(keyboard) => self.keyboard = Some(keyboard),
@@ -3988,23 +4039,10 @@ impl Shared {
         }
     }
 
-    /// Asks for the keyboard again, after a drag. The compositor has the
-    /// keyboard during a drag, and wlroots-based ones don't send the
-    /// modifiers again once it ends: the Ctrl that started a Ctrl+drag
-    /// would stay held for good. A new keyboard gets the keymap, the
-    /// focus and the modifiers as they are now.
-    fn renew_keyboard(&mut self) {
-        let Some(old) = self.keyboard.take() else {
-            return;
-        };
-        old.release();
-        // Releases of keys pressed before can't come any more.
-        self.sent_keys.clear();
-        self.modifiers = Modifiers::default();
-        match self.seat_state.seats().next() {
-            Some(seat) => self.bind_keyboard(&seat),
-            None => log::warn!("no seat to ask for the keyboard again"),
-        }
+    /// Whether events of `keyboard` are to be handled: not those of a
+    /// keyboard released by `renew_keyboard`, still queued.
+    fn is_current_keyboard(&self, keyboard: &WlKeyboard) -> bool {
+        self.keyboard.as_ref() == Some(keyboard)
     }
 }
 
