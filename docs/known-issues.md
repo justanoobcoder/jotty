@@ -197,6 +197,10 @@ nothing surprises you.
   link).
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
   be dropped into a window. A drag carries one file.
+- A dragged file is offered as a `file://` URI only, not through the
+  document portal (`application/vnd.portal.filetransfer`). Sandboxed
+  applications, such as Flatpaks, may not be able to read it when it lies
+  outside their sandbox.
 - wlroots-based compositors don't send the keyboard modifiers again after a
   drag, so jotty asks for the keyboard again once its own drag ends (or the
   Ctrl of Ctrl+drag would stay held). Programs reporting focus don't see
