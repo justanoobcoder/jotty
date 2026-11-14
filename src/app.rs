@@ -1192,6 +1192,15 @@ impl TermWindow {
                     self.shift_mark = None;
                 }
             }
+            // The start of a Ctrl+right sweep follows its text, as the
+            // selection showing the sweep does.
+            if let Some(sweep) = &mut self.mark_sweep {
+                sweep.line -= delta;
+                if !same_buffer || screen.row_at(sweep.line).is_none() {
+                    self.mark_sweep = None;
+                    self.selection = None;
+                }
+            }
             self.request_redraw();
         }
     }
@@ -1838,6 +1847,10 @@ impl TermWindow {
     /// pointer moved to `end`, every one named in between.
     fn mark_files(&mut self, start: Point, end: Point) {
         if start == end {
+            // A mark is unmarked even when its file is gone.
+            if self.file_marks.remove_at(start) {
+                return;
+            }
             if let Some(found) = self.path_at(start) {
                 self.file_marks.toggle(FileMark {
                     start: found.start,
@@ -1866,8 +1879,16 @@ impl TermWindow {
 
     /// Drags `paths` out of the window, for another application to drop
     /// (as a copy). `serial` is that of the press that started it.
-    /// `paths` aren't empty; `label` says what follows the pointer.
-    fn start_drag(&mut self, shared: &mut Shared, paths: Vec<PathBuf>, label: &str, serial: u32) {
+    /// `paths` aren't empty; `label` says what follows the pointer, and
+    /// `marks` whether they are the window's marks.
+    fn start_drag(
+        &mut self,
+        shared: &mut Shared,
+        paths: Vec<PathBuf>,
+        marks: bool,
+        label: &str,
+        serial: u32,
+    ) {
         let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
         else {
             log::warn!("cannot drag (wl_data_device_manager missing)");
@@ -1906,6 +1927,7 @@ impl TermWindow {
             source,
             paths,
             window: self.id,
+            marks,
             _icon: icon,
         });
     }
@@ -1924,7 +1946,7 @@ impl TermWindow {
         }
         let paths: Vec<PathBuf> = self.file_marks.paths().map(Path::to_path_buf).collect();
         let label = marks_label(&paths[0], first_is_dir, paths.len());
-        self.start_drag(shared, paths, &label, serial);
+        self.start_drag(shared, paths, /* marks= */ true, &label, serial);
     }
 
     /// Shows `text` on `surface`, the icon of a drag, in the window's font
@@ -3549,8 +3571,10 @@ const DRAG_LABEL_COLUMNS: usize = 40;
 struct DragOut {
     source: DragSource,
     paths: Vec<PathBuf>,
-    /// The window it started in, whose marks a drop clears.
+    /// The window it started in.
     window: WindowId,
+    /// The window's marks are dragged, which a drop clears.
+    marks: bool,
     /// Only kept until the drag ends, which destroys it.
     _icon: DragIcon,
 }
@@ -3680,7 +3704,13 @@ impl TermWindow {
                     } else if let Some(found) = self.path_at(point) {
                         let (path, is_dir) = found.value;
                         let label = drag_label(&path, is_dir);
-                        self.start_drag(shared, vec![path], &label, press.serial);
+                        self.start_drag(
+                            shared,
+                            vec![path],
+                            /* marks= */ false,
+                            &label,
+                            press.serial,
+                        );
                     }
                 }
             }
@@ -4090,14 +4120,16 @@ fn write_with_timeout<W: Write + AsRawFd>(
 }
 
 impl App {
-    /// Forgets the drag of `source`, once dropped or cancelled.
     /// Forgets the drag of `source`, once dropped (`finished`, which clears
-    /// the marks that were dragged) or cancelled.
+    /// the marks if they were what was dragged) or cancelled.
     fn end_drag(&mut self, source: &WlDataSource, finished: bool) {
         let Some(drag) = self.shared.drag_out.take_if(|d| d.source.inner() == source) else {
             return;
         };
-        if finished && let Some(window) = self.window_mut(drag.window) {
+        if finished
+            && drag.marks
+            && let Some(window) = self.window_mut(drag.window)
+        {
             window.file_marks.clear();
             window.request_redraw();
         }

@@ -59,6 +59,18 @@ impl FileMarks {
         }
     }
 
+    /// Unmarks the mark covering `point`, if there is one.
+    pub fn remove_at(&mut self, point: Point) -> bool {
+        let after = self.marks.partition_point(|m| m.start <= point);
+        match after.checked_sub(1) {
+            Some(i) if self.marks[i].end >= point => {
+                self.marks.remove(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Marks `mark`, unless it overlaps a mark already there.
     pub fn add(&mut self, mark: FileMark) {
         let i = self.marks.partition_point(|m| m.start < mark.start);
@@ -142,6 +154,15 @@ mod tests {
         );
         marks.toggle(mark(p(0, 0), p(0, 2), "a"));
         assert_eq!(marks.paths().collect::<Vec<_>>(), [Path::new("b")]);
+    }
+
+    #[test]
+    fn removes_the_mark_at_a_point() {
+        let mut marks = FileMarks::default();
+        marks.add(mark(p(0, 2), p(0, 4), "a"));
+        assert!(!marks.remove_at(p(0, 5)));
+        assert!(marks.remove_at(p(0, 3)));
+        assert!(marks.is_empty());
     }
 
     #[test]

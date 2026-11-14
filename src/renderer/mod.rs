@@ -182,7 +182,7 @@ pub struct Theme {
     pub selection_foreground: Option<Rgb>,
     pub selection_background: Option<Rgb>,
     /// Colors of files marked for dragging; the background defaults to
-    /// palette blue, the text to the cell's own.
+    /// palette blue, the text to the default background.
     pub mark_foreground: Option<Rgb>,
     pub mark_background: Option<Rgb>,
     pub palette: [Rgb; 16],
@@ -304,7 +304,9 @@ impl Theme {
                 bg = self.selection_background.unwrap_or(inverse_bg);
             }
             Highlight::Marked => {
-                fg = self.mark_foreground.unwrap_or(fg);
+                // The background reads on palette blue, where text often
+                // is blue itself (directories in `ls`).
+                fg = self.mark_foreground.unwrap_or(self.background);
                 bg = self.mark_background.unwrap_or_else(|| self.indexed(4));
             }
         }

@@ -2,12 +2,13 @@
 //! paths of files such as images, videos, audio files and documents
 //! recognized in the text. Ctrl+click opens them.
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use regex::Regex;
 
 use crate::selection::Point;
-use crate::terminal::Screen;
+use crate::terminal::{Flags, Screen};
 use crate::text::LineText;
 
 /// URLs with a scheme, `mailto:` addresses and magnet links. They end at
@@ -230,12 +231,17 @@ pub fn path_at<T>(
     let line = LineText::around(screen, at, LINK_REACH)?;
     let offset = line.cells[line.index_of(at)?].offset;
     let name = names(&line.text).find(|n| n.span.contains(&offset))?;
-    found(&line, &name, &resolve)
+    found(screen, &line, &name, &resolve).or_else(|| {
+        // Quotes around more than a name, as in a sentence.
+        let word = words(&line.text, name.quoted()?).find(|w| w.span.contains(&offset))?;
+        found(screen, &line, &word, &resolve)
+    })
 }
 
 /// Every file or directory named in `start..=end`, for marking them: the
 /// names (as [`path_at`] finds them) that overlap the range, in order, and
-/// at most `limit` of them.
+/// at most `limit` of them. Resolving names may touch the file system, so
+/// at most [`MAX_NAMES_TRIED`] are tried.
 pub fn paths_in<T>(
     screen: &Screen,
     start: Point,
@@ -243,9 +249,14 @@ pub fn paths_in<T>(
     limit: usize,
     resolve: impl Fn(&str) -> Option<T>,
 ) -> Vec<Found<T>> {
+    let tried = Cell::new(0usize);
+    let resolve = |name: &str| {
+        tried.set(tried.get() + 1);
+        resolve(name)
+    };
     let mut paths = Vec::new();
     let mut line = start.line;
-    while line <= end.line && paths.len() < limit {
+    while line <= end.line && paths.len() < limit && tried.get() < MAX_NAMES_TRIED {
         // The rest of a logical line wrapped over the range is read at
         // most to its end.
         let reach = end.line - line + 1;
@@ -253,19 +264,26 @@ pub fn paths_in<T>(
             line += 1;
             continue;
         };
-        for name in names(&text.text) {
-            let (first, last) = (
-                text.point_at(name.span.start),
-                text.point_before(name.span.end),
-            );
-            if last < start || first > end {
+        let in_range = |name: &Name| {
+            text.point_before(name.span.end) >= start && text.point_at(name.span.start) <= end
+        };
+        for name in names(&text.text).filter(in_range) {
+            if paths.len() == limit || tried.get() >= MAX_NAMES_TRIED {
+                break;
+            }
+            if let Some(found) = found(screen, &text, &name, &resolve) {
+                paths.push(found);
                 continue;
             }
-            if let Some(found) = found(&text, &name, &resolve) {
-                paths.push(found);
-                if paths.len() == limit {
+            // Quotes around more than a name, as in a sentence.
+            let Some(quoted) = name.quoted() else {
+                continue;
+            };
+            for word in words(&text.text, quoted).filter(in_range) {
+                if paths.len() == limit || tried.get() >= MAX_NAMES_TRIED {
                     break;
                 }
+                paths.extend(found(screen, &text, &word, &resolve));
             }
         }
         line = text.last + 1;
@@ -273,11 +291,47 @@ pub fn paths_in<T>(
     paths
 }
 
+/// How many names [`paths_in`] tries at most.
+const MAX_NAMES_TRIED: usize = 10_000;
+
 /// A name in the text: its byte range, quotes included, and the name's
 /// own range within it.
 struct Name {
     span: Range<usize>,
     name: Range<usize>,
+}
+
+impl Name {
+    /// The span, if the name is in quotes.
+    fn quoted(&self) -> Option<Range<usize>> {
+        (self.span != self.name).then(|| self.span.clone())
+    }
+}
+
+/// The runs without whitespace in `span` of `text`, without quotes at
+/// their ends.
+fn words(text: &str, span: Range<usize>) -> impl Iterator<Item = Name> + '_ {
+    let mut at = span.start;
+    std::iter::from_fn(move || {
+        loop {
+            let start = at + text[at..span.end].find(|c: char| !c.is_whitespace())?;
+            let end = text[start..span.end]
+                .find(char::is_whitespace)
+                .map_or(span.end, |i| start + i);
+            at = end;
+            // Without the quotes that ended up in the first and last words.
+            let word = &text[start..end];
+            let trimmed = word.trim_start_matches(['\'', '"']);
+            let start = start + (word.len() - trimmed.len());
+            let end = start + trimmed.trim_end_matches(['\'', '"']).len();
+            if start < end {
+                return Some(Name {
+                    span: start..end,
+                    name: start..end,
+                });
+            }
+        }
+    })
 }
 
 /// The names in `text`, left to right: runs in single or double quotes
@@ -317,6 +371,7 @@ fn names(text: &str) -> impl Iterator<Item = Name> + '_ {
 /// `name` from `line` resolved, with the cells it covers. A trailing
 /// `ls -F` indicator is dropped when the name with it doesn't resolve.
 fn found<T>(
+    screen: &Screen,
     line: &LineText,
     name: &Name,
     resolve: &impl Fn(&str) -> Option<T>,
@@ -326,9 +381,18 @@ fn found<T>(
         let bare = text.strip_suffix(['/', '*', '@', '=', '|'])?;
         (!bare.is_empty()).then(|| resolve(bare)).flatten()
     })?;
+    let mut end = line.point_before(name.span.end);
+    // A wide character ends in its second cell.
+    if screen
+        .row_at(end.line)
+        .and_then(|row| row.cells().get(end.col))
+        .is_some_and(|cell| cell.flags.contains(Flags::WIDE))
+    {
+        end.col += 1;
+    }
     Some(Found {
         start: line.point_at(name.span.start),
-        end: line.point_before(name.span.end),
+        end,
         value,
     })
 }
@@ -582,5 +646,51 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].value, PathBuf::from("/home/u/bbbbbbb.rs"));
         assert_eq!((found[0].start, found[0].end), (p(0, 8), p(1, 7)));
+    }
+
+    #[test]
+    fn names_end_in_the_second_cell_of_a_wide_character() {
+        let mut t = Terminal::new(20, 1, 0);
+        t.feed("x 中文 y".as_bytes());
+        let names = ["中文"];
+        let found = path_at(t.screen(), p(0, 5), only(&names)).unwrap();
+        assert_eq!((found.start, found.end), (p(0, 2), p(0, 5)));
+    }
+
+    #[test]
+    fn words_in_quotes_that_name_nothing_are_tried_alone() {
+        let mut t = Terminal::new(40, 1, 0);
+        t.feed(b"\"see a.txt and b.txt\"");
+        let names = ["a.txt", "b.txt"];
+        let found = path_at(t.screen(), p(0, 7), only(&names)).unwrap();
+        assert_eq!(found.value, PathBuf::from("/home/u/a.txt"));
+        assert_eq!((found.start, found.end), (p(0, 5), p(0, 9)));
+        let all: Vec<PathBuf> = paths_in(t.screen(), p(0, 0), p(0, 39), 100, only(&names))
+            .into_iter()
+            .map(|f| f.value)
+            .collect();
+        assert_eq!(
+            all,
+            [
+                PathBuf::from("/home/u/a.txt"),
+                PathBuf::from("/home/u/b.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn sweeps_try_a_bounded_number_of_names() {
+        let mut t = Terminal::new(10, 2000, 0);
+        for _ in 0..1999 {
+            t.feed(b"a b c d e\r\n");
+        }
+        let tried = Cell::new(0);
+        let found = paths_in(t.screen(), p(0, 0), p(1999, 9), 100, |_| {
+            tried.set(tried.get() + 1);
+            None::<()>
+        });
+        assert!(found.is_empty());
+        // Each name is tried bare and without an `ls -F` indicator at most.
+        assert!(tried.get() <= 2 * MAX_NAMES_TRIED, "tried {}", tried.get());
     }
 }

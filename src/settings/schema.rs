@@ -275,7 +275,7 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "colors",
             "mark_foreground",
             OptColor,
-            "Text of files marked for dragging; empty means the cell's own.",
+            "Text of files marked for dragging; empty means the background color.",
         ),
         (
             "colors",

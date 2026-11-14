@@ -302,7 +302,8 @@ pub struct ColorConfig {
     /// Background of selected cells; defaults to the cell's foreground.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_background: Option<Rgb>,
-    /// Text color of files marked for dragging; defaults to the cell's own.
+    /// Text color of files marked for dragging; defaults to the background
+    /// color.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mark_foreground: Option<Rgb>,
     /// Background of files marked for dragging; defaults to palette blue.
