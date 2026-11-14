@@ -2,8 +2,6 @@
 //! paths of files such as images, videos, audio files and documents
 //! recognized in the text. Ctrl+click opens them.
 
-use std::path::PathBuf;
-
 use regex::Regex;
 
 use crate::selection::Point;
@@ -210,14 +208,10 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
 /// The path of the file or directory named at `at`, for dragging it out:
 /// the name in single quotes around it (as `ls` quotes names with spaces),
 /// or else the word around it, delimited by whitespace. `resolve` turns a
-/// name from the text into the path of an existing file or directory, or
-/// `None`. A trailing `ls -F` indicator is dropped when the name with it
+/// name from the text into an existing file or directory (its path, and
+/// whatever else the caller needs), or `None`. A trailing `ls -F` indicator is dropped when the name with it
 /// doesn't exist.
-pub fn path_at(
-    screen: &Screen,
-    at: Point,
-    resolve: impl Fn(&str) -> Option<PathBuf>,
-) -> Option<PathBuf> {
+pub fn path_at<T>(screen: &Screen, at: Point, resolve: impl Fn(&str) -> Option<T>) -> Option<T> {
     let line = LineText::around(screen, at, LINK_REACH)?;
     let offset = line.cells[line.index_of(at)?].offset;
     let text = line.text.as_str();
@@ -264,6 +258,8 @@ pub fn is_openable(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]

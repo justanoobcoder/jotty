@@ -1789,7 +1789,8 @@ impl TermWindow {
     /// The existing file or directory named at `position`, with a relative
     /// name taken from the current directory of the program in the
     /// foreground.
-    fn path_at(&self, position: (f64, f64)) -> Option<PathBuf> {
+    /// Also says whether it is a directory.
+    fn path_at(&self, position: (f64, f64)) -> Option<(PathBuf, bool)> {
         let cwd = OnceCell::new();
         let resolve = |text: &str| {
             let path = expand_home(text)?;
@@ -1803,14 +1804,15 @@ impl TermWindow {
             // Without `.` components or a trailing `/`, which some
             // applications don't take in a URI.
             let path: PathBuf = path.components().collect();
-            path.exists().then_some(path)
+            let is_dir = std::fs::metadata(&path).ok()?.is_dir();
+            Some((path, is_dir))
         };
         links::path_at(self.term.screen(), self.point_at(position), resolve)
     }
 
     /// Drags `path` out of the window, for another application to drop
     /// (as a copy). `serial` is that of the press that started it.
-    fn start_drag(&mut self, shared: &mut Shared, path: PathBuf, serial: u32) {
+    fn start_drag(&mut self, shared: &mut Shared, path: PathBuf, is_dir: bool, serial: u32) {
         let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
         else {
             log::warn!("cannot drag (wl_data_device_manager missing)");
@@ -1840,7 +1842,7 @@ impl TermWindow {
         let icon = shared.compositor.create_surface(&self.qh);
         source.start_drag(device, self.window.wl_surface(), Some(&icon), serial);
         log::info!("dragging {}", path.display());
-        let icon = self.draw_drag_icon(shared, icon, &path);
+        let icon = self.draw_drag_icon(shared, icon, &drag_label(&path, is_dir));
         shared.drag_out = Some(DragOut {
             source,
             path,
@@ -1848,9 +1850,9 @@ impl TermWindow {
         });
     }
 
-    /// Shows the name of `path` on `surface`, the icon of a drag, in the
-    /// window's font and colors, below and right of the pointer.
-    fn draw_drag_icon(&mut self, shared: &Shared, surface: WlSurface, path: &Path) -> DragIcon {
+    /// Shows `text` on `surface`, the icon of a drag, in the window's font
+    /// and colors, below and right of the pointer.
+    fn draw_drag_icon(&mut self, shared: &Shared, surface: WlSurface, text: &str) -> DragIcon {
         let mut icon = DragIcon {
             surface,
             viewport: None,
@@ -1865,7 +1867,7 @@ impl TermWindow {
             (self.scale as u32).max(1)
         };
         let padding = (DRAG_ICON_PADDING * self.scale).round() as u32;
-        let label = self.renderer.label(&drag_label(path), padding, multiple);
+        let label = self.renderer.label(text, padding, multiple);
         let (width, height) = (label.width as i32, label.height as i32);
         let drawn = SlotPool::new(label.pixels.len(), &shared.shm)
             .map_err(|e| e.to_string())
@@ -3483,24 +3485,30 @@ impl Drop for DragIcon {
 }
 
 /// What a drag icon says for `path`: its last component, with a `/` for
-/// a directory, cut to [`DRAG_LABEL_COLUMNS`] columns.
-fn drag_label(path: &Path) -> String {
+/// a directory, cut to [`DRAG_LABEL_COLUMNS`] columns. Control characters
+/// show as `?`.
+fn drag_label(path: &Path, is_dir: bool) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
-    let mut name = path.file_name().map_or_else(
-        || path.to_string_lossy().into_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    if path.is_dir() && !name.ends_with('/') {
+    let mut name: String = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if is_dir && !name.ends_with('/') {
         name.push('/');
     }
-    if name.width() <= DRAG_LABEL_COLUMNS {
+    // As the label draws them: every cluster takes at least a cell.
+    let width = |g: &str| g.width().max(1);
+    if name.graphemes(true).map(width).sum::<usize>() <= DRAG_LABEL_COLUMNS {
         return name;
     }
     let mut cut = String::new();
     let mut columns = 0;
     for grapheme in name.graphemes(true) {
-        columns += grapheme.width();
+        columns += width(grapheme);
         if columns > DRAG_LABEL_COLUMNS - 1 {
             break;
         }
@@ -3568,8 +3576,8 @@ impl TermWindow {
                 // a drag: it may be slow (a network mount).
                 if dx.hypot(dy) >= DRAG_THRESHOLD {
                     let press = self.ctrl_press.take().expect("checked by the match guard");
-                    if let Some(path) = self.path_at(press.position) {
-                        self.start_drag(shared, path, press.serial);
+                    if let Some((path, is_dir)) = self.path_at(press.position) {
+                        self.start_drag(shared, path, is_dir, press.serial);
                     }
                 }
             }
@@ -4210,15 +4218,17 @@ mod tests {
 
     #[test]
     fn drag_labels_show_the_name_cut_to_fit() {
-        assert_eq!(drag_label(Path::new("/nowhere/a b.txt")), "a b.txt");
-        assert_eq!(drag_label(Path::new("/")), "/");
+        let label = |path: &str, is_dir| drag_label(Path::new(path), is_dir);
+        assert_eq!(label("/nowhere/a b.txt", false), "a b.txt");
+        assert_eq!(label("/nowhere/src", true), "src/");
+        assert_eq!(label("/", true), "/");
+        assert_eq!(label("/nowhere/a\nb\x1b", false), "a?b?");
         let long = format!("/nowhere/{}.txt", "x".repeat(60));
-        let label = drag_label(Path::new(&long));
-        assert_eq!(label, format!("{}…", "x".repeat(DRAG_LABEL_COLUMNS - 1)));
-        let wide = format!("/nowhere/{}", "中".repeat(30));
         assert_eq!(
-            drag_label(Path::new(&wide)),
-            format!("{}…", "中".repeat(19))
+            label(&long, false),
+            format!("{}…", "x".repeat(DRAG_LABEL_COLUMNS - 1))
         );
+        let wide = format!("/nowhere/{}", "中".repeat(30));
+        assert_eq!(label(&wide, false), format!("{}…", "中".repeat(19)));
     }
 }
