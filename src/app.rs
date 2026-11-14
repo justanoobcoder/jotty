@@ -24,7 +24,7 @@ use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::cl
 use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
 use smithay_client_toolkit::data_device_manager::data_source::{
-    CopyPasteSource, DataSourceHandler,
+    CopyPasteSource, DataSourceHandler, DragSource,
 };
 use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
 use smithay_client_toolkit::activation::{ActivationHandler, ActivationState, RequestData};
@@ -94,7 +94,7 @@ use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::instance::{self, Client, DecodeError, Received, Reply, Server};
 use crate::keybinds::{Action, Wheel};
-use crate::links::{Detector, Link};
+use crate::links::{self, Detector, Link};
 use crate::notify::{self, Bus, RateLimit};
 use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
@@ -330,6 +330,8 @@ pub struct Shared {
     pointer: Option<ThemedPointer>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, String)>,
+    /// A file or directory being dragged out, until the drop is done.
+    drag_source: Option<(DragSource, PathBuf)>,
     /// The primary selection: set by selecting text, pasted by middle click.
     primary_device: Option<PrimarySelectionDevice>,
     primary_source: Option<(PrimarySelectionSource, String)>,
@@ -430,6 +432,10 @@ pub struct TermWindow {
     /// Time, cell and count (1-3) of the last left click, to detect double
     /// and triple clicks.
     last_click: Option<(u32, Point, u8)>,
+    /// The current left press was a Ctrl+press: on a file or directory it
+    /// becomes a drag once the pointer moves, on a link it opens it unless
+    /// the pointer moves.
+    ctrl_press: Option<CtrlPress>,
 
     /// The seat's text input, while the input method works in this window.
     text_input: Option<ZwpTextInputV3>,
@@ -535,6 +541,7 @@ pub fn run(
             pointer: None,
             data_device: None,
             copy_source: None,
+            drag_source: None,
             primary_device: None,
             primary_source: None,
             text_input: None,
@@ -765,6 +772,7 @@ impl TermWindow {
             pointer_inside: false,
             frame_cursor: None,
             last_click: None,
+            ctrl_press: None,
             shift_mark: None,
             shift_press: false,
             text_input: None,
@@ -1726,10 +1734,7 @@ impl TermWindow {
             // checked once, not on every pointer move and pty read.
             let cache = RefCell::new(self.resolved_path.take());
             let resolve = |text: &str| {
-                let path = match text.strip_prefix("~/") {
-                    Some(rest) => std::env::home_dir()?.join(rest),
-                    None => Path::new(text).to_path_buf(),
-                };
+                let path = expand_home(text)?;
                 let dir = if path.is_relative() {
                     cwd.get_or_init(|| self.pty.foreground_cwd()).clone()
                 } else {
@@ -1777,6 +1782,44 @@ impl TermWindow {
         }
         self.hovered_link = link;
         self.request_redraw();
+    }
+
+    /// The existing file or directory named at `position`, with a relative
+    /// name taken from the current directory of the program in the
+    /// foreground.
+    fn path_at(&self, position: (f64, f64)) -> Option<PathBuf> {
+        let cwd = OnceCell::new();
+        let resolve = |text: &str| {
+            let path = expand_home(text)?;
+            let path = if path.is_relative() {
+                cwd.get_or_init(|| self.pty.foreground_cwd())
+                    .as_ref()?
+                    .join(path)
+            } else {
+                path
+            };
+            path.exists().then_some(path)
+        };
+        links::path_at(self.term.screen(), self.point_at(position), resolve)
+    }
+
+    /// Drags `path` out of the window, for another application to drop
+    /// (as a copy). `serial` is that of the press that started it.
+    fn start_drag(&mut self, shared: &mut Shared, path: PathBuf, serial: u32) {
+        let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
+        else {
+            log::warn!("cannot drag (wl_data_device_manager missing)");
+            return;
+        };
+        // The press started no selection that the drag should leave behind.
+        self.selection = None;
+        self.selecting = false;
+        self.shift_press = false;
+        self.request_redraw();
+        let source = manager.create_drag_and_drop_source(&self.qh, DRAG_MIMES, DndAction::Copy);
+        source.start_drag(device, self.window.wl_surface(), None, serial);
+        log::info!("dragging {}", path.display());
+        shared.drag_source = Some((source, path));
     }
 
     /// Opens another window in the current directory of the program in
@@ -3307,6 +3350,19 @@ impl KeyboardHandler for App {
     }
 }
 
+/// A Ctrl+press that may become a drag; see [`TermWindow::ctrl_press`].
+struct CtrlPress {
+    /// The file or directory under the pointer.
+    path: Option<PathBuf>,
+    /// The link to open on release.
+    link: Option<Link>,
+    serial: u32,
+    position: (f64, f64),
+}
+
+/// How far, in logical pixels, the pointer moves before a press is a drag.
+const DRAG_THRESHOLD: f64 = 4.0;
+
 impl PointerHandler for App {
     fn pointer_frame(
         &mut self,
@@ -3351,6 +3407,22 @@ impl TermWindow {
             PointerEventKind::Leave { .. } => {
                 self.pointer_inside = false;
                 self.update_hovered_link(shared);
+            }
+            PointerEventKind::Motion { .. } if self.ctrl_press.is_some() => {
+                let press = self
+                    .ctrl_press
+                    .as_ref()
+                    .expect("checked by the match guard");
+                let (dx, dy) = (
+                    event.position.0 - press.position.0,
+                    event.position.1 - press.position.1,
+                );
+                if dx.hypot(dy) >= DRAG_THRESHOLD {
+                    let press = self.ctrl_press.take().expect("checked by the match guard");
+                    if let Some(path) = press.path {
+                        self.start_drag(shared, path, press.serial);
+                    }
+                }
             }
             // A drag that started as a selection stays one, even if
             // Shift goes up on the way.
@@ -3410,9 +3482,12 @@ impl TermWindow {
                     .last_link_click
                     .is_some_and(|last| time.wrapping_sub(last) <= DOUBLE_CLICK_MS);
                 self.last_link_click = Some(*time);
-                if !again && let Some(link) = &self.hovered_link {
-                    self.open_link(link);
-                }
+                self.ctrl_press = Some(CtrlPress {
+                    path: self.path_at(event.position),
+                    link: self.hovered_link.clone().filter(|_| !again),
+                    serial: *serial,
+                    position: event.position,
+                });
             }
             // The second Shift+click: select from the marked cell.
             PointerEventKind::Press {
@@ -3464,11 +3539,25 @@ impl TermWindow {
                 };
                 self.selection = Some(selection.unwrap_or_else(|| Selection::new(point)));
                 self.selecting = true;
+                self.ctrl_press = shared
+                    .modifiers
+                    .ctrl
+                    .then(|| self.path_at(event.position))
+                    .flatten()
+                    .map(|path| CtrlPress {
+                        path: Some(path),
+                        link: None,
+                        serial: *serial,
+                        position: event.position,
+                    });
                 self.request_redraw();
             }
             PointerEventKind::Release {
                 button: BTN_LEFT, ..
             } => {
+                if let Some(link) = self.ctrl_press.take().and_then(|press| press.link) {
+                    self.open_link(&link);
+                }
                 self.selecting = false;
                 if let Some(selection) = self.selection.filter(|s| s.is_empty()) {
                     self.selection = None;
@@ -3722,6 +3811,46 @@ fn write_with_timeout<W: Write + AsRawFd>(
     Ok(())
 }
 
+impl App {
+    /// Forgets the drag of `source`, once dropped or cancelled.
+    fn end_drag(&mut self, source: &WlDataSource) {
+        if self
+            .shared
+            .drag_source
+            .as_ref()
+            .is_some_and(|(s, _)| s.inner() == source)
+        {
+            self.shared.drag_source = None;
+        }
+    }
+}
+
+/// What a dragged file or directory is offered as.
+const URI_LIST_MIME: &str = "text/uri-list";
+const DRAG_MIMES: [&str; 2] = [URI_LIST_MIME, "text/plain;charset=utf-8"];
+
+/// `path`, which is absolute, as a `file://` URI.
+fn file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
+}
+
+/// `text` as a path, with a leading `~/` replaced by the home directory.
+fn expand_home(text: &str) -> Option<PathBuf> {
+    match text.strip_prefix("~/") {
+        Some(rest) => Some(std::env::home_dir()?.join(rest)),
+        None => Some(PathBuf::from(text)),
+    }
+}
+
 impl DataSourceHandler for App {
     fn accept_mime(
         &mut self,
@@ -3737,7 +3866,7 @@ impl DataSourceHandler for App {
         _: &Connection,
         _: &QueueHandle<Self>,
         source: &WlDataSource,
-        _: String,
+        mime: String,
         pipe: WritePipe,
     ) {
         if let Some((_, text)) = self
@@ -3747,10 +3876,23 @@ impl DataSourceHandler for App {
             .filter(|(s, _)| s.inner() == source)
         {
             write_in_background(pipe, text.clone());
+        } else if let Some((_, path)) = self
+            .shared
+            .drag_source
+            .as_ref()
+            .filter(|(s, _)| s.inner() == source)
+        {
+            let data = if mime == URI_LIST_MIME {
+                format!("{}\r\n", file_uri(path))
+            } else {
+                path.to_string_lossy().into_owned()
+            };
+            write_in_background(pipe, data);
         }
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source);
         if self
             .shared
             .copy_source
@@ -3763,7 +3905,9 @@ impl DataSourceHandler for App {
 
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source);
+    }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
@@ -3905,5 +4049,13 @@ mod tests {
         assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
         // Killed by SIGTERM.
         assert_eq!(exit_code(ExitStatus::from_raw(15)), 143);
+    }
+
+    #[test]
+    fn file_uris_escape_reserved_bytes() {
+        assert_eq!(
+            file_uri(Path::new("/home/u/a b/café#1.png")),
+            "file:///home/u/a%20b/caf%C3%A9%231.png"
+        );
     }
 }

@@ -2,6 +2,8 @@
 //! paths of files such as images, videos, audio files and documents
 //! recognized in the text. Ctrl+click opens them.
 
+use std::path::PathBuf;
+
 use regex::Regex;
 
 use crate::selection::Point;
@@ -205,6 +207,49 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
     })
 }
 
+/// The path of the file or directory named at `at`, for dragging it out:
+/// the name in single quotes around it (as `ls` quotes names with spaces),
+/// or else the word around it, delimited by whitespace. `resolve` turns a
+/// name from the text into the path of an existing file or directory, or
+/// `None`. A trailing `ls -F` indicator is dropped when the name with it
+/// doesn't exist.
+pub fn path_at(
+    screen: &Screen,
+    at: Point,
+    resolve: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let line = LineText::around(screen, at, LINK_REACH)?;
+    let offset = line.cells[line.index_of(at)?].offset;
+    let text = line.text.as_str();
+    let resolve = |name: &str| {
+        resolve(name).or_else(|| {
+            let bare = name.strip_suffix(['/', '*', '@', '=', '|'])?;
+            (!bare.is_empty()).then(|| resolve(bare)).flatten()
+        })
+    };
+    // Quotes pair up from the start of the line; a stray apostrophe makes
+    // the wrong pairs, whose names then don't resolve.
+    let mut quotes = text.match_indices('\'').map(|(i, _)| i);
+    while let (Some(open), Some(close)) = (quotes.next(), quotes.next()) {
+        if open <= offset && offset <= close && open + 1 < close {
+            if let Some(path) = resolve(&text[open + 1..close]) {
+                return Some(path);
+            }
+            break;
+        }
+    }
+    if text[offset..].starts_with(char::is_whitespace) {
+        return None;
+    }
+    let start = text[..offset].rfind(char::is_whitespace).map_or(0, |i| {
+        i + text[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    let end = text[offset..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |i| offset + i);
+    resolve(&text[start..end])
+}
+
 /// How many rows of a wrapped line around the pointer are searched for links.
 /// This runs on every pointer motion while Ctrl is held, and a line can wrap
 /// over the whole history; no link is that long.
@@ -363,5 +408,50 @@ mod tests {
         let link = d.link_at(t.screen(), p(0, 12), |_| None).unwrap();
         assert_eq!(link.target, "https://例え.jp/パス");
         assert_eq!((link.start, link.end), (p(0, 5), p(0, 23)));
+    }
+
+    /// Resolves names as if only `names` existed under `/home/u`.
+    fn only<'n>(names: &'n [&str]) -> impl Fn(&str) -> Option<PathBuf> + 'n {
+        move |name| {
+            names
+                .contains(&name)
+                .then(|| PathBuf::from(format!("/home/u/{name}")))
+        }
+    }
+
+    #[test]
+    fn finds_paths_of_files_and_directories() {
+        let mut t = Terminal::new(60, 1, 0);
+        t.feed(b"main.rs  src/  'a b.txt'  run*  gone");
+        let names = ["main.rs", "src/", "a b.txt", "run"];
+        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        assert_eq!(path(2), Some(PathBuf::from("/home/u/main.rs")));
+        assert_eq!(path(10), Some(PathBuf::from("/home/u/src/")));
+        // Anywhere in a quoted name, quotes included.
+        assert_eq!(path(15), Some(PathBuf::from("/home/u/a b.txt")));
+        assert_eq!(path(19), Some(PathBuf::from("/home/u/a b.txt")));
+        // An `ls -F` indicator is dropped.
+        assert_eq!(path(27), Some(PathBuf::from("/home/u/run")));
+        assert_eq!(path(33), None);
+        // Between names.
+        assert_eq!(path(7), None);
+    }
+
+    #[test]
+    fn stray_apostrophes_fall_back_to_the_word() {
+        let mut t = Terminal::new(60, 1, 0);
+        t.feed(b"it's notes.md 'x'");
+        let names = ["notes.md"];
+        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        assert_eq!(path(6), Some(PathBuf::from("/home/u/notes.md")));
+    }
+
+    #[test]
+    fn wide_characters_in_paths() {
+        let mut t = Terminal::new(40, 1, 0);
+        t.feed("né 中文.png".as_bytes());
+        let names = ["中文.png"];
+        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        assert_eq!(path(7), Some(PathBuf::from("/home/u/中文.png")));
     }
 }
