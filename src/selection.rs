@@ -17,7 +17,7 @@ fn is_word(cell: &Cell) -> bool {
 }
 
 /// A fingerprint of the text of the row at `line`.
-fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
+pub(crate) fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let row = screen.row_at(line)?;
     let mut hasher = std::hash::DefaultHasher::new();

@@ -302,6 +302,12 @@ pub struct ColorConfig {
     /// Background of selected cells; defaults to the cell's foreground.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_background: Option<Rgb>,
+    /// Text color of files marked for dragging; defaults to the cell's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark_foreground: Option<Rgb>,
+    /// Background of files marked for dragging; defaults to palette blue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark_background: Option<Rgb>,
     /// Overrides for the 16 ANSI colors, in order (black, red, ..., bright white).
     /// May be shorter than 16 entries; the rest keep their defaults.
     pub palette: Vec<Rgb>,
@@ -316,6 +322,8 @@ impl Default for ColorConfig {
             cursor_text: None,
             selection_foreground: None,
             selection_background: None,
+            mark_foreground: None,
+            mark_background: None,
             palette: Vec::new(),
         }
     }

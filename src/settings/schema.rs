@@ -272,6 +272,18 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "Background of selected cells; empty means the cell's foreground.",
         ),
         (
+            "colors",
+            "mark_foreground",
+            OptColor,
+            "Text of files marked for dragging; empty means the cell's own.",
+        ),
+        (
+            "colors",
+            "mark_background",
+            OptColor,
+            "Background of files marked for dragging; empty means palette blue.",
+        ),
+        (
             "url",
             "launcher",
             StrList,

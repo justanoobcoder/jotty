@@ -5,6 +5,7 @@ mod cli;
 mod color;
 mod config;
 mod emoji;
+mod file_marks;
 mod font;
 mod ime;
 mod input;

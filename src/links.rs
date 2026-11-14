@@ -2,6 +2,8 @@
 //! paths of files such as images, videos, audio files and documents
 //! recognized in the text. Ctrl+click opens them.
 
+use std::ops::Range;
+
 use regex::Regex;
 
 use crate::selection::Point;
@@ -205,43 +207,130 @@ fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
     })
 }
 
-/// The path of the file or directory named at `at`, for dragging it out:
-/// the name in single quotes around it (as `ls` quotes names with spaces),
-/// or else the word around it, delimited by whitespace. `resolve` turns a
-/// name from the text into an existing file or directory (its path, and
-/// whatever else the caller needs), or `None`. A trailing `ls -F` indicator is dropped when the name with it
-/// doesn't exist.
-pub fn path_at<T>(screen: &Screen, at: Point, resolve: impl Fn(&str) -> Option<T>) -> Option<T> {
+/// A file name found in the text, with the first and last cell it
+/// covers (quotes included) and what `resolve` made of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found<T> {
+    pub start: Point,
+    pub end: Point,
+    pub value: T,
+}
+
+/// The file or directory named at `at`, for dragging it out: the name in
+/// quotes around it (as `ls` quotes names with spaces), or else the word
+/// around it, delimited by whitespace. `resolve` turns a name from the
+/// text into an existing file or directory (its path, and whatever else
+/// the caller needs), or `None`. A trailing `ls -F` indicator is dropped
+/// when the name with it doesn't exist.
+pub fn path_at<T>(
+    screen: &Screen,
+    at: Point,
+    resolve: impl Fn(&str) -> Option<T>,
+) -> Option<Found<T>> {
     let line = LineText::around(screen, at, LINK_REACH)?;
     let offset = line.cells[line.index_of(at)?].offset;
-    let text = line.text.as_str();
-    let resolve = |name: &str| {
-        resolve(name).or_else(|| {
-            let bare = name.strip_suffix(['/', '*', '@', '=', '|'])?;
-            (!bare.is_empty()).then(|| resolve(bare)).flatten()
-        })
-    };
-    // Quotes pair up from the start of the line; a stray apostrophe makes
-    // the wrong pairs, whose names then don't resolve.
-    let mut quotes = text.match_indices('\'').map(|(i, _)| i);
-    while let (Some(open), Some(close)) = (quotes.next(), quotes.next()) {
-        if open <= offset && offset <= close && open + 1 < close {
-            if let Some(path) = resolve(&text[open + 1..close]) {
-                return Some(path);
+    let name = names(&line.text).find(|n| n.span.contains(&offset))?;
+    found(&line, &name, &resolve)
+}
+
+/// Every file or directory named in `start..=end`, for marking them: the
+/// names (as [`path_at`] finds them) that overlap the range, in order, and
+/// at most `limit` of them.
+pub fn paths_in<T>(
+    screen: &Screen,
+    start: Point,
+    end: Point,
+    limit: usize,
+    resolve: impl Fn(&str) -> Option<T>,
+) -> Vec<Found<T>> {
+    let mut paths = Vec::new();
+    let mut line = start.line;
+    while line <= end.line && paths.len() < limit {
+        // The rest of a logical line wrapped over the range is read at
+        // most to its end.
+        let reach = end.line - line + 1;
+        let Some(text) = LineText::around(screen, Point { line, col: 0 }, reach) else {
+            line += 1;
+            continue;
+        };
+        for name in names(&text.text) {
+            let (first, last) = (
+                text.point_at(name.span.start),
+                text.point_before(name.span.end),
+            );
+            if last < start || first > end {
+                continue;
             }
-            break;
+            if let Some(found) = found(&text, &name, &resolve) {
+                paths.push(found);
+                if paths.len() == limit {
+                    break;
+                }
+            }
         }
+        line = text.last + 1;
     }
-    if text[offset..].starts_with(char::is_whitespace) {
-        return None;
-    }
-    let start = text[..offset].rfind(char::is_whitespace).map_or(0, |i| {
-        i + text[i..].chars().next().map_or(1, char::len_utf8)
-    });
-    let end = text[offset..]
-        .find(char::is_whitespace)
-        .map_or(text.len(), |i| offset + i);
-    resolve(&text[start..end])
+    paths
+}
+
+/// A name in the text: its byte range, quotes included, and the name's
+/// own range within it.
+struct Name {
+    span: Range<usize>,
+    name: Range<usize>,
+}
+
+/// The names in `text`, left to right: runs in single or double quotes
+/// (as `ls` prints names with spaces), or else runs without whitespace.
+fn names(text: &str) -> impl Iterator<Item = Name> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let start = at + text[at..].find(|c: char| !c.is_whitespace())?;
+        let rest = &text[start..];
+        let quote = rest.chars().next().filter(|&c| c == '\'' || c == '"');
+        // A quote that isn't closed on the line is part of a word.
+        let closed = quote.and_then(|q| {
+            rest[1..]
+                .find(['\n', q])
+                .filter(|&i| rest[1 + i..].starts_with(q))
+        });
+        let found = match closed {
+            Some(i) if i > 0 => Name {
+                span: start..start + i + 2,
+                name: start + 1..start + 1 + i,
+            },
+            _ => {
+                let end = rest
+                    .find(char::is_whitespace)
+                    .map_or(text.len(), |i| start + i);
+                Name {
+                    span: start..end,
+                    name: start..end,
+                }
+            }
+        };
+        at = found.span.end;
+        Some(found)
+    })
+}
+
+/// `name` from `line` resolved, with the cells it covers. A trailing
+/// `ls -F` indicator is dropped when the name with it doesn't resolve.
+fn found<T>(
+    line: &LineText,
+    name: &Name,
+    resolve: &impl Fn(&str) -> Option<T>,
+) -> Option<Found<T>> {
+    let text = &line.text[name.name.clone()];
+    let value = resolve(text).or_else(|| {
+        let bare = text.strip_suffix(['/', '*', '@', '=', '|'])?;
+        (!bare.is_empty()).then(|| resolve(bare)).flatten()
+    })?;
+    Some(Found {
+        start: line.point_at(name.span.start),
+        end: line.point_before(name.span.end),
+        value,
+    })
 }
 
 /// How many rows of a wrapped line around the pointer are searched for links.
@@ -420,7 +509,7 @@ mod tests {
         let mut t = Terminal::new(60, 1, 0);
         t.feed(b"main.rs  src/  'a b.txt'  run*  gone");
         let names = ["main.rs", "src/", "a b.txt", "run"];
-        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        let path = |col| path_at(t.screen(), p(0, col), only(&names)).map(|f| f.value);
         assert_eq!(path(2), Some(PathBuf::from("/home/u/main.rs")));
         assert_eq!(path(10), Some(PathBuf::from("/home/u/src/")));
         // Anywhere in a quoted name, quotes included.
@@ -438,7 +527,7 @@ mod tests {
         let mut t = Terminal::new(60, 1, 0);
         t.feed(b"it's notes.md 'x'");
         let names = ["notes.md"];
-        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        let path = |col| path_at(t.screen(), p(0, col), only(&names)).map(|f| f.value);
         assert_eq!(path(6), Some(PathBuf::from("/home/u/notes.md")));
     }
 
@@ -447,7 +536,51 @@ mod tests {
         let mut t = Terminal::new(40, 1, 0);
         t.feed("né 中文.png".as_bytes());
         let names = ["中文.png"];
-        let path = |col| path_at(t.screen(), p(0, col), only(&names));
+        let path = |col| path_at(t.screen(), p(0, col), only(&names)).map(|f| f.value);
         assert_eq!(path(7), Some(PathBuf::from("/home/u/中文.png")));
+    }
+
+    #[test]
+    fn paths_cover_their_quotes() {
+        let mut t = Terminal::new(60, 1, 0);
+        t.feed(b"x 'a b.txt' \"it's\"");
+        let names = ["a b.txt", "it's"];
+        let found = path_at(t.screen(), p(0, 4), only(&names)).unwrap();
+        assert_eq!((found.start, found.end), (p(0, 2), p(0, 10)));
+        let found = path_at(t.screen(), p(0, 13), only(&names)).unwrap();
+        assert_eq!(found.value, PathBuf::from("/home/u/it's"));
+        assert_eq!((found.start, found.end), (p(0, 12), p(0, 17)));
+    }
+
+    #[test]
+    fn finds_every_path_in_a_range() {
+        let mut t = Terminal::new(30, 3, 0);
+        t.feed(b"a.rs  'b c'  d/\r\ne.rs  gone  f.rs\r\ng.rs");
+        let names = ["a.rs", "b c", "d/", "e.rs", "f.rs", "g.rs"];
+        let paths = |start, end, limit| -> Vec<String> {
+            paths_in(t.screen(), start, end, limit, only(&names))
+                .into_iter()
+                .map(|f| f.value.to_string_lossy().into_owned())
+                .collect()
+        };
+        // Names partly in the range count, from the first row's `'b c'`
+        // to the second row's `f.rs`.
+        assert_eq!(
+            paths(p(0, 8), p(1, 12), 100),
+            ["/home/u/b c", "/home/u/d/", "/home/u/e.rs", "/home/u/f.rs"]
+        );
+        assert_eq!(paths(p(0, 0), p(2, 0), 2), ["/home/u/a.rs", "/home/u/b c"]);
+        assert!(paths(p(0, 4), p(0, 5), 100).is_empty());
+    }
+
+    #[test]
+    fn ranges_follow_wrapped_rows() {
+        let mut t = Terminal::new(10, 3, 0);
+        t.feed(b"aaaa.rs bbbbbbb.rs");
+        let names = ["aaaa.rs", "bbbbbbb.rs"];
+        let found = paths_in(t.screen(), p(1, 0), p(1, 0), 100, only(&names));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].value, PathBuf::from("/home/u/bbbbbbb.rs"));
+        assert_eq!((found[0].start, found[0].end), (p(0, 8), p(1, 7)));
     }
 }
