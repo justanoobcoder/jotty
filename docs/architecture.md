@@ -109,7 +109,11 @@ dispatching it truncated.
 Each `Row` also keeps the last OSC 133 mark set on it (prompt, command line
 or output start), which moves into the history with the row and is cleared
 when the row is erased. `Screen::command_output` walks these marks to find
-the output a Ctrl+double click selects.
+the output a Ctrl+double click selects, and `Screen::scroll_to_prompt` to
+find the prompts it scrolls between. Since a row keeps only its last mark,
+a one-row prompt reads as its command line (`B`, or `C` when the output
+starts on the same row); such a row starts a prompt unless the marked row
+above it holds that prompt's `A`.
 
 A `Cell` is 16 bytes, since the grid and its history hold millions of them
 and printing and scrolling are bound by writing them. It is a `char`,

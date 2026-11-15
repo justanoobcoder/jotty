@@ -1664,6 +1664,8 @@ impl TermWindow {
             Action::ScrollPageDown => self.term.screen_mut().scroll_display(-page),
             Action::ScrollToTop => self.term.screen_mut().scroll_display(isize::MAX),
             Action::ScrollToBottom => self.term.screen_mut().reset_display(),
+            Action::ScrollToPrevPrompt => self.term.screen_mut().scroll_to_prompt(Direction::Older),
+            Action::ScrollToNextPrompt => self.term.screen_mut().scroll_to_prompt(Direction::Newer),
             Action::FontLarger => {
                 self.set_font_points(self.font_points + self.config.font.size_step)
             }

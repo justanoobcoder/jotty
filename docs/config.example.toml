@@ -103,6 +103,10 @@ scroll_page_up = ["shift+page_up"]
 scroll_page_down = ["shift+page_down"]
 scroll_to_top = ["shift+home"]
 scroll_to_bottom = ["shift+end"]
+# Scroll the previous or next shell prompt to the top of the window (the
+# shell must mark its prompts with OSC 133; see the shell integration docs).
+scroll_to_prev_prompt = ["ctrl+shift+page_up"]
+scroll_to_next_prompt = ["ctrl+shift+page_down"]
 font_larger = ["ctrl+plus", "ctrl+equal", "ctrl+kp_add", "ctrl+wheel_up"]
 font_smaller = ["ctrl+minus", "ctrl+kp_subtract", "ctrl+wheel_down"]
 font_reset = ["ctrl+0", "ctrl+kp_0"]

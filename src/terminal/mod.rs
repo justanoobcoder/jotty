@@ -16,6 +16,7 @@ use unicode_segmentation::GraphemeCursor;
 use vte::{Params, Perform};
 
 use crate::color::Rgb;
+use crate::search::Direction;
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
@@ -445,6 +446,15 @@ const MAX_CLUSTER_CHARS: usize = 32;
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
 
+/// Whether a row whose last mark is `mark` holds the end of a prompt: the
+/// command line (`B`), or a `C` set after the command on the same row.
+fn ends_prompt(mark: Mark) -> bool {
+    match mark {
+        Mark::Input | Mark::Output { col: 1.. } => true,
+        Mark::Prompt | Mark::Output { col: 0 } => false,
+    }
+}
+
 fn default_tabs(cols: usize) -> Vec<bool> {
     (0..cols).map(|c| c % 8 == 0 && c != 0).collect()
 }
@@ -644,6 +654,67 @@ impl Screen {
     /// Scrolls the view back to the bottom.
     pub fn reset_display(&mut self) {
         self.scroll_display(-(self.display_offset as isize));
+    }
+
+    /// Scrolls the view so that the next prompt the shell marked (OSC 133)
+    /// above or below the top of the view is at its top. Going newer past
+    /// the last prompt scrolls to the bottom; going older past the first
+    /// one does nothing.
+    pub fn scroll_to_prompt(&mut self, direction: Direction) {
+        let top = -(self.display_offset as isize);
+        match direction {
+            Direction::Older => {
+                if let Some(line) = self.prompt_above(top) {
+                    self.scroll_display(-line - self.display_offset as isize);
+                }
+            }
+            Direction::Newer => match self.prompt_below(top) {
+                Some(line) => self.scroll_display((-line).max(0) - self.display_offset as isize),
+                None => self.reset_display(),
+            },
+        }
+    }
+
+    /// The first line of the nearest prompt that starts above `line`.
+    ///
+    /// A row keeps only the last mark set on it, so a one-row prompt reads
+    /// `B` (or `C`, when the command's output starts on the same row)
+    /// instead of `A`. Such a row starts a prompt unless the nearest marked
+    /// row above it holds that prompt's `A`.
+    fn prompt_above(&self, line: isize) -> Option<isize> {
+        let top = -(self.grid().history.len() as isize);
+        let mut marked = (top..line)
+            .rev()
+            .filter_map(|l| self.row_at(l)?.mark.map(|m| (l, m)));
+        while let Some((l, mark)) = marked.next() {
+            if mark == Mark::Prompt {
+                return Some(l);
+            }
+            if ends_prompt(mark) {
+                return match marked.next() {
+                    Some((above, Mark::Prompt)) => Some(above),
+                    _ => Some(l),
+                };
+            }
+        }
+        None
+    }
+
+    /// The first line of the nearest prompt that starts below `line`, as
+    /// [`Screen::prompt_above`] finds them.
+    fn prompt_below(&self, line: isize) -> Option<isize> {
+        let top = -(self.grid().history.len() as isize);
+        let mark_at = |l: isize| self.row_at(l).and_then(|r| r.mark);
+        // The mark that a prompt starting just below `line` would follow.
+        let mut above = (top..=line).rev().find_map(mark_at);
+        for l in line + 1..self.rows as isize {
+            let Some(mark) = mark_at(l) else { continue };
+            if mark == Mark::Prompt || (ends_prompt(mark) && above != Some(Mark::Prompt)) {
+                return Some(l);
+            }
+            above = Some(mark);
+        }
+        None
     }
 
     /// Bytes the terminal must send back to the child (e.g. cursor reports).

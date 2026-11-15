@@ -47,6 +47,7 @@
 | Ctrl+double click      | Select a command's whole output (needs [shell integration](docs/configuration.md#shell-integration)) |
 | Shift+PageUp/PageDown  | Scroll the history by a page                  |
 | Shift+Home/End         | Jump to the top or bottom of the history      |
+| Ctrl+Shift+PageUp/PageDown | Scroll to the previous or next shell prompt (needs [shell integration](docs/configuration.md#shell-integration)) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
 | Ctrl+Shift+F           | Search the scrollback                         |
 | Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |

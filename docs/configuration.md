@@ -366,6 +366,7 @@ Actions you don't list keep their defaults.
 | `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
 | `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
 | `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
+| `scroll_to_prev_prompt` / `scroll_to_next_prompt` | `ctrl+shift+page_up` / `ctrl+shift+page_down` | Scroll to the previous or next shell prompt (needs [shell integration](#shell-integration)); past the last one, back to the bottom |
 | `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by `font.size_step` |
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract`, `ctrl+wheel_down` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
@@ -620,8 +621,9 @@ remove it from `document`'s extensions.
 
 Shells can mark where their prompt starts (`OSC 133 ; A`), where the prompt
 ends and the command line starts (`B`), and where the command's output
-starts (`C`). jotty uses these marks for two things: the text it reports to
-input methods, and selecting a command's output with a Ctrl+double click.
+starts (`C`). jotty uses these marks for three things: the text it reports
+to input methods, selecting a command's output with a Ctrl+double click, and
+scrolling from prompt to prompt (Ctrl+Shift+PageUp/PageDown).
 
 Input methods ask the application for the text around the cursor, so they can
 correct or replace what was typed. A terminal doesn't really know which text
@@ -636,6 +638,14 @@ few characters.
 To select a command's output, jotty needs `A`, to know where the output
 ends, and `C` (or `B`, if the command fits on one line) to know where it
 starts.
+
+To scroll from prompt to prompt, jotty needs `A` or `B`. With `A`, a prompt
+of several rows is shown from its first row; with only `B`, from the row of
+the command line.
+
+These marks only reach jotty from a shell that runs directly in it. Inside
+a multiplexer (zellij, tmux), jotty sees the multiplexer's screen, which
+doesn't pass them on.
 
 **bash** (`~/.bashrc`, after `PS1` is set):
 
