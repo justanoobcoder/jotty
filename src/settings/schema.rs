@@ -219,6 +219,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "Initial height in cells. Applies to new windows.",
         ),
         (
+            "window",
+            "startup_mode",
+            Enum(&["windowed", "maximized", "fullscreen"]),
+            "Open new windows maximized or fullscreen. Applies to new windows.",
+        ),
+        (
             "terminal",
             "shell",
             OptStr,

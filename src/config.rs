@@ -210,6 +210,8 @@ pub struct WindowConfig {
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
+    /// Whether new windows open as they are, maximized or fullscreen.
+    pub startup_mode: StartupMode,
 }
 
 /// The limits `Config::sanitize` clamps to, which the settings schema
@@ -240,8 +242,19 @@ impl Default for WindowConfig {
             single_instance: false,
             columns: 80,
             lines: 24,
+            startup_mode: StartupMode::Windowed,
         }
     }
+}
+
+/// The state a new window asks the compositor for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartupMode {
+    /// The size of `columns` and `lines`.
+    Windowed,
+    Maximized,
+    Fullscreen,
 }
 
 /// Which backend draws the window.

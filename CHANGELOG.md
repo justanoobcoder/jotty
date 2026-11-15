@@ -13,6 +13,7 @@ CHANGELOG
     from a mark drags all of them; `colors.mark_foreground` and
     `colors.mark_background` set their colors
 - Ctrl+click opens a link when the button is released, not when pressed
+- `window.startup_mode` opens new windows maximized or fullscreen
 
 ## 2.2.0
 
