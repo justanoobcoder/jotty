@@ -696,6 +696,20 @@ fn scroll_to_prompt_finds_command_line_with_c_mark_mid_row() {
 }
 
 #[test]
+fn scroll_to_prompt_from_between_prompts() {
+    let mut t = term(20, 3);
+    for command in ["a", "b", "c"] {
+        run_command(&mut t, command, "1\r\n2\r\n");
+    }
+    t.feed(PROMPT.as_bytes());
+    // The view's top is line -3, inside the output of `b` (prompt on -4).
+    t.screen_mut().scroll_display(3);
+    assert_eq!(jump(&mut t, Direction::Older), 4);
+    t.screen_mut().scroll_display(-1);
+    assert_eq!(jump(&mut t, Direction::Newer), 1);
+}
+
+#[test]
 fn scroll_to_prompt_without_marks() {
     let mut t = term(20, 2);
     t.feed(b"a\r\nb\r\nc\r\nd");

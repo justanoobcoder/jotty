@@ -70,8 +70,8 @@ nothing surprises you.
 - Scrolling to a prompt goes by the top row of the view: going back
   scrolls to the first prompt above it, past the prompts already on the
   screen, and a prompt on the live screen can't be scrolled to the top, so
-  going forward to it scrolls to the bottom. The marks don't pass through multiplexers (zellij,
-  tmux).
+  going forward to it scrolls to the bottom. The marks don't pass through
+  multiplexers (zellij, tmux).
 - The terminfo entry must stay under 4096 bytes compiled (unibilium, used
   by Neovim, rejects larger files). The Nix build checks this. To fit, it
   leaves out the names of Ctrl+Alt navigation keys (`kUP7`, ...); the keys
