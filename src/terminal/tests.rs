@@ -665,7 +665,7 @@ fn scroll_to_prompt_steps_through_one_row_prompts() {
     assert_eq!(jump(&mut t, Direction::Older), 1);
     assert_eq!(jump(&mut t, Direction::Older), 4);
     assert_eq!(jump(&mut t, Direction::Older), 7);
-    // Nothing older: the view stays.
+    // Nothing older: the view stays at the top of the history.
     assert_eq!(jump(&mut t, Direction::Older), 7);
     assert_eq!(jump(&mut t, Direction::Newer), 4);
     assert_eq!(jump(&mut t, Direction::Newer), 1);
@@ -713,9 +713,20 @@ fn scroll_to_prompt_from_between_prompts() {
 fn scroll_to_prompt_without_marks() {
     let mut t = term(20, 2);
     t.feed(b"a\r\nb\r\nc\r\nd");
-    assert_eq!(jump(&mut t, Direction::Older), 0);
-    t.screen_mut().scroll_display(1);
+    assert_eq!(jump(&mut t, Direction::Older), 2);
     assert_eq!(jump(&mut t, Direction::Newer), 0);
+}
+
+#[test]
+fn scroll_to_prompt_past_dropped_prompt_goes_to_top_of_history() {
+    // A history of 3 lines can't hold the first command's prompt.
+    let mut t = Terminal::new(20, 2, 3);
+    run_command(&mut t, "seq", "1\r\n2\r\n3\r\n4\r\n");
+    run_command(&mut t, "ls", "x\r\n");
+    t.feed(PROMPT.as_bytes());
+    // The history keeps lines 3, 4 and the `ls` prompt (line -1).
+    assert_eq!(jump(&mut t, Direction::Older), 1);
+    assert_eq!(jump(&mut t, Direction::Older), 3);
 }
 
 #[test]

@@ -659,15 +659,15 @@ impl Screen {
     /// Scrolls the view so that the next prompt the shell marked (OSC 133)
     /// above or below the top of the view is at its top. Going newer past
     /// the last prompt scrolls to the bottom; going older past the first
-    /// one does nothing.
+    /// one scrolls to the top of the history, whose prompt may have been
+    /// dropped when the history filled up.
     pub fn scroll_to_prompt(&mut self, direction: Direction) {
         let top = -(self.display_offset as isize);
         match direction {
-            Direction::Older => {
-                if let Some(line) = self.prompt_above(top) {
-                    self.scroll_display(-line - self.display_offset as isize);
-                }
-            }
+            Direction::Older => match self.prompt_above(top) {
+                Some(line) => self.scroll_display(-line - self.display_offset as isize),
+                None => self.scroll_display(isize::MAX),
+            },
             Direction::Newer => match self.prompt_below(top) {
                 Some(line) => self.scroll_display((-line).max(0) - self.display_offset as isize),
                 None => self.reset_display(),

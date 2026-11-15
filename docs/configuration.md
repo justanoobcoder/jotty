@@ -366,7 +366,7 @@ Actions you don't list keep their defaults.
 | `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
 | `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
 | `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
-| `scroll_to_prev_prompt` / `scroll_to_next_prompt` | `ctrl+shift+page_up` / `ctrl+shift+page_down` | Scroll to the previous or next shell prompt (needs [shell integration](#shell-integration)); past the last one, back to the bottom |
+| `scroll_to_prev_prompt` / `scroll_to_next_prompt` | `ctrl+shift+page_up` / `ctrl+shift+page_down` | Scroll to the previous or next shell prompt (needs [shell integration](#shell-integration)); past the first one, to the top of the history, and past the last one, back to the bottom |
 | `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by `font.size_step` |
 | `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract`, `ctrl+wheel_down` | Decrease it |
 | `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
