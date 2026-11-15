@@ -5,6 +5,7 @@ use super::{
     MouseMode, Notification, Row, Terminal, Underline,
 };
 use crate::color::Rgb;
+use crate::search::Direction;
 
 fn term(cols: usize, rows: usize) -> Terminal {
     Terminal::new(cols, rows, 100)
@@ -645,6 +646,87 @@ fn command_output_after_c_mark_mid_row() {
     t.feed(format!("{PROMPT}ls\x1b]133;C\x07\r\nx\r\n{PROMPT}").as_bytes());
     assert_eq!(t.screen().command_output(0), None);
     assert_eq!(t.screen().command_output(1), Some((1, 1)));
+}
+
+/// Jumps to the prompt in `direction` and returns the new display offset.
+fn jump(t: &mut Terminal, direction: Direction) -> usize {
+    t.screen_mut().scroll_to_prompt(direction);
+    t.screen().display_offset()
+}
+
+#[test]
+fn scroll_to_prompt_steps_through_one_row_prompts() {
+    let mut t = term(20, 3);
+    for command in ["a", "b", "c"] {
+        run_command(&mut t, command, "1\r\n2\r\n");
+    }
+    t.feed(PROMPT.as_bytes());
+    // The prompts are on lines -7, -4, -1 and 2.
+    assert_eq!(jump(&mut t, Direction::Older), 1);
+    assert_eq!(jump(&mut t, Direction::Older), 4);
+    assert_eq!(jump(&mut t, Direction::Older), 7);
+    // Nothing older: the view stays at the top of the history.
+    assert_eq!(jump(&mut t, Direction::Older), 7);
+    assert_eq!(jump(&mut t, Direction::Newer), 4);
+    assert_eq!(jump(&mut t, Direction::Newer), 1);
+    // The last prompt is on the live screen: back to the bottom.
+    assert_eq!(jump(&mut t, Direction::Newer), 0);
+    assert_eq!(jump(&mut t, Direction::Newer), 0);
+}
+
+#[test]
+fn scroll_to_prompt_lands_on_first_row_of_two_row_prompt() {
+    const PROMPT2: &str = "\x1b]133;A\x07~\r\n$ \x1b]133;B\x07";
+    let mut t = term(20, 3);
+    for command in ["a", "b"] {
+        t.feed(format!("{PROMPT2}{command}\r\n\x1b]133;C\x071\r\n\x1b]133;D;0\x07").as_bytes());
+    }
+    t.feed(PROMPT2.as_bytes());
+    // The prompts start on lines -5, -2 and 1, their `B` rows below.
+    assert_eq!(jump(&mut t, Direction::Older), 2);
+    assert_eq!(jump(&mut t, Direction::Older), 5);
+    assert_eq!(jump(&mut t, Direction::Newer), 2);
+}
+
+#[test]
+fn scroll_to_prompt_finds_command_line_with_c_mark_mid_row() {
+    let mut t = term(20, 2);
+    t.feed(format!("{PROMPT}ls\x1b]133;C\x07\r\nx\r\n{PROMPT}").as_bytes());
+    assert_eq!(jump(&mut t, Direction::Older), 1);
+}
+
+#[test]
+fn scroll_to_prompt_from_between_prompts() {
+    let mut t = term(20, 3);
+    for command in ["a", "b", "c"] {
+        run_command(&mut t, command, "1\r\n2\r\n");
+    }
+    t.feed(PROMPT.as_bytes());
+    // The view's top is line -3, inside the output of `b` (prompt on -4).
+    t.screen_mut().scroll_display(3);
+    assert_eq!(jump(&mut t, Direction::Older), 4);
+    t.screen_mut().scroll_display(-1);
+    assert_eq!(jump(&mut t, Direction::Newer), 1);
+}
+
+#[test]
+fn scroll_to_prompt_without_marks() {
+    let mut t = term(20, 2);
+    t.feed(b"a\r\nb\r\nc\r\nd");
+    assert_eq!(jump(&mut t, Direction::Older), 2);
+    assert_eq!(jump(&mut t, Direction::Newer), 0);
+}
+
+#[test]
+fn scroll_to_prompt_past_dropped_prompt_goes_to_top_of_history() {
+    // A history of 3 lines can't hold the first command's prompt.
+    let mut t = Terminal::new(20, 2, 3);
+    run_command(&mut t, "seq", "1\r\n2\r\n3\r\n4\r\n");
+    run_command(&mut t, "ls", "x\r\n");
+    t.feed(PROMPT.as_bytes());
+    // The history keeps lines 3, 4 and the `ls` prompt (line -1).
+    assert_eq!(jump(&mut t, Direction::Older), 1);
+    assert_eq!(jump(&mut t, Direction::Older), 3);
 }
 
 #[test]

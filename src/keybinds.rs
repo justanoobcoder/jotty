@@ -27,6 +27,10 @@ pub enum Action {
     ScrollPageDown,
     ScrollToTop,
     ScrollToBottom,
+    /// Scroll to the previous prompt the shell marked (OSC 133).
+    ScrollToPrevPrompt,
+    /// Scroll to the next prompt the shell marked (OSC 133).
+    ScrollToNextPrompt,
     FontLarger,
     FontSmaller,
     FontReset,
@@ -55,6 +59,8 @@ impl Action {
             | Action::ScrollPageDown
             | Action::ScrollToTop
             | Action::ScrollToBottom
+            | Action::ScrollToPrevPrompt
+            | Action::ScrollToNextPrompt
             | Action::FontLarger
             | Action::FontSmaller
             | Action::FontReset
@@ -69,7 +75,7 @@ impl Action {
         }
     }
 
-    const ALL: [(&'static str, Action); 16] = [
+    const ALL: [(&'static str, Action); 18] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -79,6 +85,8 @@ impl Action {
         ("scroll_page_down", Action::ScrollPageDown),
         ("scroll_to_top", Action::ScrollToTop),
         ("scroll_to_bottom", Action::ScrollToBottom),
+        ("scroll_to_prev_prompt", Action::ScrollToPrevPrompt),
+        ("scroll_to_next_prompt", Action::ScrollToNextPrompt),
         ("font_larger", Action::FontLarger),
         ("font_smaller", Action::FontSmaller),
         ("font_reset", Action::FontReset),
@@ -102,6 +110,8 @@ impl Action {
             Action::ScrollPageDown => &["shift+page_down"],
             Action::ScrollToTop => &["shift+home"],
             Action::ScrollToBottom => &["shift+end"],
+            Action::ScrollToPrevPrompt => &["ctrl+shift+page_up"],
+            Action::ScrollToNextPrompt => &["ctrl+shift+page_down"],
             Action::FontLarger => &["ctrl+plus", "ctrl+equal", "ctrl+kp_add", "ctrl+wheel_up"],
             Action::FontSmaller => &["ctrl+minus", "ctrl+kp_subtract", "ctrl+wheel_down"],
             Action::FontReset => &["ctrl+0", "ctrl+kp_0"],
@@ -497,6 +507,14 @@ mod tests {
         assert_eq!(
             k.lookup(Keysym::Page_Up, None, SHIFT),
             Some(Action::ScrollPageUp)
+        );
+        assert_eq!(
+            k.lookup(Keysym::Page_Up, None, CTRL_SHIFT),
+            Some(Action::ScrollToPrevPrompt)
+        );
+        assert_eq!(
+            k.lookup(Keysym::Page_Down, None, CTRL_SHIFT),
+            Some(Action::ScrollToNextPrompt)
         );
         assert_eq!(
             k.lookup(Keysym::_0, Some(Keysym::_0), CTRL),
