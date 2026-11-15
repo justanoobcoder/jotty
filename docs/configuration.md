@@ -24,7 +24,8 @@ and the other window and terminal options apply right away. A new
 only apply to new windows, which jotty logs when they change:
 `terminal.shell`, `terminal.term`, `terminal.scrollback`,
 `window.renderer`, `window.columns`, `window.lines`,
-`window.startup_mode`, `window.title` and `window.app_id`. `window.single_instance` applies when jotty next starts.
+`window.startup_mode`, `window.title` and `window.app_id`.
+`window.single_instance` applies when jotty next starts.
 
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
