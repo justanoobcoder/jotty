@@ -50,6 +50,9 @@ single_instance = false
 # Initial size in cells (the compositor may override it).
 columns = 80
 lines = 24
+# "windowed" opens new windows at the size above; "maximized" and
+# "fullscreen" ask the compositor to open them maximized or fullscreen.
+startup_mode = "windowed"
 
 [terminal]
 # Program to run. When unset: $SHELL, then /bin/sh.

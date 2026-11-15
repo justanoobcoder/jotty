@@ -23,8 +23,8 @@ and the other window and terminal options apply right away. A new
 `font.size` replaces any zooming done with Ctrl+=/Ctrl+-. A few options
 only apply to new windows, which jotty logs when they change:
 `terminal.shell`, `terminal.term`, `terminal.scrollback`,
-`window.renderer`, `window.columns`, `window.lines`, `window.title` and
-`window.app_id`. `window.single_instance` applies when jotty next starts.
+`window.renderer`, `window.columns`, `window.lines`,
+`window.startup_mode`, `window.title` and `window.app_id`. `window.single_instance` applies when jotty next starts.
 
 [`config.example.toml`](config.example.toml) lists every option with its
 default value. A test checks that it matches the built-in defaults.
@@ -150,6 +150,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
+| `startup_mode` | string | `"windowed"` | `"windowed"` opens new windows at `columns` × `lines`; `"maximized"` and `"fullscreen"` ask the compositor to open them maximized or fullscreen. Tiling compositors may ignore it. |
 
 ### Transparency
 

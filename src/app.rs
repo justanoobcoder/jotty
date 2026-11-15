@@ -89,7 +89,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     self, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
 };
 
-use crate::config::{Config, RendererKind};
+use crate::config::{Config, RendererKind, StartupMode};
 use crate::file_marks::{FileMark, FileMarks};
 use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
@@ -624,6 +624,12 @@ impl TermWindow {
         window.set_app_id(config.window.app_id.clone());
         let min_size = (cell.width * 2 + 2 * pad, cell.height + 2 * pad);
         window.set_min_size(Some(min_size));
+        // Before the first commit, so the first configure has the size.
+        match config.window.startup_mode {
+            StartupMode::Windowed => {}
+            StartupMode::Maximized => window.set_maximized(),
+            StartupMode::Fullscreen => window.set_fullscreen(None),
+        }
         if config.window.opacity >= 1.0 {
             // Lets the compositor skip drawing what is behind the window.
             set_whole_region(&shared.compositor, |region| {
@@ -3129,6 +3135,10 @@ impl App {
             (
                 (old.window.columns, old.window.lines) != (new.window.columns, new.window.lines),
                 "window.columns and window.lines",
+            ),
+            (
+                old.window.startup_mode != new.window.startup_mode,
+                "window.startup_mode",
             ),
             (
                 (&old.window.title, &old.window.app_id) != (&new.window.title, &new.window.app_id),
