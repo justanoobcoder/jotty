@@ -278,6 +278,18 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             Bool,
             "Blink the cursor, unless a program sets a style.",
         ),
+        (
+            "terminal",
+            "output_click",
+            Enum(&["select", "copy", "open"]),
+            "What Ctrl+double click does with a command's output: select, copy or open it.",
+        ),
+        (
+            "terminal",
+            "editor",
+            StrList,
+            "Editor for command output, in a new window; empty means $VISUAL, $EDITOR, less.",
+        ),
         ("colors", "foreground", Color, "Default text color."),
         ("colors", "background", Color, "Default background color."),
         (

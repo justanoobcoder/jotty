@@ -26,6 +26,10 @@ CHANGELOG
 - `terminal.cursor_shape` and `terminal.cursor_blink` set the cursor's
     default shape and blinking; programs' blinking styles (DECSCUSR 1, 3,
     5) blink, and DECRQSS reports them
+- `terminal.output_click` makes a Ctrl+double click on a command's output
+    also copy it to the clipboard (`"copy"`) or open it in
+    `terminal.editor` in a new window (`"open"`); `terminal.editor`
+    defaults to `$VISUAL`, then `$EDITOR`, then `less`
 
 ## 2.2.0
 

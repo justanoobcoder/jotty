@@ -74,6 +74,14 @@ bold_is_bright = true
 # blinks. Programs can set their own (DECSCUSR) until they reset it.
 cursor_shape = "block"
 cursor_blink = false
+# What Ctrl+double click on a command's output does: "select" it, "copy" it
+# to the clipboard as well, or "open" it in the editor (needs shell
+# integration marks).
+output_click = "select"
+# The editor that opens command output, in a new window, with a file
+# holding the output as its last argument. Empty: $VISUAL, then $EDITOR,
+# then less.
+editor = []    # e.g. ["nvim", "-R"]
 
 [colors]
 foreground = "#dcdcdc"

@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod color;
 mod config;
+mod editor;
 mod emoji;
 mod file_marks;
 mod font;
