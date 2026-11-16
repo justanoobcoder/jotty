@@ -414,8 +414,8 @@ fn parse_addresses(list: &str) -> Vec<Address> {
         .collect()
 }
 
-/// Decodes the `%XX` escapes of an address value.
-fn unescape(value: &str) -> Result<Vec<u8>, &'static str> {
+/// Decodes the `%XX` escapes of an address value or URL.
+pub(crate) fn unescape(value: &str) -> Result<Vec<u8>, &'static str> {
     const BAD_ESCAPE: &str = "% is not followed by two hex digits";
     let mut out = Vec::with_capacity(value.len());
     let mut bytes = value.bytes();

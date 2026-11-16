@@ -17,6 +17,10 @@ CHANGELOG
 - Programs can write the clipboard and the primary selection with OSC 52,
     also over SSH and through multiplexers; reading it is refused. The
     terminfo entry advertises it (`Ms`)
+- When a command that ran for at least `window.command_notify_after`
+    seconds (10 by default) finishes while the window isn't focused, a
+    notification says so, with the command line, the time it took and
+    whether it failed (needs shell integration marks `OSC 133 ; C` and `D`)
 
 ## 2.2.0
 
