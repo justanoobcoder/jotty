@@ -13,7 +13,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
@@ -106,8 +106,9 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
+use crate::terminal::graphics::{Decode, Decoded};
 use crate::terminal::{
-    ClipboardWrite, CursorStyle, FinishedCommand, Flags, MouseMode, Notification, Terminal,
+    ClipboardWrite, CursorStyle, Fed, FinishedCommand, Flags, MouseMode, Notification, Terminal,
 };
 use crate::vi::{self, ViMode};
 use crate::watch;
@@ -301,6 +302,15 @@ pub struct Spawn {
     pub temp_file: Option<TempFile>,
 }
 
+/// What output may move, recorded before it comes so that the selection,
+/// marks and the vi cursor can follow their text.
+struct BeforeOutput {
+    scrolled: u64,
+    alt: bool,
+    selected: Option<Vec<(isize, u64)>>,
+    marked: Vec<(isize, u64)>,
+}
+
 /// Something a window asks of the whole application, done after the event
 /// that asked for it.
 enum Request {
@@ -415,6 +425,12 @@ pub struct TermWindow {
     pty: Pty,
     /// The loop source reading the pty, removed when the window closes.
     pty_source: Option<RegistrationToken>,
+    /// While an image is decoded on another thread, the number of that job
+    /// and the output read after it, which waits, and the pty source with
+    /// it.
+    paused_output: Option<(u64, Vec<u8>)>,
+    /// The number of the last image decoding job.
+    decode_jobs: u64,
     /// The loop source writing what the pty couldn't take yet, if any.
     pty_writer: Option<RegistrationToken>,
 
@@ -834,6 +850,8 @@ impl TermWindow {
             term,
             pty,
             pty_source: Some(pty_source),
+            paused_output: None,
+            decode_jobs: 0,
             pty_writer: None,
             size,
             scale: 1.0,
@@ -1177,13 +1195,10 @@ impl TermWindow {
     }
 
     fn read_pty(&mut self, shared: &mut Shared) {
-        // What the selection covers, to keep it while output goes elsewhere.
-        let (scrolled_before, alt_before) = {
-            let screen = self.term.screen();
-            (screen.grid().scrolled, screen.is_alt_screen())
-        };
-        let selected = self.selection.map(|s| s.live_rows(self.term.screen()));
-        let marked = self.file_marks.live_rows(self.term.screen());
+        if self.paused_output.is_some() {
+            return;
+        }
+        let before = self.before_output();
         let mut buf = [0u8; 1 << 16];
         let mut total = 0;
         while total < READ_BUDGET {
@@ -1194,8 +1209,10 @@ impl TermWindow {
                     break;
                 }
                 Ok(n) => {
-                    self.term.feed(&buf[..n]);
                     total += n;
+                    if self.feed(&buf[..n]) {
+                        break;
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -1211,7 +1228,136 @@ impl TermWindow {
         if total == 0 {
             return;
         }
+        self.after_output(shared, before);
+    }
 
+    /// Feeds output to the terminal, and returns whether it stopped at an
+    /// image to decode. The image is decoded on another thread, and until
+    /// [`TermWindow::decoded`] gets it, the rest of the output and the pty
+    /// wait: what comes after an image may depend on where it put the
+    /// cursor. Other windows go on meanwhile.
+    fn feed(&mut self, mut bytes: &[u8]) -> bool {
+        loop {
+            let Fed::Paused { consumed, decode } = self.term.feed_until_decode(bytes) else {
+                return false;
+            };
+            match self.decode_elsewhere(decode) {
+                Ok(job) => {
+                    self.paused_output = Some((job, bytes[consumed..].to_vec()));
+                    if let Some(token) = &self.pty_source
+                        && let Err(e) = self.loop_handle.disable(token)
+                    {
+                        log::warn!("cannot pause reading the pty: {e}");
+                    }
+                    return true;
+                }
+                // Decoded here, then: slower, but nothing is lost.
+                Err(decode) => {
+                    self.term.finish_decode(decode.run());
+                    bytes = &bytes[consumed..];
+                }
+            }
+        }
+    }
+
+    /// Decodes an image on another thread, for [`TermWindow::decoded`], and
+    /// returns the job's number, or gives the image back if it can't.
+    fn decode_elsewhere(&mut self, decode: Decode) -> Result<u64, Decode> {
+        let (sender, receiver) = channel::channel();
+        let id = self.id;
+        self.decode_jobs += 1;
+        let job_number = self.decode_jobs;
+        // If the thread dies without a result (a panic in a decoder), the
+        // transmission fails instead of leaving the window waiting forever.
+        let mut failed = Some(decode.failed());
+        // The source goes away by itself once the thread drops the sender.
+        let inserted = self
+            .loop_handle
+            .insert_source(receiver, move |event, _, app| {
+                let decoded = match event {
+                    channel::Event::Msg(decoded) => {
+                        failed = None;
+                        decoded
+                    }
+                    channel::Event::Closed => match failed.take() {
+                        Some(failed) => {
+                            log::warn!("the image decoder stopped without a result");
+                            failed
+                        }
+                        None => return,
+                    },
+                };
+                if let Some((shared, window)) = app.split(id) {
+                    window.decoded(shared, job_number, decoded);
+                }
+            });
+        if let Err(e) = inserted {
+            log::warn!("cannot watch an image being decoded: {e}");
+            return Err(decode);
+        }
+        // Sent once the thread runs, so that it comes back if it doesn't.
+        let (job, jobs) = mpsc::channel::<Decode>();
+        let spawned = std::thread::Builder::new()
+            .name("image-decoder".into())
+            .spawn(move || {
+                if let Ok(decode) = jobs.recv() {
+                    // The window may be gone by now, and that's fine.
+                    let _ = sender.send(decode.run());
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("cannot decode the image on another thread: {e}");
+            return Err(decode);
+        }
+        job.send(decode).map_err(|mpsc::SendError(decode)| decode)?;
+        Ok(job_number)
+    }
+
+    /// Image decoding job `job` is done: finishes its transmission and
+    /// feeds the output that waited for it.
+    fn decoded(&mut self, shared: &mut Shared, job: u64, decoded: Decoded) {
+        // Not the job the window waits for: a stale event from an earlier
+        // job, such as the channel closing after its result, or one that
+        // was decoded here when the thread couldn't take it.
+        let rest = match self.paused_output.take() {
+            Some((waiting, rest)) if waiting == job => rest,
+            other => {
+                self.paused_output = other;
+                return;
+            }
+        };
+        let before = self.before_output();
+        self.term.finish_decode(decoded);
+        if !self.feed(&rest)
+            && let Some(token) = &self.pty_source
+            && let Err(e) = self.loop_handle.enable(token)
+        {
+            log::warn!("cannot resume reading the pty: {e}");
+        }
+        self.after_output(shared, before);
+    }
+
+    /// What output may move, from before it came.
+    fn before_output(&self) -> BeforeOutput {
+        let screen = self.term.screen();
+        BeforeOutput {
+            scrolled: screen.grid().scrolled,
+            alt: screen.is_alt_screen(),
+            selected: self.selection.map(|s| s.live_rows(screen)),
+            marked: self.file_marks.live_rows(screen),
+        }
+    }
+
+    /// Handles what output changed and asked for: replies, the title,
+    /// notifications, and what follows the text (the selection, marks,
+    /// the vi cursor, search and hints).
+    fn after_output(&mut self, shared: &mut Shared, before: BeforeOutput) {
+        let BeforeOutput {
+            scrolled: scrolled_before,
+            alt: alt_before,
+            selected,
+            marked,
+        } = before;
         let screen = self.term.screen_mut();
         let responses = screen.take_responses();
         let title = screen.take_title();

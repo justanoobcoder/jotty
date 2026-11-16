@@ -11,6 +11,8 @@ CHANGELOG
 - Vi mode: `f`, `F`, `t`, `T`, `;` and `,`
 - Hints label paths with a line number (`src/main.rs:12:5`) and open them
     in `terminal.editor` at that line
+- Large kitty graphics images no longer freeze every window while they
+    decode
 
 ## 2.3.0
 

@@ -93,6 +93,22 @@ placement, and combining diacritics the image row and column. The screen
 also answers `CSI 14/16/18 t`, and the pty's window size carries the grid's
 size in pixels, from which programs compute the cell size.
 
+**Decoding images off the event loop.** Reading, decompressing and decoding
+a large image takes long enough to stall every window, so a transmission
+whose payload is over 64 KiB, or that names a file or shared memory, is not
+finished on the spot: `Terminal::feed_until_decode` stops right after it
+and returns a `graphics::Decode`, and `TermWindow::feed` runs it on a
+thread, pausing that window's pty source and keeping the output read after
+it. When the `Decoded` result comes back over a channel,
+`Terminal::finish_decode` stores and places the image, as if it had been
+decoded at once, and the waiting output is fed. What follows an image may
+depend on where it left the cursor, so nothing after it is processed
+first. A thread that dies without a result (a panic in a decoder) closes
+the channel, and the transmission fails with `Decode::failed` instead of
+leaving the window waiting; jobs are numbered so that a late result can't
+resume a later pause. Small inline images, the common case for many small icons, are
+decoded on the spot.
+
 **Sixel (`terminal/sixel.rs`).** A sixel image (`DCS q … ST`) is decoded
 as vte passes its bytes (`hook`, `put`, `unhook`) onto an RGBA canvas that
 grows with it, and then placed at the cursor like a kitty image, flagged as
