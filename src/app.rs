@@ -1823,7 +1823,9 @@ impl TermWindow {
                 })
             }),
             HintAction::Copy | HintAction::Insert => None,
-        };
+        }
+        // What `open_link` would refuse is copied or reported instead.
+        .filter(|link| crate::links::is_openable(&link.target));
         match (action, &link) {
             (HintAction::Open | HintAction::Default, Some(link)) => {
                 self.end_hints();
