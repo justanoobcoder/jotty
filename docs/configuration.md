@@ -150,6 +150,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
 | `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
 | `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
+| `hide_pointer_while_typing` | bool | `false` | Hide the mouse pointer while you type over the window (keys that reach the program, or text from an input method; modifiers alone don't count). Moving, clicking or scrolling shows it again. |
 | `command_notify_after` | integer | `10` | When a command that ran at least this many seconds finishes while the window isn't focused, show a notification. `0` turns it off. See [Long commands](#long-commands). |
 | `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
