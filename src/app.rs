@@ -171,6 +171,8 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// How long a blinking cursor stays on, then off.
 const BLINK: Duration = Duration::from_millis(500);
+/// How long a notice (such as "Copied 3 lines") stays up.
+const NOTICE: Duration = Duration::from_millis(1500);
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
 /// How long the child gets to exit after hanging up, for its exit status.
@@ -462,6 +464,11 @@ pub struct TermWindow {
     blink_epoch: Instant,
     /// Whether the blink timer runs.
     blink_timer: bool,
+    /// A short message drawn in the top right corner (over vi mode's
+    /// label) until the given time, such as what was just copied.
+    notice: Option<(String, Instant)>,
+    /// Whether the timer that takes the notice down runs.
+    notice_timer: bool,
     /// The cursor last set over the decorations frame, to set it only
     /// when it changes.
     frame_cursor: Option<CursorIcon>,
@@ -832,6 +839,8 @@ impl TermWindow {
             pointer_hidden: false,
             blink_epoch: Instant::now(),
             blink_timer: false,
+            notice: None,
+            notice_timer: false,
             frame_cursor: None,
             last_click: None,
             ctrl_press: None,
@@ -1386,12 +1395,18 @@ impl TermWindow {
             mark: self.shift_mark,
             file_marks: Some(&self.file_marks),
             vi_cursor: self.vi.as_ref().map(|vi| vi.cursor),
-            label: self.vi.as_ref().map(|vi| match vi.visual() {
-                None => "VI",
-                Some(vi::Visual::Char) => "VISUAL",
-                Some(vi::Visual::Line) => "V-LINE",
-                Some(vi::Visual::Block) => "V-BLOCK",
-            }),
+            label: self
+                .notice
+                .as_ref()
+                .map(|(text, _)| text.as_str())
+                .or_else(|| {
+                    self.vi.as_ref().map(|vi| match vi.visual() {
+                        None => "VI",
+                        Some(vi::Visual::Char) => "VISUAL",
+                        Some(vi::Visual::Line) => "V-LINE",
+                        Some(vi::Visual::Block) => "V-BLOCK",
+                    })
+                }),
             search: search_bar.as_deref(),
             cursor_blinked_off: self.cursor_blinked_off(),
         };
@@ -1564,6 +1579,45 @@ impl TermWindow {
         match inserted {
             Ok(_) => self.blink_timer = true,
             Err(e) => log::warn!("cannot start the cursor blink timer: {e}"),
+        }
+    }
+
+    /// Shows `text` in the top right corner for [`NOTICE`], replacing the
+    /// notice already up, if `window.copy_notice` allows notices.
+    fn show_notice(&mut self, text: String) {
+        if !self.config.window.copy_notice {
+            return;
+        }
+        self.notice = Some((text, Instant::now() + NOTICE));
+        self.request_redraw();
+        if self.notice_timer {
+            return;
+        }
+        let id = self.id;
+        let inserted =
+            self.loop_handle
+                .insert_source(Timer::from_duration(NOTICE), move |_, _, app| {
+                    let Some(window) = app.window_mut(id) else {
+                        return TimeoutAction::Drop;
+                    };
+                    // A later notice moved the time on.
+                    if let Some((_, until)) = &window.notice
+                        && let Some(left) = until.checked_duration_since(Instant::now())
+                        && !left.is_zero()
+                    {
+                        return TimeoutAction::ToDuration(left);
+                    }
+                    window.notice = None;
+                    window.notice_timer = false;
+                    window.request_redraw();
+                    TimeoutAction::Drop
+                });
+        match inserted {
+            Ok(_) => self.notice_timer = true,
+            Err(e) => {
+                log::warn!("cannot start the notice timer: {e}");
+                self.notice = None;
+            }
         }
     }
 
@@ -1917,14 +1971,18 @@ impl TermWindow {
     }
 
     /// The text of the last command's output that finished, if the shell
-    /// marked it and it printed something.
-    fn last_output_text(&self) -> Option<String> {
+    /// marked it and it printed something; otherwise a notice says so.
+    fn last_output_text(&mut self) -> Option<String> {
         let screen = self.term.screen();
-        let Some(lines) = screen.last_command_output() else {
+        let text = screen
+            .last_command_output()
+            .and_then(|lines| self.lines_selection(lines))
+            .map(|selection| selection.text(screen));
+        if text.is_none() {
             log::info!("no output of a finished command to take");
-            return None;
-        };
-        Some(self.lines_selection(lines)?.text(screen))
+            self.show_notice("No command output".into());
+        }
+        text
     }
 
     /// Does what `terminal.output_click` says with the command output a
@@ -2467,26 +2525,40 @@ impl TermWindow {
         self.copy_text(shared, selection.text(self.term.screen()));
     }
 
-    /// Puts `text` on the clipboard.
+    /// Puts `text` on the clipboard, and says what was copied.
     fn copy_text(&mut self, shared: &mut Shared, text: String) {
+        let notice = copied_notice(&text);
+        if self.set_clipboard(shared, text) {
+            self.show_notice(notice);
+        }
+    }
+
+    /// Puts `text` on the clipboard. Returns whether it did: not for empty
+    /// text, nor without a clipboard, which is then also shown.
+    fn set_clipboard(&mut self, shared: &mut Shared, text: String) -> bool {
+        if text.is_empty() {
+            return false;
+        }
         let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
         else {
             log::warn!("no clipboard support (wl_data_device_manager missing)");
-            return;
+            self.show_notice("Nothing copied: no clipboard".into());
+            return false;
         };
-        if text.is_empty() {
-            return;
-        }
         let source = manager.create_copy_paste_source(&self.qh, PASTE_MIMES);
         source.set_selection(device, shared.last_serial);
         shared.copy_source = Some((source, text));
+        true
     }
 
     /// Puts the text a program sent (OSC 52) on the clipboard or the
-    /// primary selection.
+    /// primary selection. Only the clipboard is shown: it is what pasting
+    /// elsewhere takes.
     fn write_clipboard(&mut self, shared: &mut Shared, write: ClipboardWrite) {
-        if let Some(text) = write.clipboard {
-            self.copy_text(shared, text);
+        if let Some(text) = write.clipboard
+            && self.set_clipboard(shared, text)
+        {
+            self.show_notice("Clipboard set by program".into());
         }
         if let Some(text) = write.primary {
             self.set_primary_text(shared, text);
@@ -4715,8 +4787,30 @@ impl ProvidesRegistryState for App {
 delegate_registry!(App);
 delegate_dispatch2!(App);
 
+/// What a notice says about copying `text`: its lines when there are
+/// several, else its characters.
+fn copied_notice(text: &str) -> String {
+    match text.lines().count() {
+        0 | 1 => {
+            let chars = text.chars().count();
+            format!("Copied {chars} char{}", if chars == 1 { "" } else { "s" })
+        }
+        lines => format!("Copied {lines} lines"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copied_notice_counts_lines_or_characters() {
+        use super::copied_notice;
+        assert_eq!(copied_notice("x"), "Copied 1 char");
+        assert_eq!(copied_notice("héllo"), "Copied 5 chars");
+        assert_eq!(copied_notice("a\n"), "Copied 2 chars");
+        assert_eq!(copied_notice("a\nb"), "Copied 2 lines");
+        assert_eq!(copied_notice("a\nb\nc\n"), "Copied 3 lines");
+    }
+
     use super::*;
 
     #[test]

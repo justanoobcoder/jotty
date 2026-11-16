@@ -30,6 +30,9 @@ CHANGELOG
     also copy it to the clipboard (`"copy"`) or open it in
     `terminal.editor` in a new window (`"open"`); `terminal.editor`
     defaults to `$VISUAL`, then `$EDITOR`, then `less`
+- Copying to the clipboard shows a short notice in the window's top right
+    corner (`Copied 3 lines`, or `Clipboard set by program` for OSC 52);
+    `window.copy_notice = false` turns it off
 - The `copy_last_output` and `open_last_output` actions (unbound by
     default) copy the output of the last command that finished, or open it
     in `terminal.editor`

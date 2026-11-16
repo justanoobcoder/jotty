@@ -45,6 +45,9 @@ bell_urgent = true
 notifications = true
 # Hide the mouse pointer while typing over the window, until it moves.
 hide_pointer_while_typing = false
+# Say in the top right corner what was just copied to the clipboard
+# ("Copied 3 lines"), or that a program set it (OSC 52), for 1.5 seconds.
+copy_notice = true
 # When a command that ran at least this many seconds finishes while the
 # window isn't focused, show a notification (needs `notifications` and shell
 # integration, see the docs). 0 turns it off.

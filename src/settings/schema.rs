@@ -202,6 +202,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         ),
         (
             "window",
+            "copy_notice",
+            Bool,
+            "Say in the window's top right corner what was copied to the clipboard.",
+        ),
+        (
+            "window",
             "command_notify_after",
             Int {
                 min: 0,

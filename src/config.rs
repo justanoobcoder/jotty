@@ -208,6 +208,8 @@ pub struct WindowConfig {
     pub notifications: bool,
     /// Hide the mouse pointer over the window while typing, until it moves.
     pub hide_pointer_while_typing: bool,
+    /// Say in the window's corner what was copied to the clipboard.
+    pub copy_notice: bool,
     /// Seconds a command must run for a notification when it finishes
     /// while the window isn't focused; 0 turns these off.
     pub command_notify_after: u32,
@@ -248,6 +250,7 @@ impl Default for WindowConfig {
             bell_urgent: true,
             notifications: true,
             hide_pointer_while_typing: false,
+            copy_notice: true,
             command_notify_after: 10,
             single_instance: false,
             columns: 80,
