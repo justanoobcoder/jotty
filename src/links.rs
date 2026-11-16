@@ -3,7 +3,7 @@
 //! recognized in the text. Ctrl+click opens them.
 
 use std::cell::Cell;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 use regex::Regex;
 
@@ -95,20 +95,76 @@ impl Detector {
         let line = LineText::around(screen, at, LINK_REACH)?;
         let index = line.index_of(at)?;
         let offset = line.cells[index].offset;
-        let link = |start: usize, end: usize, target: String, kind: Option<usize>| Link {
-            start: line.point_at(start),
-            end: line.point_before(end),
+        let mut found = None;
+        let _ = self.scan(
+            screen,
+            &line,
+            |span| span.contains(&offset),
+            resolve,
+            |_, link| {
+                found = Some(link);
+                ControlFlow::Break(())
+            },
+        );
+        found
+    }
+
+    /// Every link in `line`, left to right. Where links overlap, the one
+    /// [`Detector::link_at`] would pick wins and the others are left out.
+    pub fn links_in(
+        &self,
+        screen: &Screen,
+        line: &LineText,
+        resolve: impl Fn(&str) -> Option<String>,
+    ) -> Vec<Link> {
+        let mut found: Vec<(Range<usize>, Link)> = Vec::new();
+        let _ = self.scan(
+            screen,
+            line,
+            |_| true,
+            resolve,
+            |span, link| {
+                if !found
+                    .iter()
+                    .any(|(s, _)| s.start < span.end && span.start < s.end)
+                {
+                    found.push((span, link));
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        found.sort_by_key(|(span, _)| span.start);
+        found.into_iter().map(|(_, link)| link).collect()
+    }
+
+    /// Calls `each` with the links in `line` whose byte span is `wanted`,
+    /// with the span, by precedence: hyperlinks, URLs, files, then the
+    /// configured patterns. Files are only resolved when wanted.
+    fn scan(
+        &self,
+        screen: &Screen,
+        line: &LineText,
+        wanted: impl Fn(&Range<usize>) -> bool,
+        resolve: impl Fn(&str) -> Option<String>,
+        mut each: impl FnMut(Range<usize>, Link) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        let link = |span: &Range<usize>, target: String, kind: Option<usize>| Link {
+            start: line.point_at(span.start),
+            end: line.point_before(span.end),
             target,
             kind,
         };
-        if let Some(link) = hyperlink(&line, screen, index) {
-            return Some(link);
+        for (span, link) in hyperlinks(line, screen) {
+            if wanted(&span) {
+                each(span, link)?;
+            }
         }
         for m in self.url.find_iter(&line.text) {
-            let end = m.start() + trim_url(m.as_str());
-            if m.start() <= offset && offset < end {
-                let target = line.text[m.start()..end].to_string();
-                return Some(link(m.start(), end, target, None));
+            let span = m.start()..m.start() + trim_url(m.as_str());
+            if wanted(&span) {
+                let target = line.text[span.clone()].to_string();
+                let link = link(&span, target, None);
+                each(span, link)?;
             }
         }
         if let Some(file) = &self.file {
@@ -121,8 +177,8 @@ impl Detector {
                         (path, path)
                     }
                 };
-                if span.start() <= offset
-                    && offset < span.end()
+                let span = span.range();
+                if wanted(&span)
                     && let Some(target) = resolve(path.as_str())
                 {
                     let ext = path
@@ -132,18 +188,21 @@ impl Detector {
                         .unwrap_or("")
                         .to_lowercase();
                     let kind = self.kinds.iter().position(|k| k.contains(&ext));
-                    return Some(link(span.start(), span.end(), target, kind));
+                    let link = link(&span, target, kind);
+                    each(span, link)?;
                 }
             }
         }
         for pattern in &self.extra {
             for m in pattern.find_iter(&line.text) {
-                if m.start() <= offset && offset < m.end() {
-                    return Some(link(m.start(), m.end(), m.as_str().to_string(), None));
+                let span = m.range();
+                if wanted(&span) {
+                    let link = link(&span, m.as_str().to_string(), None);
+                    each(span, link)?;
                 }
             }
         }
-        None
+        ControlFlow::Continue(())
     }
 }
 
@@ -186,25 +245,36 @@ fn trim_url(url: &str) -> usize {
     end
 }
 
-/// The hyperlink covering cell `index` of `line`: the run of cells around
-/// it with the same link id.
-fn hyperlink(line: &LineText, screen: &Screen, index: usize) -> Option<Link> {
-    let id = line.cells[index].link;
-    let target = screen.link(id)?;
-    let first = line.cells[..index]
-        .iter()
-        .rposition(|c| c.link != id)
-        .map_or(0, |i| i + 1);
-    let last = line.cells[index..]
-        .iter()
-        .position(|c| c.link != id)
-        .map_or(line.cells.len(), |i| index + i)
-        - 1;
-    Some(Link {
-        start: line.cells[first].point,
-        end: line.cells[last].point,
-        target: target.to_string(),
-        kind: None,
+/// The hyperlinks in `line`: runs of cells with the same link id, with
+/// their byte spans.
+fn hyperlinks<'line>(
+    line: &'line LineText,
+    screen: &'line Screen,
+) -> impl Iterator<Item = (Range<usize>, Link)> + 'line {
+    let cells = &line.cells;
+    let mut first = 0;
+    std::iter::from_fn(move || {
+        while first < cells.len() {
+            let id = cells[first].link;
+            let end = cells[first..]
+                .iter()
+                .position(|c| c.link != id)
+                .map_or(cells.len(), |i| first + i);
+            let start = first;
+            first = end;
+            if let Some(target) = screen.link(id) {
+                let span =
+                    cells[start].offset..cells.get(end).map_or(line.text.len(), |c| c.offset);
+                let link = Link {
+                    start: cells[start].point,
+                    end: cells[end - 1].point,
+                    target: target.to_string(),
+                    kind: None,
+                };
+                return Some((span, link));
+            }
+        }
+        None
     })
 }
 
@@ -547,6 +617,30 @@ mod tests {
         t.feed(b"https://x.org/a.png");
         let link = media().link_at(t.screen(), p(0, 16), exists).unwrap();
         assert_eq!(link.target, "https://x.org/a.png");
+    }
+
+    #[test]
+    fn finds_every_link_on_a_line_in_order() {
+        let mut t = Terminal::new(80, 1, 0);
+        t.feed(b"JOT-1 \x1b]8;;https://a.org\x1b\\here\x1b]8;;\x1b\\ cat.png https://x.org/b.png");
+        let kinds = [vec!["png".into()]];
+        let d = Detector::try_new(&kinds, &[r"JOT-\d+".into()]).unwrap();
+        let line = LineText::new(t.screen(), p(0, 0)).unwrap();
+        let found: Vec<(String, Point, Point)> = d
+            .links_in(t.screen(), &line, exists)
+            .into_iter()
+            .map(|l| (l.target, l.start, l.end))
+            .collect();
+        // The file inside the URL is left out: the URL wins, as on Ctrl+click.
+        assert_eq!(
+            found,
+            [
+                ("JOT-1".to_string(), p(0, 0), p(0, 4)),
+                ("https://a.org".to_string(), p(0, 6), p(0, 9)),
+                ("/home/u/cat.png".to_string(), p(0, 11), p(0, 17)),
+                ("https://x.org/b.png".to_string(), p(0, 19), p(0, 37)),
+            ]
+        );
     }
 
     #[test]
