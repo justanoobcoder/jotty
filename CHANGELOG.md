@@ -13,6 +13,8 @@ CHANGELOG
     kinds for an extension they share
 - Ctrl+drag a file or directory named in the output (such as `ls` output)
     to drop it into another application; its name follows the pointer
+- Windows share fontconfig's configuration instead of each loading its
+    own, which saves about 0.7 MiB per window
 - Dropping files onto a window types their paths at the cursor, quoted
     for the shell; dropped text is pasted
 - Ctrl+right click or drag marks files and directories, and Ctrl+drag

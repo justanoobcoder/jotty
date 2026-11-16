@@ -125,16 +125,37 @@ struct FontFile {
     index: u32,
 }
 
-/// A handle to the fontconfig configuration.
+/// A reference to a fontconfig configuration.
 struct Fontconfig(*mut fc::FcConfig);
 
 impl Fontconfig {
-    fn try_new() -> Result<Fontconfig, &'static str> {
-        // SAFETY: returns an owned config or null.
-        let config = unsafe { fc::FcInitLoadConfigAndFonts() };
-        if config.is_null() {
-            Err("fontconfig cannot load its configuration")
-        } else {
+    /// The process's current configuration, which fontconfig loads anyway
+    /// (`FcDefaultSubstitute` uses it): windows share it rather than each
+    /// loading its own, which costs a scan of the font caches and about a
+    /// MiB. If fonts or configuration files changed since it was loaded, a
+    /// new one replaces it first, so that newly installed fonts are found.
+    fn current() -> Result<Fontconfig, &'static str> {
+        const CANNOT_LOAD: &str = "fontconfig cannot load its configuration";
+        // SAFETY: FcConfigReference(NULL) returns the current config, loaded
+        // on first use, with a reference we own, or null. The reference is
+        // released (FcConfigDestroy) before replacing the current config,
+        // which keeps it alive for windows that still hold theirs.
+        unsafe {
+            let config = fc::FcConfigReference(std::ptr::null_mut());
+            if config.is_null() {
+                return Err(CANNOT_LOAD);
+            }
+            if fc::FcConfigUptoDate(config) != 0 {
+                return Ok(Fontconfig(config));
+            }
+            fc::FcConfigDestroy(config);
+            if fc::FcInitReinitialize() == 0 {
+                return Err(CANNOT_LOAD);
+            }
+            let config = fc::FcConfigReference(std::ptr::null_mut());
+            if config.is_null() {
+                return Err(CANNOT_LOAD);
+            }
             Ok(Fontconfig(config))
         }
     }
@@ -233,7 +254,7 @@ impl Fontconfig {
 #[cfg(test)]
 #[must_use]
 pub fn load_emoji_font() -> Option<EmojiFont> {
-    load_emoji_font_with(&Fontconfig::try_new().ok()?)
+    load_emoji_font_with(&Fontconfig::current().ok()?)
 }
 
 /// Finds and loads the system's color emoji font with an already loaded
@@ -254,7 +275,7 @@ fn load_emoji_font_with(fontconfig: &Fontconfig) -> Option<EmojiFont> {
 
 impl Drop for Fontconfig {
     fn drop(&mut self) {
-        // SAFETY: we own the config.
+        // SAFETY: we own a reference to the config; destroying releases it.
         unsafe { fc::FcConfigDestroy(self.0) }
     }
 }
@@ -287,7 +308,7 @@ pub struct Fonts {
 impl Fonts {
     /// Loads `family` in all four styles at `px` pixels per em.
     pub fn try_new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
-        let fontconfig = Fontconfig::try_new().map_err(|_| FontError::NotFound(family.into()))?;
+        let fontconfig = Fontconfig::current().map_err(|_| FontError::NotFound(family.into()))?;
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),
@@ -2001,6 +2022,19 @@ mod tests {
         let c = overlay(&a, &b);
         assert_eq!((c.left, c.top, c.width, c.height), (0, 3, 2, 3));
         assert_eq!(c.data, [0, 30, 0, 40, 10, 20]);
+    }
+
+    /// Needs fonts installed; skipped (passes) where none are available.
+    #[test]
+    fn windows_share_the_fontconfig_configuration() {
+        let (Ok(a), Ok(b)) = (
+            Fonts::try_new("monospace", &[], 16.0),
+            Fonts::try_new("monospace", &[], 20.0),
+        ) else {
+            eprintln!("no system fonts, skipping");
+            return;
+        };
+        assert_eq!(a.fontconfig.0, b.fontconfig.0);
     }
 
     /// Needs fonts installed; skipped (passes) where none are available,

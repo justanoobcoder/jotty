@@ -343,7 +343,9 @@ repainted; only bands that differ from the previous frame are damaged.
 
 **Fonts.** fontconfig picks the regular, bold, italic and bold-italic faces,
 and finds fallback faces per character (excluding color fonts), with the
-results cached. A grapheme cluster is drawn as the single character it
+results cached. All windows use fontconfig's current configuration of the
+process; a window opened or reloaded after fonts or configuration files
+changed loads a new one in its place, so newly installed fonts are found. A grapheme cluster is drawn as the single character it
 composes to under NFC when there is one (`e` + U+0301 → `é`); otherwise
 its combining marks are drawn over the first character, centered.
 
