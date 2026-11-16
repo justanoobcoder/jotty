@@ -3097,9 +3097,9 @@ impl TermWindow {
                     self.search_step(direction, /* inclusive= */ true);
                 } else {
                     let bytes = self.ime.done();
-                    if self.vi.is_some() {
-                        // Vi mode takes keys, not text, and the program
-                        // isn't the one being typed to.
+                    if self.vi.is_some() || self.hints.is_some() {
+                        // Vi mode and hints take keys, not text, and the
+                        // program isn't the one being typed to.
                     } else if !bytes.is_empty() {
                         // Text from an input method is typing too.
                         self.hide_pointer(shared);
