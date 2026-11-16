@@ -39,7 +39,6 @@ nothing surprises you.
   Other axes keep their defaults, and italic is not synthesized.
 - **No synthetic bold or italic.** If the family has no bold or italic face,
   the regular face is used.
-- The font size changes in whole points (Ctrl+=/Ctrl+-).
 
 ## Terminal emulation
 
@@ -302,8 +301,8 @@ nothing surprises you.
   that don't fit are left out.
 - A frame that fails to draw is retried every 200 ms; the window closes
   after 50 failures in a row (10 seconds).
-- Windows of the same process don't share fonts or glyph atlases: each
-  loads its own.
+- Windows of the same process share the font files, but each looks up
+  its own faces and rasterizes glyphs into its own atlas.
 
 ## `jotty config`
 

@@ -15,7 +15,8 @@ themselves once it is gone. What a window asks of the whole application
 (a reload, a new window) is queued and done after the event, so no handler
 holds a window while the list changes. A window closes when its child hangs
 up or the compositor asks; jotty exits after the last one, with that
-window's exit status. Each window loads its own fonts and glyph atlas.
+window's exit status. Each window loads its own fonts and glyph atlas;
+the font files' mappings and fontconfig's configuration are shared.
 
 **Single instance.** With `--single-instance`, `main.rs` calls
 `instance::start` before connecting to Wayland. Under a lock file
