@@ -15,7 +15,19 @@ Hints let you pick text on the screen from the keyboard.
 | Enter | Open it, or copy it if it can't be opened |
 | Escape | Leave |
 
-The newest output gets the shortest labels.
+The newest output gets the shortest labels. Labels are typed by the
+key's letter in a Latin layout, whatever layout is active.
+
+## Labels
+
+```toml
+[hints]
+alphabet = "jfkdlsa"   # home row only
+```
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `alphabet` | `"asdfghjklqwertyuiopzxcvbnm"` | The characters labels are made of, the easiest to type first. At least two lowercase letters, all different. |
 
 ## Labeling more text
 

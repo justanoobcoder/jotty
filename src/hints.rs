@@ -12,8 +12,9 @@ use crate::selection::{Point, Selection, Unit};
 use crate::terminal::Screen;
 use crate::text::LineText;
 
-/// The characters labels are made of, the easiest to type first.
-const ALPHABET: &str = "asdfghjklqwertyuiopzxcvbnm";
+/// The characters labels are made of by default, the easiest to type
+/// first.
+pub const DEFAULT_ALPHABET: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 /// At most this many files named on the screen are hinted.
 const MAX_FILES: usize = 1000;
@@ -57,7 +58,7 @@ impl Patterns {
             path: Regex::new(&format!(r"(?:~|\.{{1,2}})?(?:/{path_char}+)+/?"))?,
             nix32: Regex::new(r"\b[0-9a-df-np-sv-z]{52}\b")?,
             uuid: Regex::new(r"\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b")?,
-            hex: Regex::new(r"\b[0-9a-f]{7,128}\b")?,
+            hex: Regex::new(r"\b(?:[0-9a-f]{7,128}|[0-9A-F]{7,128})\b")?,
         })
     }
 
@@ -146,7 +147,7 @@ fn ipv6(text: &str, mut span: Range<usize>) -> Option<Range<usize>> {
 /// Whether `text`, all hexadecimal, looks like a hash rather than a word
 /// (`deadbeef`) or a number: it has both letters and digits.
 fn hex_hash(text: &str) -> bool {
-    text.bytes().any(|b| b.is_ascii_digit()) && text.bytes().any(|b| b.is_ascii_lowercase())
+    text.bytes().any(|b| b.is_ascii_digit()) && text.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
 /// Something on the screen a hint can pick.
@@ -227,10 +228,31 @@ fn shown(screen: &Screen, start: Point, end: Point) -> String {
     Selection::span(start, end, Unit::Fixed).text(screen)
 }
 
-/// `n` labels made of [`ALPHABET`], none the start of another, shortest
-/// first.
-fn labels(n: usize) -> Vec<String> {
-    let alphabet: Vec<char> = ALPHABET.chars().collect();
+/// Why `alphabet` can't make labels. Labels are typed by the key's
+/// unshifted letter in a Latin layout, which only `a` to `z` have in every
+/// layout (digits need Shift in AZERTY, punctuation turns into letters in
+/// Cyrillic ones), and only an alphabet of two characters or more makes
+/// labels that grow.
+pub fn check_alphabet(alphabet: &str) -> Result<(), String> {
+    if let Some(c) = alphabet.chars().find(|c| !c.is_ascii_lowercase()) {
+        return Err(format!("{c:?} can't be typed; use lowercase letters"));
+    }
+    if let Some((_, c)) = alphabet
+        .char_indices()
+        .find(|&(i, c)| alphabet[..i].contains(c))
+    {
+        return Err(format!("{c:?} is repeated"));
+    }
+    if alphabet.len() < 2 {
+        return Err("needs at least two characters".into());
+    }
+    Ok(())
+}
+
+/// `n` labels made of `alphabet`, none the start of another, shortest
+/// first. `alphabet` passed [`check_alphabet`].
+fn labels(n: usize, alphabet: &str) -> Vec<String> {
+    let alphabet: Vec<char> = alphabet.chars().collect();
     let mut labels: Vec<String> = alphabet.iter().map(char::to_string).collect();
     // Until there are enough, the last of the shortest labels (the hardest
     // to type) becomes the prefix of longer ones. The labels stay sorted
@@ -265,14 +287,15 @@ pub struct Hints {
 }
 
 impl Hints {
-    /// Labels `targets`, the shortest labels going to the last ones (the
-    /// newest output), or `None` without targets.
+    /// Labels `targets` with characters of `alphabet`, the shortest labels
+    /// going to the last ones (the newest output), or `None` without
+    /// targets.
     #[must_use]
-    pub fn new(targets: Vec<Target>) -> Option<Hints> {
+    pub fn new(targets: Vec<Target>, alphabet: &str) -> Option<Hints> {
         if targets.is_empty() {
             return None;
         }
-        let mut labels = labels(targets.len());
+        let mut labels = labels(targets.len(), alphabet);
         labels.reverse();
         let hints = targets
             .into_iter()
@@ -394,8 +417,8 @@ mod tests {
 
     #[test]
     fn labels_are_shortest_first_and_none_starts_another() {
-        assert_eq!(labels(3), ["a", "s", "d"]);
-        let many = labels(100);
+        assert_eq!(labels(3, DEFAULT_ALPHABET), ["a", "s", "d"]);
+        let many = labels(100, DEFAULT_ALPHABET);
         assert_eq!(many.len(), 100);
         assert!(many.windows(2).all(|w| w[0].len() <= w[1].len()));
         for a in &many {
@@ -406,6 +429,11 @@ mod tests {
         // With more targets than letters, some letters become prefixes.
         assert!(many.iter().any(|l| l.len() == 1));
         assert!(many.iter().all(|l| l.len() <= 2));
+    }
+
+    #[test]
+    fn labels_use_the_given_alphabet() {
+        assert_eq!(labels(4, "jkl"), ["j", "k", "lj", "lk"]);
     }
 
     #[test]
@@ -428,6 +456,11 @@ mod tests {
         assert_eq!(
             matched("commit 1af659b and deadbeef 1234567 3f14d33e"),
             ["1af659b", "3f14d33e"]
+        );
+        // All uppercase too, but not mixed case, which is more likely a word.
+        assert_eq!(
+            matched("sum 3F14D33E9A and DEADBEEF 3f14D33e"),
+            ["3F14D33E9A"]
         );
         let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
         assert_eq!(matched(&format!("hash = \"{sri}\";")), [sri]);
@@ -520,7 +553,7 @@ mod tests {
     #[test]
     fn typing_a_label_picks_its_target() {
         let targets: Vec<Target> = (0..30).map(|i| target("x", i)).collect();
-        let mut hints = Hints::new(targets).unwrap();
+        let mut hints = Hints::new(targets, DEFAULT_ALPHABET).unwrap();
         // The newest target gets the first label.
         let last = hints.visible().find(|(h, _)| h.label == "a").unwrap().0;
         assert_eq!(last.target.start.line, 29);
@@ -555,7 +588,7 @@ mod tests {
     #[test]
     fn backspace_takes_back_a_character() {
         let targets: Vec<Target> = (0..30).map(|i| target("x", i)).collect();
-        let mut hints = Hints::new(targets).unwrap();
+        let mut hints = Hints::new(targets, DEFAULT_ALPHABET).unwrap();
         let prefix = hints
             .visible()
             .find(|(h, _)| h.label.len() == 2)
@@ -579,7 +612,7 @@ mod tests {
 
     #[test]
     fn no_targets_means_no_hints() {
-        assert!(Hints::new(Vec::new()).is_none());
+        assert!(Hints::new(Vec::new(), DEFAULT_ALPHABET).is_none());
     }
 
     #[test]
@@ -588,7 +621,7 @@ mod tests {
         t.feed(b"aaa1111\r\nbbb2222");
         let d = Detector::try_new(&[], &[]).unwrap();
         let targets = find(t.screen(), &d, &patterns(), |_| None, |_| false);
-        let mut hints = Hints::new(targets).unwrap();
+        let mut hints = Hints::new(targets, DEFAULT_ALPHABET).unwrap();
         // The newest target has the first label.
         assert!(hints.type_char('a'));
         assert_eq!(hints.chosen().unwrap().text, "bbb2222");
@@ -614,7 +647,7 @@ mod tests {
             t.feed(b"\r\nx");
         }
         let targets: Vec<Target> = (0..30).map(|i| target("x", i)).collect();
-        let mut hints = Hints::new(targets).unwrap();
+        let mut hints = Hints::new(targets, DEFAULT_ALPHABET).unwrap();
         let long: Vec<(isize, char)> = hints
             .visible()
             .filter(|(h, _)| h.label.len() == 2)
@@ -635,7 +668,7 @@ mod tests {
         t.feed(b"aaa1111");
         let d = Detector::try_new(&[], &[]).unwrap();
         let targets = find(t.screen(), &d, &patterns(), |_| None, |_| false);
-        let mut hints = Hints::new(targets).unwrap();
+        let mut hints = Hints::new(targets, DEFAULT_ALPHABET).unwrap();
         t.feed(b"\x1b[2J");
         assert!(!hints.follow_output(t.screen(), 0));
     }

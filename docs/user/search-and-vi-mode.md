@@ -31,6 +31,7 @@ Keys don't reach the program while vi mode is on.
 | `h` `j` `k` `l`, arrows | Move; a count repeats (`5j`) |
 | `w` `b` `e`, `W` `B` `E` | Next word, previous word, end of word |
 | `0` `^` `$` | Start of the line, first non-blank, last non-blank |
+| `f` `F` `t` `T` and a character | To the next or previous one on the line, or just before it; `;` repeats, `,` repeats backward |
 | `gg` `G` | Top of the history, bottom of the screen |
 | `H` `M` `L` | Top, middle, bottom of the view |
 | Ctrl+U / Ctrl+D, Ctrl+B / Ctrl+F | Half a page, a page up or down |

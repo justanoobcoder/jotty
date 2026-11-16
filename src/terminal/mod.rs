@@ -359,6 +359,8 @@ pub struct Modes {
     /// `?2026`: the program is in the middle of an update; hold drawing
     /// until it ends.
     pub synchronized: bool,
+    /// `?5` (DECSCNM): the default foreground and background are swapped.
+    pub reverse_video: bool,
     autowrap: bool,
     origin: bool,
     insert: bool,
@@ -375,6 +377,7 @@ impl Default for Modes {
             mouse: MouseMode::Off,
             mouse_sgr: false,
             synchronized: false,
+            reverse_video: false,
             show_cursor: true,
             autowrap: true,
             origin: false,
@@ -2120,6 +2123,7 @@ impl Screen {
     fn set_private_mode(&mut self, mode: u16, on: bool) {
         match mode {
             1 => self.modes.app_cursor = on,
+            5 => self.modes.reverse_video = on,
             6 => {
                 self.modes.origin = on;
                 self.goto(0, 0);
@@ -2184,6 +2188,7 @@ impl Screen {
         let m = &self.modes;
         Some(match mode {
             1 => m.app_cursor,
+            5 => m.reverse_video,
             6 => m.origin,
             7 => m.autowrap,
             25 => m.show_cursor,

@@ -88,6 +88,8 @@ editor = []    # e.g. ["nvim", "-R"]
 # Let programs write the clipboard and the primary selection (OSC 52).
 # Reading them is always refused.
 osc52 = true
+# Characters that end a word for double-click selection, besides whitespace.
+word_delimiters = "\"'`()[]{}<>|,;"
 
 [colors]
 foreground = "#dcdcdc"
@@ -184,6 +186,10 @@ regex = []
 # existing file.
 # regex = ['\b[A-Z]+-\d+\b']
 regex = []
+
+# The characters labels are made of, the easiest to type first: at least
+# two lowercase letters, all different.
+alphabet = "asdfghjklqwertyuiopzxcvbnm"
 
 # Kinds of files whose paths are links: Ctrl+click opens an existing file
 # with one of the kind's extensions (relative paths are resolved in the

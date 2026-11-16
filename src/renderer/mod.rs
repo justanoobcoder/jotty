@@ -228,11 +228,13 @@ impl Theme {
         }
     }
 
-    /// The theme with the colors the program changed (OSC 4, 10, 11).
+    /// The theme with the colors the program changed (OSC 4, 10, 11),
+    /// and the default ones swapped in reverse video (DECSCNM).
     #[must_use]
     pub fn effective(&self, screen: &Screen) -> Cow<'_, Theme> {
         let colors = screen.color_overrides();
-        if colors.is_empty() {
+        let reverse = screen.modes.reverse_video;
+        if colors.is_empty() && !reverse {
             return Cow::Borrowed(self);
         }
         let mut theme = self.clone();
@@ -243,6 +245,9 @@ impl Theme {
             theme.background = c;
         }
         theme.overrides = colors.palette;
+        if reverse {
+            std::mem::swap(&mut theme.foreground, &mut theme.background);
+        }
         Cow::Owned(theme)
     }
 
@@ -1092,6 +1097,18 @@ mod tests {
         assert_eq!(theme.indexed(2), base.indexed(2));
     }
 
+    #[test]
+    fn reverse_video_swaps_the_default_colors() {
+        let base = theme();
+        let mut t = Terminal::new(10, 1, 0);
+        t.feed(b"\x1b[?5h");
+        let theme = base.effective(t.screen());
+        assert_eq!(theme.foreground, base.background);
+        assert_eq!(theme.background, base.foreground);
+        t.feed(b"\x1b[?5l");
+        assert!(matches!(base.effective(t.screen()), Cow::Borrowed(_)));
+    }
+
     fn frame(screen: &Screen) -> Frame<'_> {
         Frame {
             screen,
@@ -1490,7 +1507,7 @@ mod tests {
         let detector = Detector::try_new(&[], &[]).unwrap();
         let patterns = Patterns::try_new(&[]).unwrap();
         let targets = hints::find(term.screen(), &detector, &patterns, |_| None, |_| false);
-        let hints = Hints::new(targets).unwrap();
+        let hints = Hints::new(targets, crate::hints::DEFAULT_ALPHABET).unwrap();
         let mut f = frame(term.screen());
         f.hints = Some(&hints);
         let t = theme();

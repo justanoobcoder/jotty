@@ -61,7 +61,6 @@ nothing surprises you.
   there. Install the entry (see
   [configuration](terminal.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
-- The word delimiters for double-click selection can't be configured.
 - If a command's last line has no newline and the next prompt starts on
   it, that line isn't part of the selected output. Output marks are kept
   per row, so they are lost when the shell redraws the screen without
@@ -81,8 +80,8 @@ nothing surprises you.
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
 - Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027),
-  blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
-  (logged at `debug` level).
+  blinking text and DECCOLM. Unhandled sequences are ignored (logged at
+  `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
   placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,
   1024 images and 4096 placements per screen; past that the oldest are
@@ -220,7 +219,7 @@ nothing surprises you.
   mouse. The selection is kept while output goes elsewhere, but cleared
   when its text changes or it scrolls out of the history.
 - Vi mode has motions, visual modes, yank and search, but not vim's text
-  objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
+  objects (`iw`), marks or registers. `G` goes to the bottom of the
   screen.
 - While a program has mouse reporting on, Ctrl+click, Ctrl+drag and
   Ctrl+right click go to the program; hold Shift as well to open a link or
@@ -247,10 +246,9 @@ nothing surprises you.
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
   long URL cut by the edge) aren't labeled. A path leaves out the line
-  number after it (`/etc/x:120`). Hex hashes are only matched in
-  lowercase. Bringing the labels up checks every name on the screen on the
+  number after it (`/etc/x:120`). Hex hashes in mixed case aren't
+  matched. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
-  The label alphabet can't be configured.
 - No `idle-inhibit`.
 - Dropped files are typed as paths, quoted for POSIX shells and fish. A
   `file://` URI's host is ignored; in a path, bytes that aren't UTF-8 are

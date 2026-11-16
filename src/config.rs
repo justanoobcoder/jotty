@@ -12,9 +12,10 @@ use std::{fmt, io};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::color::Rgb;
-use crate::hints::Patterns;
+use crate::hints::{self, Patterns};
 use crate::keybinds::Keybinds;
 use crate::links::Detector;
+use crate::selection::DEFAULT_WORD_DELIMITERS;
 use crate::terminal::CursorShape;
 
 /// The config file. Every key is optional; missing keys keep their defaults.
@@ -33,12 +34,24 @@ pub struct Config {
     pub files: Files,
 }
 
-/// The `[hints]` section: what the `hints` action labels besides links.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+/// The `[hints]` section: what the `hints` action labels besides links,
+/// and with what.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HintsConfig {
     /// Regular expressions for more text to label, to copy or insert.
     pub regex: Vec<String>,
+    /// The characters labels are made of, the easiest to type first.
+    pub alphabet: String,
+}
+
+impl Default for HintsConfig {
+    fn default() -> Self {
+        Self {
+            regex: Vec::new(),
+            alphabet: hints::DEFAULT_ALPHABET.into(),
+        }
+    }
 }
 
 /// The `[url]` section: opening links.
@@ -315,6 +328,9 @@ pub struct TerminalConfig {
     pub editor: Vec<String>,
     /// Let programs write the clipboard and the primary selection (OSC 52).
     pub osc52: bool,
+    /// Characters that end a word for double-click selection, besides
+    /// whitespace.
+    pub word_delimiters: String,
 }
 
 /// What a Ctrl+double click on a command's output does with it.
@@ -340,6 +356,7 @@ impl Default for TerminalConfig {
             output_click: OutputClick::Select,
             editor: Vec::new(),
             osc52: true,
+            word_delimiters: DEFAULT_WORD_DELIMITERS.into(),
         }
     }
 }
@@ -560,6 +577,9 @@ impl Config {
         if self.window.app_id.is_empty() {
             self.window.app_id = window.app_id;
         }
+        if self.hints.alphabet.is_empty() {
+            self.hints.alphabet = hints::DEFAULT_ALPHABET.into();
+        }
     }
 
     /// Rejects values that deserialize but can't be used, so that the
@@ -573,6 +593,8 @@ impl Config {
         }
         Patterns::try_new(&self.hints.regex)
             .map_err(|e| toml::de::Error::custom(format!("hints.regex: {e}")))?;
+        hints::check_alphabet(&self.hints.alphabet)
+            .map_err(|e| toml::de::Error::custom(format!("hints.alphabet: {e}")))?;
         // The extensions become one regex, which can be too large.
         Detector::try_new(&self.files.extensions_by_precedence(), &[])
             .map_err(|e| toml::de::Error::custom(format!("files: {e}")))?;
@@ -650,11 +672,14 @@ mod tests {
             term = ""
             [window]
             app_id = ""
+            [hints]
+            alphabet = ""
             "#,
         )
         .unwrap();
         assert_eq!(config.terminal, TerminalConfig::default());
         assert_eq!(config.window.app_id, WindowConfig::default().app_id);
+        assert_eq!(config.hints, HintsConfig::default());
     }
 
     #[test]
@@ -670,6 +695,17 @@ mod tests {
     fn invalid_hints_regex_is_rejected() {
         let error = Config::parse("[hints]\nregex = [\"ok\", \"(\"]").unwrap_err();
         assert!(error.to_string().contains("hints.regex"), "{error}");
+    }
+
+    #[test]
+    fn hint_alphabets_that_cant_label_are_rejected() {
+        for alphabet in ["a", "aa", "asdfa", "aSd", "a d", "aé", "as1", "as;"] {
+            let error =
+                Config::parse(&format!("[hints]\nalphabet = \"{alphabet}\"")).expect_err(alphabet);
+            assert!(error.to_string().contains("hints.alphabet"), "{error}");
+        }
+        let config = Config::parse("[hints]\nalphabet = \"jkl\"").unwrap();
+        assert_eq!(config.hints.alphabet, "jkl");
     }
 
     #[test]

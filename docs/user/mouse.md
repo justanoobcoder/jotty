@@ -5,7 +5,7 @@
 | Mouse | Selects |
 | --- | --- |
 | Drag | The text you drag over |
-| Double click | A word; paths, URLs and options such as `--color=auto` count as one |
+| Double click | A word; paths, URLs and options such as `--color=auto` count as one (see `terminal.word_delimiters`) |
 | Triple click | A whole line |
 | Double or triple click, then drag | Whole words or lines |
 | Shift+click, then Shift+click again | Everything between the two clicks |

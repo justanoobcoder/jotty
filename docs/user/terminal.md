@@ -21,6 +21,7 @@ cursor_blink = true
 | `output_click` | `"select"` | What Ctrl+double click on a command's output does; see [Shell integration](shell-integration.md#command-output). |
 | `editor` | `[]` | Editor that opens a command's output; see [Shell integration](shell-integration.md#the-editor). |
 | `osc52` | `true` | Let programs copy to the clipboard; see [below](#clipboard-from-programs). |
+| `word_delimiters` | ``"'`()[]{}<>\|,;`` | Characters that end a word for double-click selection, besides whitespace. |
 
 Programs such as Neovim may change the cursor shape while they run.
 

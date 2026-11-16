@@ -6,14 +6,14 @@
 
 use crate::terminal::{Cell, Flags, Screen};
 
-/// Characters that end a word for double-click selection, besides
-/// whitespace. Paths, URLs and options stay in one piece.
-const WORD_DELIMITERS: &str = "\"'`()[]{}<>|,;";
+/// Characters that end a word for double-click selection by default,
+/// besides whitespace. Paths, URLs and options stay in one piece.
+pub const DEFAULT_WORD_DELIMITERS: &str = "\"'`()[]{}<>|,;";
 
-fn is_word(cell: &Cell) -> bool {
+fn is_word(cell: &Cell, delimiters: &str) -> bool {
     // The spacer of a wide character belongs to that character.
     cell.flags.contains(Flags::WIDE_SPACER)
-        || !(cell.c.is_whitespace() || WORD_DELIMITERS.contains(cell.c))
+        || !(cell.c.is_whitespace() || delimiters.contains(cell.c))
 }
 
 /// A fingerprint of the text of the row at `line`.
@@ -36,13 +36,13 @@ pub struct Point {
 }
 
 /// First and last cell of the word under `at`, following soft-wrapped
-/// lines, or `None` on whitespace and delimiters.
-fn word_bounds(screen: &Screen, at: Point) -> Option<(Point, Point)> {
+/// lines, or `None` on whitespace and `delimiters`.
+fn word_bounds(screen: &Screen, at: Point, delimiters: &str) -> Option<(Point, Point)> {
     let word_at = |p: Point| {
         screen
             .row_at(p.line)
             .and_then(|r| r.cells().get(p.col))
-            .is_some_and(is_word)
+            .is_some_and(|cell| is_word(cell, delimiters))
     };
     if !word_at(at) {
         return None;
@@ -183,10 +183,10 @@ impl Selection {
     }
 
     /// The word under `at`, following soft-wrapped lines, or `None` on
-    /// whitespace and delimiters.
+    /// whitespace and `delimiters`.
     #[must_use]
-    pub fn word(screen: &Screen, at: Point) -> Option<Self> {
-        let (start, end) = word_bounds(screen, at)?;
+    pub fn word(screen: &Screen, at: Point, delimiters: &str) -> Option<Self> {
+        let (start, end) = word_bounds(screen, at, delimiters)?;
         Some(Selection::span(start, end, Unit::Word))
     }
 
@@ -202,13 +202,14 @@ impl Selection {
         self.head = to;
     }
 
-    /// Extends the selection to `to` while dragging, by whole words or
-    /// lines if it was started by a double or triple click.
-    pub fn extend(&mut self, screen: &Screen, to: Point) {
+    /// Extends the selection to `to` while dragging, by whole words (ended
+    /// by whitespace and `delimiters`) or lines if it was started by a
+    /// double or triple click.
+    pub fn extend(&mut self, screen: &Screen, to: Point, delimiters: &str) {
         let (start, end) = match self.unit {
             Unit::Cell => return self.update(to),
             Unit::Fixed => return,
-            Unit::Word => word_bounds(screen, to).unwrap_or((to, to)),
+            Unit::Word => word_bounds(screen, to, delimiters).unwrap_or((to, to)),
             Unit::Line => line_bounds(screen, to),
         };
         let (origin_start, origin_end) = self.origin;
@@ -401,7 +402,7 @@ mod tests {
     }
 
     fn word_text(t: &Terminal, at: Point) -> Option<String> {
-        Selection::word(t.screen(), at).map(|s| s.text(t.screen()))
+        Selection::word(t.screen(), at, DEFAULT_WORD_DELIMITERS).map(|s| s.text(t.screen()))
     }
 
     #[test]
@@ -419,10 +420,22 @@ mod tests {
     }
 
     #[test]
+    fn words_end_at_the_given_delimiters() {
+        let mut t = Terminal::new(40, 1, 10);
+        t.feed(b"a/b:c (d)");
+        let word = |col, delimiters| {
+            Selection::word(t.screen(), p(0, col), delimiters).map(|s| s.text(t.screen()))
+        };
+        assert_eq!(word(2, "/:").as_deref(), Some("b"));
+        assert_eq!(word(2, "").as_deref(), Some("a/b:c"));
+        assert_eq!(word(7, "").as_deref(), Some("(d)"));
+    }
+
+    #[test]
     fn single_character_word_is_not_empty() {
         let mut t = Terminal::new(10, 1, 10);
         t.feed(b"a b");
-        let s = Selection::word(t.screen(), p(0, 0)).unwrap();
+        let s = Selection::word(t.screen(), p(0, 0), DEFAULT_WORD_DELIMITERS).unwrap();
         assert!(!s.is_empty());
         assert!(s.contains(p(0, 0)));
         assert_eq!(s.text(t.screen()), "a");
@@ -458,15 +471,15 @@ mod tests {
         let mut t = Terminal::new(40, 2, 10);
         t.feed(b"alpha beta gamma\r\ndelta");
         let screen = t.screen();
-        let mut s = Selection::word(screen, p(0, 7)).unwrap();
-        s.extend(screen, p(0, 12));
+        let mut s = Selection::word(screen, p(0, 7), DEFAULT_WORD_DELIMITERS).unwrap();
+        s.extend(screen, p(0, 12), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "beta gamma");
-        s.extend(screen, p(0, 1));
+        s.extend(screen, p(0, 1), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "alpha beta");
         // Dragging back into the clicked word keeps just that word.
-        s.extend(screen, p(0, 8));
+        s.extend(screen, p(0, 8), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "beta");
-        s.extend(screen, p(1, 2));
+        s.extend(screen, p(1, 2), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "beta gamma\ndelta");
     }
 
@@ -476,9 +489,9 @@ mod tests {
         t.feed(b"one\r\ntwo\r\nthree");
         let screen = t.screen();
         let mut s = Selection::line(screen, p(1, 1));
-        s.extend(screen, p(2, 0));
+        s.extend(screen, p(2, 0), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "two\nthree");
-        s.extend(screen, p(0, 5));
+        s.extend(screen, p(0, 5), DEFAULT_WORD_DELIMITERS);
         assert_eq!(s.text(screen), "one\ntwo");
     }
 
@@ -486,7 +499,7 @@ mod tests {
     fn selection_follows_scrolled_output() {
         let mut t = Terminal::new(10, 3, 10);
         t.feed(b"one\r\ntwo\r\n");
-        let mut s = Selection::word(t.screen(), p(1, 0)).unwrap();
+        let mut s = Selection::word(t.screen(), p(1, 0), DEFAULT_WORD_DELIMITERS).unwrap();
         let before = s.live_rows(t.screen());
         let scrolled = t.screen().grid().scrolled;
         t.feed(b"x\r\ny\r\n");
@@ -501,12 +514,12 @@ mod tests {
     fn selection_is_dropped_when_its_text_changes() {
         let mut t = Terminal::new(10, 3, 10);
         t.feed(b"one\r\ntwo");
-        let mut s = Selection::word(t.screen(), p(1, 0)).unwrap();
+        let mut s = Selection::word(t.screen(), p(1, 0), DEFAULT_WORD_DELIMITERS).unwrap();
         let before = s.live_rows(t.screen());
         t.feed(b"\rTWO");
         assert!(!s.follow_output(t.screen(), &before, 0));
         // Output elsewhere keeps it.
-        let mut s = Selection::word(t.screen(), p(0, 0)).unwrap();
+        let mut s = Selection::word(t.screen(), p(0, 0), DEFAULT_WORD_DELIMITERS).unwrap();
         let before = s.live_rows(t.screen());
         t.feed(b"!");
         assert!(s.follow_output(t.screen(), &before, 0));
@@ -516,7 +529,7 @@ mod tests {
     fn selection_is_dropped_when_it_leaves_the_history() {
         let mut t = Terminal::new(10, 2, 1);
         t.feed(b"one\r\n");
-        let mut s = Selection::word(t.screen(), p(0, 0)).unwrap();
+        let mut s = Selection::word(t.screen(), p(0, 0), DEFAULT_WORD_DELIMITERS).unwrap();
         let before = s.live_rows(t.screen());
         t.feed(b"a\r\nb\r\nc\r\n");
         assert!(!s.follow_output(t.screen(), &before, 3));

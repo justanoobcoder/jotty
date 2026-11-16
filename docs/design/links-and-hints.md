@@ -26,8 +26,8 @@ files dragged out of a window aren't taken back by it.
 `/24` prefix length or a `:8080` port) and IPv6 addresses, Nix hashes (SRI
 `sha256-…=` of the right length for md5, sha1, sha256 or sha512, or 52
 characters of base 32), paths starting with `/`, `~/`, `./` or `../`, hex
-hashes of 7 to 128 characters with both letters and digits (`1af659b`, not
-`deadbeef`), and names of existing files. The newest output gets the
+hashes of 7 to 128 characters in one case with both letters and digits
+(`1af659b` or `1AF659B`, not `deadbeef` or `1aF659b`), and names of existing files. The newest output gets the
 shortest labels. Whether a target names a file is checked when it is
 opened. Copying a link gives its target (the URL of a hyperlink, the
 absolute path of a file). Output keeps arriving while the labels are up:
