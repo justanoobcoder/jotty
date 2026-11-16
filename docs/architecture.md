@@ -345,9 +345,10 @@ repainted; only bands that differ from the previous frame are damaged.
 and finds fallback faces per character (excluding color fonts), with the
 results cached. All windows use fontconfig's current configuration of the
 process; a window opened or reloaded after fonts or configuration files
-changed loads a new one in its place, so newly installed fonts are found. A grapheme cluster is drawn as the single character it
-composes to under NFC when there is one (`e` + U+0301 → `é`); otherwise
-its combining marks are drawn over the first character, centered.
+changed loads a new one in its place, so newly installed fonts are found.
+A grapheme cluster is drawn as the single character it composes to under
+NFC when there is one (`e` + U+0301 → `é`); otherwise its combining marks
+are drawn over the first character, centered.
 
 **Color emoji** (`emoji.rs`) come from the font fontconfig picks for
 `emoji` with color, loaded on first use. Characters that are emoji by

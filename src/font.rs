@@ -133,30 +133,37 @@ impl Fontconfig {
     /// (`FcDefaultSubstitute` uses it): windows share it rather than each
     /// loading its own, which costs a scan of the font caches and about a
     /// MiB. If fonts or configuration files changed since it was loaded, a
-    /// new one replaces it first, so that newly installed fonts are found.
+    /// new one replaces it first, so that newly installed fonts are found;
+    /// if the new one can't be loaded (a configuration file being edited),
+    /// the old one is kept.
+    ///
+    /// Not to be called from several threads at once: `FcConfigUptoDate`
+    /// writes the shared config unsynchronized.
     fn current() -> Result<Fontconfig, &'static str> {
-        const CANNOT_LOAD: &str = "fontconfig cannot load its configuration";
         // SAFETY: FcConfigReference(NULL) returns the current config, loaded
-        // on first use, with a reference we own, or null. The reference is
-        // released (FcConfigDestroy) before replacing the current config,
-        // which keeps it alive for windows that still hold theirs.
+        // on first use, with a reference we own, or null; FcConfigUptoDate
+        // takes and releases a reference of its own. Replacing the current
+        // config (FcInitReinitialize) only drops the global's reference to
+        // the old one, so the reference held here, like those of other
+        // windows, stays valid until released by `Drop`.
         unsafe {
             let config = fc::FcConfigReference(std::ptr::null_mut());
             if config.is_null() {
-                return Err(CANNOT_LOAD);
+                return Err("fontconfig cannot load its configuration");
             }
-            if fc::FcConfigUptoDate(config) != 0 {
-                return Ok(Fontconfig(config));
+            let config = Fontconfig(config);
+            if fc::FcConfigUptoDate(config.0) != 0 {
+                return Ok(config);
             }
-            fc::FcConfigDestroy(config);
             if fc::FcInitReinitialize() == 0 {
-                return Err(CANNOT_LOAD);
+                log::warn!("fontconfig cannot reload its configuration; keeping the old one");
+                return Ok(config);
             }
-            let config = fc::FcConfigReference(std::ptr::null_mut());
-            if config.is_null() {
-                return Err(CANNOT_LOAD);
+            let new = fc::FcConfigReference(std::ptr::null_mut());
+            if new.is_null() {
+                return Ok(config);
             }
-            Ok(Fontconfig(config))
+            Ok(Fontconfig(new))
         }
     }
 
