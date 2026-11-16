@@ -153,6 +153,10 @@ reload_config = ["ctrl+shift+r"]
 # terminal.editor in a new window (needs shell integration marks).
 copy_last_output = []
 open_last_output = []
+# Label links, paths, hashes and addresses on the screen; type a label to
+# pick one, then Ctrl+C copies it, Ctrl+O opens it, Ctrl+I inserts it and
+# Enter opens it (or copies what can't be opened).
+hints = ["ctrl+shift+e"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set

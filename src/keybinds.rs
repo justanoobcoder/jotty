@@ -47,6 +47,9 @@ pub enum Action {
     /// Open the output of the last command that finished in
     /// `terminal.editor`.
     OpenLastOutput,
+    /// Label links and other useful text on the screen, to pick one with
+    /// the keyboard.
+    Hints,
 }
 
 impl Action {
@@ -78,11 +81,12 @@ impl Action {
             | Action::ViMode
             | Action::ReloadConfig
             | Action::CopyLastOutput
-            | Action::OpenLastOutput => false,
+            | Action::OpenLastOutput
+            | Action::Hints => false,
         }
     }
 
-    const ALL: [(&'static str, Action); 20] = [
+    const ALL: [(&'static str, Action); 21] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -103,6 +107,7 @@ impl Action {
         ("reload_config", Action::ReloadConfig),
         ("copy_last_output", Action::CopyLastOutput),
         ("open_last_output", Action::OpenLastOutput),
+        ("hints", Action::Hints),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -132,6 +137,7 @@ impl Action {
             Action::NewWindow => &["ctrl+shift+n"],
             Action::ViMode => &["ctrl+shift+space"],
             Action::ReloadConfig => &["ctrl+shift+r"],
+            Action::Hints => &["ctrl+shift+e"],
         }
     }
 }
@@ -444,9 +450,18 @@ mod tests {
                     | Action::Paste
                     | Action::CopyLastOutput
                     | Action::OpenLastOutput
+                    | Action::Hints
             );
             assert_eq!(action.repeats(), !one_shot, "{action:?}");
         }
+    }
+
+    #[test]
+    fn hints_default_to_ctrl_shift_e() {
+        let binds = Keybinds::with_overrides(&BTreeMap::new()).unwrap();
+        // With Shift held, xkb reports the uppercase letter.
+        let found = binds.lookup(Keysym::E, Some(Keysym::e), CTRL_SHIFT);
+        assert_eq!(found, Some(Action::Hints));
     }
 
     #[test]
