@@ -1756,10 +1756,23 @@ fn a_second_apc_string_cuts_the_first_short() {
 
 fn clipboard_write(text: &str, clipboard: bool, primary: bool) -> Option<ClipboardWrite> {
     Some(ClipboardWrite {
-        text: text.to_owned(),
-        clipboard,
-        primary,
+        clipboard: clipboard.then(|| text.to_owned()),
+        primary: primary.then(|| text.to_owned()),
     })
+}
+
+#[test]
+fn osc_52_writes_to_each_selection_are_kept_apart() {
+    let mut t = term(10, 1);
+    // "one" to both, then "two" to the clipboard, then "three" to primary.
+    t.feed(b"\x1b]52;pc;b25l\x07\x1b]52;c;dHdv\x07\x1b]52;p;dGhyZWU=\x07");
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        Some(ClipboardWrite {
+            clipboard: Some("two".to_owned()),
+            primary: Some("three".to_owned()),
+        })
+    );
 }
 
 #[test]

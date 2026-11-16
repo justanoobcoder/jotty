@@ -161,13 +161,12 @@ impl Terminal {
                     }
                 }
                 Intercepted::Body(kind, mut body) => {
+                    let mut end = memchr::memchr3(0x1b, 0x18, 0x1a, bytes);
                     // OSC strings also end with BEL.
-                    let end = match kind {
-                        StringKind::Apc => memchr::memchr3(0x1b, 0x18, 0x1a, bytes),
-                        StringKind::Clipboard => bytes
-                            .iter()
-                            .position(|&b| matches!(b, 0x1b | 0x18 | 0x1a | 0x07)),
-                    };
+                    if kind == StringKind::Clipboard {
+                        let before = &bytes[..end.unwrap_or(bytes.len())];
+                        end = memchr::memchr(0x07, before).or(end);
+                    }
                     let part = &bytes[..end.unwrap_or(bytes.len())];
                     if body
                         .as_ref()
@@ -432,8 +431,8 @@ pub struct Screen {
     /// Desktop notifications programs asked for (OSC 9, OSC 777), oldest
     /// first.
     notifications: Vec<Notification>,
-    /// The last clipboard write a program asked for (OSC 52).
-    clipboard_write: Option<ClipboardWrite>,
+    /// The last clipboard writes a program asked for (OSC 52).
+    clipboard_write: ClipboardWrite,
     dirty: bool,
     /// How many history rows the view is scrolled back.
     display_offset: usize,
@@ -514,13 +513,24 @@ pub struct Notification {
     pub body: String,
 }
 
-/// Text a program asked to put on the clipboard (OSC 52).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Text a program asked to put on the clipboard and the primary selection
+/// (OSC 52), the last for each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClipboardWrite {
-    pub text: String,
-    /// Whether it goes to the clipboard, the primary selection, or both.
-    pub clipboard: bool,
-    pub primary: bool,
+    pub clipboard: Option<String>,
+    pub primary: Option<String>,
+}
+
+impl ClipboardWrite {
+    /// Takes the writes of `newer` over these.
+    pub fn merge(&mut self, newer: ClipboardWrite) {
+        if newer.clipboard.is_some() {
+            self.clipboard = newer.clipboard;
+        }
+        if newer.primary.is_some() {
+            self.primary = newer.primary;
+        }
+    }
 }
 
 /// Notifications kept between two reads of the pty, so a flood of them
@@ -598,7 +608,7 @@ impl Screen {
             sixel: None,
             bell: false,
             notifications: Vec::new(),
-            clipboard_write: None,
+            clipboard_write: ClipboardWrite::default(),
             dirty: true,
             display_offset: 0,
             prompt_end: None,
@@ -872,9 +882,10 @@ impl Screen {
         self.notifications.push(Notification { title, body });
     }
 
-    /// The last clipboard write asked for since the last call.
+    /// The last clipboard writes asked for since the last call.
     pub fn take_clipboard_write(&mut self) -> Option<ClipboardWrite> {
-        self.clipboard_write.take()
+        let write = std::mem::take(&mut self.clipboard_write);
+        (write.clipboard.is_some() || write.primary.is_some()).then_some(write)
     }
 
     /// Handles OSC 52 ; targets ; base64 text, which writes the clipboard.
@@ -904,10 +915,9 @@ impl Screen {
         // or only `q` and cut buffers, which Wayland lacks), the clipboard.
         let primary = targets.iter().any(|t| matches!(t, b'p' | b's'));
         let clipboard = targets.contains(&b'c') || !primary;
-        self.clipboard_write = Some(ClipboardWrite {
-            text,
-            clipboard,
-            primary,
+        self.clipboard_write.merge(ClipboardWrite {
+            clipboard: clipboard.then(|| text.clone()),
+            primary: primary.then_some(text),
         });
     }
 
@@ -2160,7 +2170,7 @@ impl Screen {
         // are still due, and the window keeps its title.
         let responses = std::mem::take(&mut self.responses);
         let notifications = std::mem::take(&mut self.notifications);
-        let clipboard_write = self.clipboard_write.take();
+        let clipboard_write = std::mem::take(&mut self.clipboard_write);
         let (title, title_changed) = (self.title.take(), self.title_changed);
         let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);

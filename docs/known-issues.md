@@ -109,8 +109,10 @@ nothing surprises you.
   dropped. Only the clipboard (`c`) and the primary selection (`p`, `s`)
   exist; targets naming neither (empty, `q`, cut buffers) mean the
   clipboard. Compositors only take a selection with the serial of an input
-  event the window received, so a write that comes while the window isn't
-  focused waits until it is (the last one, if several came).
+  event the window received: a write that comes before the window was
+  first focused waits for the focus (the last one for each selection, and
+  none if the window closes first); one that comes while it is unfocused
+  later is made with its last serial, which the compositor may refuse.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and

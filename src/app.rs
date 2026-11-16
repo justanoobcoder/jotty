@@ -397,7 +397,9 @@ pub struct TermWindow {
     pty_closed: bool,
 
     focused: bool,
-    /// A clipboard write (OSC 52) that came while the window had no
+    /// Whether the window has had keyboard focus yet.
+    ever_focused: bool,
+    /// A clipboard write (OSC 52) that came before the window first had
     /// keyboard focus, done when it gets it: compositors only take a
     /// selection with the serial of an input event the window received.
     pending_clipboard_write: Option<ClipboardWrite>,
@@ -773,6 +775,7 @@ impl TermWindow {
             exit: false,
             pty_closed: false,
             focused: false,
+            ever_focused: false,
             pending_clipboard_write: None,
             pointer_pos: (0.0, 0.0),
             scroll_accum: Accumulated::default(),
@@ -1160,10 +1163,15 @@ impl TermWindow {
             self.show_notification(shared, notification);
         }
         if let Some(write) = clipboard_write {
-            if self.focused {
+            // Only a write from before the first focus waits for it; a
+            // later one landing on the next focus would replace whatever
+            // was copied elsewhere in the meantime.
+            if self.ever_focused {
                 self.write_clipboard(shared, write);
             } else {
-                self.pending_clipboard_write = Some(write);
+                self.pending_clipboard_write
+                    .get_or_insert_default()
+                    .merge(write);
             }
         }
         if dirty {
@@ -2289,13 +2297,11 @@ impl TermWindow {
     /// Puts the text a program sent (OSC 52) on the clipboard or the
     /// primary selection.
     fn write_clipboard(&mut self, shared: &mut Shared, write: ClipboardWrite) {
-        match (write.clipboard, write.primary) {
-            (true, true) => {
-                self.set_primary_text(shared, write.text.clone());
-                self.copy_text(shared, write.text);
-            }
-            (true, false) => self.copy_text(shared, write.text),
-            (false, _) => self.set_primary_text(shared, write.text),
+        if let Some(text) = write.clipboard {
+            self.copy_text(shared, text);
+        }
+        if let Some(text) = write.primary {
+            self.set_primary_text(shared, text);
         }
     }
 
@@ -3484,6 +3490,7 @@ impl KeyboardHandler for App {
         shared.keyboard_focus = Some(window.id);
         shared.last_serial = serial;
         window.focused = true;
+        window.ever_focused = true;
         window.attention_requested = false;
         if let Some(write) = window.pending_clipboard_write.take() {
             window.write_clipboard(shared, write);
