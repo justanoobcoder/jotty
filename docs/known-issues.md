@@ -248,7 +248,8 @@ nothing surprises you.
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
   long URL cut by the edge) aren't labeled. The path pattern also labels
-  text such as `and/or` or dates (`2024/11/16`), and leaves out a line
+  text such as `and/or` (but not `1/2` or `2024/11/16`, which have no
+  letter), and leaves out a line
   number after a path (`src/app.rs:120`). Hex hashes are only matched in
   lowercase. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.

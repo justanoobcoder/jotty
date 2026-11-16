@@ -76,9 +76,11 @@ impl Patterns {
         for pattern in [&self.ipv4, &self.sri] {
             found.extend(pattern.find_iter(text).map(|m| m.range()));
         }
+        // Without a letter, it's a fraction or a date (`1/2`, `2024/11/16`).
         found.extend(
             self.path
                 .find_iter(text)
+                .filter(|m| m.as_str().chars().any(char::is_alphabetic))
                 .map(|m| without_final_dot(m.as_str(), m.range())),
         );
         for pattern in [&self.nix32, &self.uuid] {
@@ -199,7 +201,8 @@ pub fn find(
             col: usize::MAX,
         },
         MAX_FILES,
-        |name| is_file(name).then(|| name.to_string()),
+        // `/`, `.` and `~/` exist, but are punctuation in text (`4 / 5`).
+        |name| (name.chars().any(char::is_alphanumeric) && is_file(name)).then(|| name.to_string()),
     );
     for name in names {
         add(name.start, name.end, name.value, None);
@@ -425,7 +428,7 @@ mod tests {
             matched("src/app.rs:120:5 ~/.config/jotty ./run --prefix=/usr/local"),
             ["src/app.rs", "~/.config/jotty", "./run", "/usr/local"]
         );
-        assert_eq!(matched("see /etc/hosts. or ../.."), ["/etc/hosts", "../.."]);
+        assert_eq!(matched("see /etc/hosts. or a/.."), ["/etc/hosts", "a/.."]);
     }
 
     #[test]
@@ -447,6 +450,19 @@ mod tests {
             found,
             ["https://x.org/a/b", "1af659b", "Cargo.toml", "src/a.rs"]
         );
+    }
+
+    #[test]
+    fn names_without_letters_or_digits_are_not_files() {
+        let mut t = Terminal::new(40, 1, 0);
+        t.feed(b"4 / 5 . .. ~/ a");
+        // As if every name existed, as `/` and `.` do.
+        assert_eq!(texts(&t, |_| true), ["4", "5", "a"]);
+    }
+
+    #[test]
+    fn fractions_and_dates_are_not_paths() {
+        assert_eq!(matched("1/2 2024/11/16 a/b"), ["a/b"]);
     }
 
     #[test]
