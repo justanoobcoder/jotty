@@ -348,6 +348,10 @@ impl Hints {
         if self.chosen().is_none() {
             self.chosen = None;
         }
+        // Typed towards labels that are all gone: no label would show.
+        if !self.hints.iter().any(|h| h.label.starts_with(&self.typed)) {
+            self.typed.clear();
+        }
         !self.hints.is_empty()
     }
 }
@@ -600,6 +604,29 @@ mod tests {
         assert!(hints.follow_output(t.screen(), 0));
         assert_eq!(hints.visible().count(), 1);
         assert!(hints.chosen().is_none());
+    }
+
+    #[test]
+    fn labels_show_again_when_those_being_typed_are_dropped() {
+        let mut t = Terminal::new(5, 30, 0);
+        t.feed(b"x");
+        for _ in 1..30 {
+            t.feed(b"\r\nx");
+        }
+        let targets: Vec<Target> = (0..30).map(|i| target("x", i)).collect();
+        let mut hints = Hints::new(targets).unwrap();
+        let long: Vec<(isize, char)> = hints
+            .visible()
+            .filter(|(h, _)| h.label.len() == 2)
+            .map(|(h, _)| (h.target.start.line, h.label.chars().next().unwrap()))
+            .collect();
+        assert!(!hints.type_char(long[0].1));
+        assert_eq!(hints.visible().count(), long.len());
+        for (line, _) in &long {
+            t.feed(format!("\x1b[{};1H\x1b[2K", line + 1).as_bytes());
+        }
+        assert!(hints.follow_output(t.screen(), 0));
+        assert_eq!(hints.visible().count(), 30 - long.len());
     }
 
     #[test]
