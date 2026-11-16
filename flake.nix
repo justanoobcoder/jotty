@@ -91,7 +91,6 @@
             fileset = pkgs.lib.fileset.unions [
               ./site
               ./docs
-              ./README.md
               ./CHANGELOG.md
               ./extra/jotty.svg
             ];

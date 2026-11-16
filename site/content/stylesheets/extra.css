@@ -24,3 +24,8 @@
 video.jotty-shot {
   width: 100%;
 }
+
+/* Keep option names and short values in tables whole. */
+.md-typeset table:not([class]) td code {
+  white-space: nowrap;
+}

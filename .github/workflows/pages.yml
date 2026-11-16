@@ -1,6 +1,6 @@
 name: Website
 
-# Builds the website (site/, with docs/, README.md and CHANGELOG.md pulled
+# Builds the website (site/, with docs/ and CHANGELOG.md pulled
 # in) and deploys it to GitHub Pages.
 on:
   push:
@@ -8,7 +8,6 @@ on:
     paths:
       - site/**
       - docs/**
-      - README.md
       - CHANGELOG.md
       - extra/jotty.svg
       - flake.nix
@@ -18,7 +17,6 @@ on:
     paths:
       - site/**
       - docs/**
-      - README.md
       - CHANGELOG.md
       - .github/workflows/pages.yml
   workflow_dispatch:
