@@ -174,7 +174,8 @@ regex = []
 # The hints action (Ctrl+Shift+E) labels links and other useful text on the
 # screen: paths, git and Nix hashes, IPv4 and IPv6 addresses. Regular
 # expressions (Rust regex syntax) for more text to label; the match can be
-# copied or inserted, and opened when it is also a link.
+# copied or inserted, and opened when it is also a link or names an
+# existing file.
 # regex = ['\b[A-Z]+-\d+\b']
 regex = []
 

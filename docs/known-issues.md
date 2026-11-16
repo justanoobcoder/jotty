@@ -244,7 +244,7 @@ nothing surprises you.
   they name a file that exists in the current directory of the program in
   the foreground. Inside a multiplexer that program is the multiplexer, so
   they usually aren't labeled, and files from `ls` in a pane can't be
-  opened. IPv6 addresses with a zone (`%eth0`), a prefix
+  opened (Ctrl+O looks for them in the multiplexer's directory). IPv6 addresses with a zone (`%eth0`), a prefix
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
   long URL cut by the edge) aren't labeled. A path leaves out the line

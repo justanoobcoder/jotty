@@ -653,8 +653,7 @@ The `hints` binding (Ctrl+Shift+E) puts a short label (`a`, `s`, `ma`,
 the shortest labels. Targets are:
 
 - links, as Ctrl+click finds them (see [Mouse](#mouse)): hyperlinks, URLs,
-  files of the [`[files]`](#files) kinds and [`url.regex`](#url) matches.
-  These can be opened;
+  files of the [`[files]`](#files) kinds and [`url.regex`](#url) matches;
 - the text that `hints.regex` matches;
 - IPv4 addresses (with a `/24` prefix length or a `:8080` port) and IPv6
   addresses;
@@ -674,12 +673,14 @@ another label highlights that one instead. Then:
 | Key | Does |
 | --- | --- |
 | Ctrl+C | Copy the target and leave |
-| Ctrl+O | Open the target with its launcher, as Ctrl+click does, and leave. A target that isn't a link stays, with a notice |
+| Ctrl+O | Open the target and leave: a link with its launcher, as Ctrl+click does, and any other target that names an existing file or directory with `url.launcher`. Anything else stays, with a notice |
 | Ctrl+I | Type the target at the cursor, as a paste, and leave |
-| Enter | Open the target, or copy it when it can't be opened |
+| Enter | Open the target as Ctrl+O does, or copy it when it can't be opened |
 | Backspace | Take back the last letter typed of a label |
 | Escape, Ctrl+Shift+E | Leave without doing anything |
 
+Whether a target names a file is checked when it is opened, in the
+current directory of the program in the foreground (usually the shell).
 Copying or inserting a link gives its target: the URL of a hyperlink, the
 absolute path of a file. No key reaches the program while the labels are
 up. Output keeps arriving: targets move with their text, and those whose
@@ -687,7 +688,7 @@ text changes are dropped. Resizing the window takes the labels down.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `regex` | list of strings | `[]` | Regular expressions for more text to label. Their matches can be copied and inserted; to open them too, put them in `url.regex` instead. |
+| `regex` | list of strings | `[]` | Regular expressions for more text to label. Their matches can be copied and inserted, and opened when they name an existing file; to open them with `url.launcher` anyway, put them in `url.regex` instead. |
 
 ```toml
 [hints]

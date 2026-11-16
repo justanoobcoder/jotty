@@ -1804,17 +1804,34 @@ impl TermWindow {
     }
 
     /// Does `action` with the highlighted target, if there is one, and
-    /// leaves hints; opening something that can't be opened says so instead.
+    /// leaves hints. Besides links, an existing file or directory that the
+    /// target names opens with `url.launcher`; opening anything else says
+    /// it can't instead.
     fn hint_action(&mut self, shared: &mut Shared, action: HintAction) {
         let Some(target) = self.hints.as_ref().and_then(Hints::chosen).cloned() else {
             return;
         };
-        match (action, &target.link) {
+        // Checked now, not when the labels came up: the file may be gone.
+        let link = match action {
+            HintAction::Open | HintAction::Default => target.link.clone().or_else(|| {
+                let (path, _) = self.resolve_name(&target.text, &OnceCell::new())?;
+                Some(Link {
+                    start: target.start,
+                    end: target.end,
+                    target: path.to_string_lossy().into_owned(),
+                    kind: None,
+                })
+            }),
+            HintAction::Copy | HintAction::Insert => None,
+        };
+        match (action, &link) {
             (HintAction::Open | HintAction::Default, Some(link)) => {
                 self.end_hints();
                 self.open_link(link);
             }
-            (HintAction::Open, None) => self.show_notice("Not something to open".into()),
+            (HintAction::Open, None) => {
+                self.show_notice("Not a link or an existing file".into());
+            }
             (HintAction::Copy | HintAction::Default, _) => {
                 self.end_hints();
                 self.copy_text(shared, target.text);
