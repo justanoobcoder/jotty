@@ -196,7 +196,9 @@ impl Detector {
         for pattern in &self.extra {
             for m in pattern.find_iter(&line.text) {
                 let span = m.range();
-                if wanted(&span) {
+                // A pattern that can match the empty string does so
+                // between every two characters.
+                if !span.is_empty() && wanted(&span) {
                     let link = link(&span, m.as_str().to_string(), None);
                     each(span, link)?;
                 }
@@ -617,6 +619,20 @@ mod tests {
         t.feed(b"https://x.org/a.png");
         let link = media().link_at(t.screen(), p(0, 16), exists).unwrap();
         assert_eq!(link.target, "https://x.org/a.png");
+    }
+
+    #[test]
+    fn empty_matches_are_not_links() {
+        let mut t = Terminal::new(20, 1, 0);
+        t.feed(b"ab 12");
+        let d = Detector::try_new(&[], &[r"\d*".into()]).unwrap();
+        let line = LineText::new(t.screen(), p(0, 0)).unwrap();
+        let found: Vec<String> = d
+            .links_in(t.screen(), &line, |_| None)
+            .into_iter()
+            .map(|l| l.target)
+            .collect();
+        assert_eq!(found, ["12"]);
     }
 
     #[test]

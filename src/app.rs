@@ -2,7 +2,7 @@
 //! event loop tying them to the terminal and the renderer.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
@@ -1297,10 +1297,14 @@ impl TermWindow {
                     end.line -= delta;
                 }
             }
-            if let Some(hints) = &mut self.hints
-                && !(same_buffer && hints.follow_output(screen, delta))
-            {
-                self.hints = None;
+            // The selection shows the target hints picked, and goes with it.
+            if let Some(hints) = &mut self.hints {
+                if !(same_buffer && hints.follow_output(screen, delta)) {
+                    self.hints = None;
+                    self.selection = None;
+                } else if hints.chosen().is_none() {
+                    self.selection = None;
+                }
             }
             if let Some(mark) = &mut self.shift_mark {
                 mark.line -= delta;
@@ -1685,14 +1689,16 @@ impl TermWindow {
         }
     }
 
-    /// Handles a key while searching: it edits the query or moves between
-    /// matches instead of going to the program.
     /// Labels the links and other useful text on the screen, for
     /// [`TermWindow::hints_key`] to pick one; a notice says when there is
     /// none.
     fn start_hints(&mut self, shared: &Shared) {
         let cwd = OnceCell::new();
-        let resolve_link = |text: &str| {
+        // Whether each path checked is a regular file, or `None` when it
+        // doesn't exist: the same name is often on the screen many times,
+        // and checking touches the file system from the event loop.
+        let checked: RefCell<HashMap<PathBuf, Option<bool>>> = RefCell::default();
+        let check = |text: &str| -> Option<(PathBuf, bool)> {
             let path = expand_home(text)?;
             let path = if path.is_relative() {
                 cwd.get_or_init(|| self.pty.foreground_cwd())
@@ -1701,17 +1707,28 @@ impl TermWindow {
             } else {
                 path
             };
-            path.is_file().then(|| path.to_string_lossy().into_owned())
+            let path: PathBuf = path.components().collect();
+            let is_file = *checked
+                .borrow_mut()
+                .entry(path.clone())
+                .or_insert_with_key(|p| std::fs::metadata(p).ok().map(|m| m.is_file()));
+            Some((path, is_file?))
         };
         let targets = hints::find(
             self.term.screen(),
             &shared.links,
             &shared.hint_patterns,
-            resolve_link,
-            |name| self.resolve_name(name, &cwd).is_some(),
+            |text| {
+                check(text)
+                    .filter(|&(_, is_file)| is_file)
+                    .map(|(path, _)| path.to_string_lossy().into_owned())
+            },
+            |name| check(name).is_some(),
         );
         self.hints = Hints::new(targets);
+        self.selection = None;
         if self.hints.is_none() {
+            log::info!("nothing on the screen to hint");
             self.show_notice("Nothing to hint".into());
         }
         self.request_redraw();
@@ -1748,26 +1765,42 @@ impl TermWindow {
                 if let Some(hints) = &mut self.hints {
                     hints.backspace();
                 }
+                self.show_hint_pick(shared);
             }
-            _ if mods.ctrl && !mods.alt => match letter {
+            _ if mods.ctrl && !mods.alt && !mods.logo => match letter {
                 Some('c') => self.hint_action(shared, HintAction::Copy),
                 Some('o') => self.hint_action(shared, HintAction::Open),
                 Some('i') => self.hint_action(shared, HintAction::Insert),
                 _ => {}
             },
-            _ if !mods.ctrl && !mods.alt => {
+            _ if !mods.ctrl && !mods.alt && !mods.logo => {
                 let Some(c) = letter else {
                     return;
                 };
-                let chosen = self.hints.as_mut().is_some_and(|h| h.type_char(c));
-                if chosen && let Some(target) = self.hints.as_ref().and_then(Hints::chosen) {
-                    self.selection = Some(Selection::span(target.start, target.end, Unit::Fixed));
-                    self.set_primary(shared);
+                if let Some(hints) = &mut self.hints {
+                    hints.type_char(c);
                 }
+                self.show_hint_pick(shared);
             }
             _ => {}
         }
         self.request_redraw();
+    }
+
+    /// Highlights the target picked by a hint, as the selection (and the
+    /// primary selection), or nothing when none is picked.
+    fn show_hint_pick(&mut self, shared: &mut Shared) {
+        let selection = self
+            .hints
+            .as_ref()
+            .and_then(Hints::chosen)
+            .map(|t| Selection::span(t.start, t.end, Unit::Fixed));
+        if selection != self.selection {
+            self.selection = selection;
+            if selection.is_some() {
+                self.set_primary(shared);
+            }
+        }
     }
 
     /// Does `action` with the highlighted target, if there is one, and
@@ -1793,6 +1826,8 @@ impl TermWindow {
         }
     }
 
+    /// Handles a key while searching: it edits the query or moves between
+    /// matches instead of going to the program.
     fn search_key(&mut self, shared: &mut Shared, event: &KeyEvent) {
         let ctrl = shared.modifiers.ctrl;
         match event.keysym {

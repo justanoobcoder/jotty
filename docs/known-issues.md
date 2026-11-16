@@ -246,6 +246,12 @@ nothing surprises you.
   labeled, and files from `ls` in a pane can't be opened, only copied when
   their path has a `/`. IPv6 addresses with a zone (`%eth0`), a prefix
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
+  Targets that start above the top row or end below the bottom row (a
+  long URL cut by the edge) aren't labeled. The path pattern also labels
+  text such as `and/or` or dates (`2024/11/16`), and leaves out a line
+  number after a path (`src/app.rs:120`). Hex hashes are only matched in
+  lowercase. Bringing the labels up checks every name on the screen on the
+  file system, from the event loop (each once), as marking files does.
   The label alphabet can't be configured.
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
   be dropped into a window.

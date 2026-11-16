@@ -31,6 +31,7 @@ pub struct Patterns {
     path: Regex,
     /// SHA-256 hashes in Nix's base-32.
     nix32: Regex,
+    uuid: Regex,
     /// Hexadecimal hashes, such as git commits; [`hex_hash`] checks them.
     hex: Regex,
 }
@@ -54,12 +55,14 @@ impl Patterns {
                 r"(?:(?:~|\.{{1,2}})?(?:/{path_char}+)+|{path_char}+(?:/{path_char}+)+)/?"
             ))?,
             nix32: Regex::new(r"\b[0-9a-df-np-sv-z]{52}\b")?,
+            uuid: Regex::new(r"\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b")?,
             hex: Regex::new(r"\b[0-9a-f]{7,128}\b")?,
         })
     }
 
     /// The byte ranges of `text` worth a hint, by precedence: the
-    /// configured patterns first. They may overlap.
+    /// configured patterns first. They may overlap, but none is empty
+    /// (a configured pattern may match the empty string).
     fn matches(&self, text: &str) -> Vec<Range<usize>> {
         let mut found = Vec::new();
         for pattern in &self.extra {
@@ -70,7 +73,15 @@ impl Patterns {
                 .find_iter(text)
                 .filter_map(|m| ipv6(text, m.range())),
         );
-        for pattern in [&self.ipv4, &self.sri, &self.path, &self.nix32] {
+        for pattern in [&self.ipv4, &self.sri] {
+            found.extend(pattern.find_iter(text).map(|m| m.range()));
+        }
+        found.extend(
+            self.path
+                .find_iter(text)
+                .map(|m| without_final_dot(m.as_str(), m.range())),
+        );
+        for pattern in [&self.nix32, &self.uuid] {
             found.extend(pattern.find_iter(text).map(|m| m.range()));
         }
         found.extend(
@@ -79,7 +90,18 @@ impl Patterns {
                 .filter(|m| hex_hash(m.as_str()))
                 .map(|m| m.range()),
         );
+        found.retain(|span| !span.is_empty());
         found
+    }
+}
+
+/// `span`, the path `path`, without a period that ends a sentence
+/// (`see /etc/hosts.`); `..` and `/.` stay.
+fn without_final_dot(path: &str, span: Range<usize>) -> Range<usize> {
+    if path.ends_with('.') && !path.ends_with("..") && !path.ends_with("/.") {
+        span.start..span.end - 1
+    } else {
+        span
     }
 }
 
@@ -88,8 +110,13 @@ impl Patterns {
 /// so that `std::fs` (whose `d::f` would parse) is not an address.
 fn ipv6(text: &str, mut span: Range<usize>) -> Option<Range<usize>> {
     let word = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
-    let alone = !text[..span.start].chars().next_back().is_some_and(word)
-        && !text[span.end..].chars().next().is_some_and(word);
+    // A period after it may end a sentence.
+    let mut after = text[span.end..].chars();
+    let followed = match after.next() {
+        Some('.') => after.next().is_some_and(word),
+        next => next.is_some_and(word),
+    };
+    let alone = !text[..span.start].chars().next_back().is_some_and(word) && !followed;
     if !alone {
         return None;
     }
@@ -246,8 +273,9 @@ impl Hints {
     }
 
     /// Adds `c` to the label being typed. Completing a label picks its
-    /// target (`true`); a character that no label continues with is
-    /// ignored.
+    /// target (`true`); starting a longer one drops the pick, so that
+    /// nothing acts on a target whose label isn't shown. A character that
+    /// no label continues with is ignored.
     pub fn type_char(&mut self, c: char) -> bool {
         let typed = format!("{}{c}", self.typed);
         if !self.hints.iter().any(|h| h.label.starts_with(&typed)) {
@@ -259,12 +287,15 @@ impl Hints {
             return true;
         }
         self.typed = typed;
+        self.chosen = None;
         false
     }
 
-    /// Takes back the last character typed of a label.
+    /// Takes back the last character typed of a label, or else the pick.
     pub fn backspace(&mut self) {
-        self.typed.pop();
+        if self.typed.pop().is_none() {
+            self.chosen = None;
+        }
     }
 
     /// The picked target.
@@ -369,6 +400,7 @@ mod tests {
             matched("via fe80::1ff:fe23:4567:890a and ::1: done"),
             ["fe80::1ff:fe23:4567:890a", "::1"]
         );
+        assert_eq!(matched("ping ::1."), ["::1"]);
         // Rust paths and times aren't addresses.
         assert_eq!(matched("std::fs at 12:30:45"), Vec::<&str>::new());
     }
@@ -383,6 +415,8 @@ mod tests {
         assert_eq!(matched(&format!("hash = \"{sri}\";")), [sri]);
         let nix32 = "0ijcq3g2pxdixh6k6vkfwvx7xjyjnbgvx3nmrh0gmfdmlz7y7rlp";
         assert_eq!(matched(&format!("got: {nix32}")), [nix32]);
+        let uuid = "123e4567-E89B-12d3-a456-426614174000";
+        assert_eq!(matched(&format!("id {uuid}")), [uuid]);
     }
 
     #[test]
@@ -391,12 +425,16 @@ mod tests {
             matched("src/app.rs:120:5 ~/.config/jotty ./run --prefix=/usr/local"),
             ["src/app.rs", "~/.config/jotty", "./run", "/usr/local"]
         );
+        assert_eq!(matched("see /etc/hosts. or ../.."), ["/etc/hosts", "../.."]);
     }
 
     #[test]
     fn configured_patterns_come_first() {
         let p = Patterns::try_new(&[r"JOT-\d+".into()]).unwrap();
         assert_eq!(p.matches("JOT-12 abc1234"), [0..6, 7..14]);
+        // Empty matches aren't targets.
+        let p = Patterns::try_new(&[r"\d*".into()]).unwrap();
+        assert_eq!(p.matches("ab 12"), vec![3..5]);
         assert!(Patterns::try_new(&["(".into()]).is_err());
     }
 
@@ -478,9 +516,16 @@ mod tests {
             .chars()
             .next()
             .unwrap();
+        assert!(hints.type_char('a'));
+        // Starting another label drops the pick.
         hints.type_char(prefix);
+        assert!(hints.chosen().is_none());
         hints.backspace();
         assert_eq!(hints.visible().count(), 30);
+        assert!(hints.type_char('a'));
+        // With nothing typed, Backspace takes back the pick.
+        hints.backspace();
+        assert!(hints.chosen().is_none());
     }
 
     #[test]
