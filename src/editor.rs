@@ -2,14 +2,13 @@
 //! which the editor gets as its last argument in a new window, and which is
 //! removed when that window closes.
 
-use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::{env, process};
 
 /// The editor to run: `terminal.editor` when set (an empty program name
 /// counts as unset), else `$VISUAL`, then `$EDITOR` (split at whitespace,
