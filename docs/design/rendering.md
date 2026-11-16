@@ -81,6 +81,11 @@ instance fontconfig picked (the high 16 bits of its index, read from the
 `fvar` table, which `ttf-parser` doesn't expose) are set, as FreeType
 would; where the instance lacks the style's weight or slant, `wght` is set
 to 400 or 700 and `ital` to its maximum or else `slnt` to its minimum.
+When fontconfig matched a face of another style, it asks for `embolden`
+and a slanting `matrix` (its `90-synthetic.conf`); unless the face's own
+axes give the weight or slant, the glyph's bitmap is then widened by a
+24th of the size (as FreeType emboldens) and its rows shifted by 0.2 pixel
+per pixel above the baseline. Icons are left as they are.
 Cell size comes from the primary face's advance width and line metrics.
 Font files are memory-mapped rather than read, so a large fallback font
 (Noto Sans CJK is over 30 MB) only takes memory for the parts in use.

@@ -16,6 +16,8 @@ CHANGELOG
 - Blinking text blinks (`terminal.text_blink`)
 - Variable fonts use their named instances, so italics that live in the
     same file as the upright style show slanted
+- Fonts without a bold or italic face get a made-up one instead of the
+    regular face
 
 ## 2.3.0
 

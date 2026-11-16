@@ -10,8 +10,8 @@ use std::{fmt, io};
 use ab_glyph::{Font, FontRef, PxScale};
 use fontconfig_sys as fc;
 use fontconfig_sys::constants::{
-    FC_CHARSET, FC_COLOR, FC_FAMILY, FC_FILE, FC_INDEX, FC_SLANT, FC_SLANT_ITALIC, FC_SLANT_ROMAN,
-    FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
+    FC_CHARSET, FC_COLOR, FC_EMBOLDEN, FC_FAMILY, FC_FILE, FC_INDEX, FC_MATRIX, FC_SLANT,
+    FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_WEIGHT, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR,
 };
 
 use crate::emoji::{self, EmojiFont};
@@ -118,12 +118,27 @@ impl fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
-/// A font file location as reported by fontconfig.
+/// A font file location as reported by fontconfig, and the styles to
+/// fake because the family lacks them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FontFile {
     path: PathBuf,
     index: u32,
+    synthetic: Synthetic,
 }
+
+/// Bold and italic made up from a face without them, as fontconfig asks
+/// for (`embolden`, and a slanting `matrix`) when it matched a face of
+/// another style: thicker strokes, and the slant of [`OBLIQUE_SHEAR`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct Synthetic {
+    bold: bool,
+    italic: bool,
+}
+
+/// How far a made-up italic leans: a pixel right per this many pixels up,
+/// as fontconfig's matrix (about 11°).
+const OBLIQUE_SHEAR: f32 = 0.2;
 
 /// A reference to a fontconfig configuration.
 struct Fontconfig(*mut fc::FcConfig);
@@ -208,9 +223,21 @@ impl Fontconfig {
             let found = fc::FcPatternGetString(matched, FC_FILE.as_ptr(), 0, &mut file)
                 == fc::FcResultMatch;
             fc::FcPatternGetInteger(matched, FC_INDEX.as_ptr(), 0, &mut index);
+            let mut embolden: fc::FcBool = 0;
+            let bold = fc::FcPatternGetBool(matched, FC_EMBOLDEN.as_ptr(), 0, &mut embolden)
+                == fc::FcResultMatch
+                && embolden != 0;
+            // The matrix belongs to the pattern; it is read before that is
+            // destroyed.
+            let mut matrix: *mut fc::FcMatrix = std::ptr::null_mut();
+            let italic = fc::FcPatternGetMatrix(matched, FC_MATRIX.as_ptr(), 0, &mut matrix)
+                == fc::FcResultMatch
+                && !matrix.is_null()
+                && (*matrix).xy > 0.0;
             let font = found.then(|| FontFile {
                 path: PathBuf::from(CStr::from_ptr(file.cast()).to_string_lossy().into_owned()),
                 index: index.max(0) as u32,
+                synthetic: Synthetic { bold, italic },
             });
             fc::FcPatternDestroy(matched);
             font
@@ -250,6 +277,7 @@ impl Fontconfig {
             let font = found.then(|| FontFile {
                 path: PathBuf::from(CStr::from_ptr(file.cast()).to_string_lossy().into_owned()),
                 index: index.max(0) as u32,
+                synthetic: Synthetic::default(),
             });
             fc::FcPatternDestroy(matched);
             font
@@ -292,6 +320,8 @@ impl Drop for Fontconfig {
 pub struct Fonts {
     fontconfig: Fontconfig,
     faces: Vec<FontRef<'static>>,
+    /// The styles each face fakes, by face index.
+    synthetic: Vec<Synthetic>,
     /// Font files mapped so far, shared by the faces and styles in them.
     files: HashMap<PathBuf, &'static [u8]>,
     /// Loaded faces by file and style (variable fonts differ per style).
@@ -319,6 +349,7 @@ impl Fonts {
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),
+            synthetic: Vec::new(),
             files: HashMap::new(),
             loaded: HashMap::new(),
             styles: [0; 4],
@@ -404,7 +435,15 @@ impl Fonts {
                 face.set_variation(&tag, value);
             }
         }
+        // What the font's own axes do needn't be faked as well.
+        let has_axis = |tag: &[u8; 4]| axes.iter().any(|a| &a.tag == tag);
+        let reaches_bold = axes.iter().any(|a| &a.tag == b"wght" && a.max >= 600.0);
+        let synthetic = Synthetic {
+            bold: file.synthetic.bold && !reaches_bold,
+            italic: file.synthetic.italic && !has_axis(b"ital") && !has_axis(b"slnt"),
+        };
         self.faces.push(face);
+        self.synthetic.push(synthetic);
         let index = self.faces.len() - 1;
         self.loaded.insert((file, style), index);
         Ok(index)
@@ -594,6 +633,7 @@ impl Fonts {
         let ink = ink_rows(&data, width, 64).unwrap_or((0, height - 1));
         let ink_height = (ink.1 - ink.0 + 1) as i32;
         let centered_top = (m.height as i32 - ink_height) / 2 - ink.0 as i32;
+        let synthetic = self.synthetic[index];
         let (left, top) = if fill_slot {
             ((slot_width as i32 - width as i32) / 2, centered_top)
         } else if icon && ink_height <= m.height as i32 {
@@ -607,14 +647,92 @@ impl Fonts {
         } else {
             (bounds.min.x as i32, bounds.min.y as i32)
         };
-        Some(Glyph {
+        let mut glyph = Glyph {
             width,
             height,
             left,
             top,
             data,
             color: false,
-        })
+        };
+        // Icons keep their shape.
+        if synthetic.bold && !icon {
+            // As FreeType's emboldening: a 24th of the size.
+            let strength = (self.px / 24.0).round().max(1.0) as u32;
+            glyph = embolden(&glyph, strength);
+            // A glyph centered above stays centered.
+            if fill_slot || fit {
+                glyph.left -= (strength / 2) as i32;
+            }
+        }
+        if synthetic.italic && !icon {
+            glyph = oblique(&glyph, m.baseline as i32, OBLIQUE_SHEAR);
+        }
+        Some(glyph)
+    }
+}
+
+/// `glyph` with strokes `strength` pixels thicker, toward the right: each
+/// pixel is the most of those up to `strength` to its left.
+fn embolden(glyph: &Glyph, strength: u32) -> Glyph {
+    let width = glyph.width + strength;
+    let mut data = vec![0u8; (width * glyph.height) as usize];
+    for (src, dst) in glyph
+        .data
+        .chunks_exact(glyph.width as usize)
+        .zip(data.chunks_exact_mut(width as usize))
+    {
+        for (x, &coverage) in src.iter().enumerate() {
+            for d in &mut dst[x..=x + strength as usize] {
+                *d = (*d).max(coverage);
+            }
+        }
+    }
+    Glyph {
+        width,
+        data,
+        ..*glyph
+    }
+}
+
+/// `glyph` slanted: each row moves right by `shear` times its height above
+/// `baseline` (left below it), the fraction of a pixel split between two.
+fn oblique(glyph: &Glyph, baseline: i32, shear: f32) -> Glyph {
+    if glyph.height == 0 || glyph.width == 0 {
+        return glyph.clone();
+    }
+    let shift = |y: u32| shear * (baseline as f32 - (glyph.top as f32 + y as f32 + 0.5));
+    // Rows higher up move further right: the first row the most.
+    let (most, least) = (shift(0), shift(glyph.height - 1));
+    let left = least.floor() as i32;
+    let width = ((glyph.width as f32 + most).ceil() as i32 - left) as u32;
+    let mut sums = vec![0.0f32; (width * glyph.height) as usize];
+    for (y, (src, dst)) in glyph
+        .data
+        .chunks_exact(glyph.width as usize)
+        .zip(sums.chunks_exact_mut(width as usize))
+        .enumerate()
+    {
+        let s = shift(y as u32);
+        let whole = s.floor();
+        let frac = s - whole;
+        let start = (whole as i32 - left) as usize;
+        for (x, &coverage) in src.iter().enumerate() {
+            let c = f32::from(coverage);
+            dst[start + x] += c * (1.0 - frac);
+            if let Some(next) = dst.get_mut(start + x + 1) {
+                *next += c * frac;
+            }
+        }
+    }
+    Glyph {
+        width,
+        left: glyph.left + left,
+        data: sums
+            .into_iter()
+            .map(|v| v.round().clamp(0.0, 255.0) as u8)
+            .collect(),
+        ..*glyph
     }
 }
 
@@ -1715,6 +1833,49 @@ pub fn points_to_px(points: f32, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bitmap(width: u32, rows: &[&[u8]], left: i32, top: i32) -> Glyph {
+        Glyph {
+            width,
+            height: rows.len() as u32,
+            left,
+            top,
+            data: rows.concat(),
+            color: false,
+        }
+    }
+
+    #[test]
+    fn emboldening_widens_strokes_to_the_right() {
+        let glyph = bitmap(3, &[&[0, 255, 0], &[100, 0, 0]], 2, 5);
+        let bold = embolden(&glyph, 1);
+        assert_eq!((bold.width, bold.height, bold.left, bold.top), (4, 2, 2, 5));
+        assert_eq!(bold.data, [0, 255, 255, 0, 100, 100, 0, 0]);
+        let bolder = embolden(&bitmap(2, &[&[0, 9]], 0, 0), 2);
+        assert_eq!(
+            (bolder.width, bolder.data.as_slice()),
+            (4, [0, 9, 9, 9].as_slice())
+        );
+    }
+
+    #[test]
+    fn slanting_shifts_rows_by_their_height_above_the_baseline() {
+        // Two rows ending at the baseline (row 10): the top one is 1.5 rows
+        // above it at its middle, the bottom one 0.5.
+        let glyph = bitmap(1, &[&[200], &[200]], 0, 8);
+        let slanted = oblique(&glyph, 10, 0.5);
+        // Shifts of 0.75 and 0.25 pixel, split between two columns.
+        assert_eq!((slanted.width, slanted.left, slanted.top), (2, 0, 8));
+        assert_eq!(slanted.data, [50, 150, 150, 50]);
+        // Below the baseline, rows lean left.
+        let below = oblique(&bitmap(1, &[&[200]], 0, 10), 10, 0.5);
+        assert_eq!((below.width, below.left), (2, -1));
+        assert_eq!(below.data, [50, 150]);
+        // Whole-pixel shifts (3 and 1) move rows without blurring them.
+        let whole = oblique(&bitmap(2, &[&[10, 20], &[30, 40]], 0, 0), 2, 2.0);
+        assert_eq!((whole.width, whole.left), (4, 1));
+        assert_eq!(whole.data, [0, 0, 10, 20, 30, 40, 0, 0]);
+    }
 
     /// An `fvar` table with `wght` (100–900) and `slnt` (-15–0) axes and
     /// two instances: (400, 0) and (700, -15).
