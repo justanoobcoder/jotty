@@ -1507,7 +1507,7 @@ mod tests {
         let detector = Detector::try_new(&[], &[]).unwrap();
         let patterns = Patterns::try_new(&[]).unwrap();
         let targets = hints::find(term.screen(), &detector, &patterns, |_| None, |_| false);
-        let hints = Hints::new(targets).unwrap();
+        let hints = Hints::new(targets, crate::hints::DEFAULT_ALPHABET).unwrap();
         let mut f = frame(term.screen());
         f.hints = Some(&hints);
         let t = theme();

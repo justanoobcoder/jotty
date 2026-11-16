@@ -185,6 +185,10 @@ regex = []
 # regex = ['\b[A-Z]+-\d+\b']
 regex = []
 
+# The characters labels are made of, the easiest to type first: at least
+# two lowercase letters, all different.
+alphabet = "asdfghjklqwertyuiopzxcvbnm"
+
 # Kinds of files whose paths are links: Ctrl+click opens an existing file
 # with one of the kind's extensions (relative paths are resolved in the
 # current directory of the program in the terminal). Each kind has its own

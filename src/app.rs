@@ -1734,7 +1734,7 @@ impl TermWindow {
             },
             |name| check(name).is_some(),
         );
-        self.hints = Hints::new(targets);
+        self.hints = Hints::new(targets, &self.config.hints.alphabet);
         self.selection = None;
         if self.hints.is_none() {
             log::info!("nothing on the screen to hint");

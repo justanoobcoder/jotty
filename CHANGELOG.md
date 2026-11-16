@@ -5,6 +5,7 @@ CHANGELOG
 
 - Support reverse video (DECSCNM)
 - Hints label hex hashes in uppercase
+- Add `hints.alphabet`, the characters hint labels are made of
 
 ## 2.3.0
 

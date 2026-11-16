@@ -250,7 +250,6 @@ nothing surprises you.
   number after it (`/etc/x:120`). Hex hashes in mixed case aren't
   matched. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
-  The label alphabet can't be configured.
 - No `idle-inhibit`.
 - Dropped files are typed as paths, quoted for POSIX shells and fish. A
   `file://` URI's host is ignored; in a path, bytes that aren't UTF-8 are

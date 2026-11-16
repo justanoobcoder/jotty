@@ -358,6 +358,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             StrList,
             "Regular expressions for more text that hints label, to copy or insert.",
         ),
+        (
+            "hints",
+            "alphabet",
+            Str,
+            "Characters hint labels are made of, the easiest to type first.",
+        ),
     ]
 };
 
@@ -607,6 +613,8 @@ mod tests {
                 Bool => "true".into(),
                 Float { min, .. } => min.to_string(),
                 Int { min, .. } => min.to_string(),
+                // Labels need two characters to grow.
+                Str if key.dotted() == "hints.alphabet" => "xy".into(),
                 Str | OptStr => "x".into(),
                 Enum(values) => values[0].into(),
                 Color | OptColor => "#123456".into(),
