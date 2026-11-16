@@ -22,7 +22,7 @@ OpenGL ES 3 instead, in one draw call per frame, at the cost of the
 
 ## Transparency and blur
 
-<!-- screenshot: transparency.png -->
+<!-- screenshot: transparency.webp -->
 
 `window.opacity` makes the background translucent while text stays
 opaque, and `window.blur` blurs what is behind the window on compositors
@@ -57,7 +57,7 @@ the matches, Enter keeps the match selected. See
 
 ## Drag files out, drop files in
 
-<!-- screenshot: drag.gif -->
+<!-- screenshot: drag.mp4 -->
 
 Ctrl+drag a file or directory named in the output, as `ls` prints it, into
 a file manager, a browser or a chat. Mark several with Ctrl+right click or
@@ -83,7 +83,7 @@ while the window isn't focused. See
 
 ## Live config and `jotty config`
 
-<!-- screenshot: config-tui.png -->
+<!-- screenshot: config-tui.webp -->
 
 Saving the config file reloads every running window, with no restart.
 `jotty config` opens a TUI that lists every option with its current value
