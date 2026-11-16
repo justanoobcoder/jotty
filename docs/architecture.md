@@ -147,7 +147,9 @@ drawing until it is reset, or for at most 150 ms.
 **Images (`terminal/graphics.rs`).** vte drops APC strings, so
 `Terminal::feed` takes `ESC _ … ESC \` out of the byte stream first (also
 when split across reads) and hands kitty graphics commands (`G…`) to the
-screen. Each screen buffer has its own `Graphics`: images decoded to RGBA
+screen. It takes out OSC 52 strings (`ESC ] 52 ; …`) the same way, since
+clipboard text outgrows the 16 KiB vte keeps of an OSC string; as in vte,
+BEL or any `ESC` ends them. Each screen buffer has its own `Graphics`: images decoded to RGBA
 (raw RGB/RGBA or PNG, optionally zlib-compressed, sent inline in chunks or
 read from a file, a temporary file or POSIX shared memory) and placements.
 A placement's row is counted from the grid's `scrolled` counter, so it
@@ -450,7 +452,10 @@ event loop. Pasting reads the current selection offer through a calloop
 source on the pipe. When jotty owns the selection itself, it pastes directly
 without a round trip. The primary selection works the same way through
 `primary-selection-unstable-v1`: finishing a selection offers it, and a
-middle click pastes it.
+middle click pastes it. Text a program sends with OSC 52 takes the same
+path, after the read of child output that carried it; of several in one
+read, the last wins. In a window without keyboard focus it waits for the
+focus, whose serial the compositor accepts.
 
 **Selection and output.** Before reading child output, the app takes a
 fingerprint of each selected row on the live screen and the grid's count

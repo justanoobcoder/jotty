@@ -14,6 +14,9 @@ CHANGELOG
     `colors.mark_background` set their colors
 - Ctrl+click opens a link when the button is released, not when pressed
 - `window.startup_mode` opens new windows maximized or fullscreen
+- Programs can write the clipboard and the primary selection with OSC 52,
+    also over SSH and through multiplexers; reading it is refused. The
+    terminfo entry advertises it (`Ms`)
 
 ## 2.2.0
 

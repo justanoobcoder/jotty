@@ -885,7 +885,7 @@ fn reply(cmd: &Command, result: Result<(), String>) -> Option<String> {
 }
 
 /// Decodes standard base64, ignoring padding and whitespace.
-fn base64(text: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn base64(text: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut acc = 0u32;
     let mut bits = 0;

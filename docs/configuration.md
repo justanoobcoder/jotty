@@ -41,6 +41,7 @@ default value. A test checks that it matches the built-in defaults.
   - [Renderer](#renderer)
 - [`[terminal]`](#terminal)
   - [`TERM` and terminfo](#term-and-terminfo)
+  - [Clipboard from programs (OSC 52)](#clipboard-from-programs-osc-52)
 - [`[colors]`](#colors)
 - [`[keybinds]`](#keybinds)
   - [Searching](#searching)
@@ -300,6 +301,22 @@ fall back to probing (or plain underlines).
 
 The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
 `TERM_PROGRAM_VERSION`.
+
+### Clipboard from programs (OSC 52)
+
+Programs can put text on the clipboard with `OSC 52 ; c ; <base64 text> ST`
+(`p` or `s` instead of `c` for the primary selection, `pc` for both). The
+sequence travels through SSH and multiplexers, so Neovim (`"+y`), tmux
+(`set-clipboard on`) and zellij (when `copy_command` isn't set) copy to the
+desktop's clipboard even on a remote host:
+
+```sh
+printf '\e]52;c;%s\a' "$(printf hello | base64 -w0)"
+```
+
+Reading the clipboard this way (`OSC 52 ; c ; ?`) is refused, since any
+program, or a file shown with `cat`, could read it, a password included.
+The terminfo entry advertises the capability as `Ms`.
 
 ## `[colors]`
 

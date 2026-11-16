@@ -20,6 +20,8 @@ use crate::search::Direction;
 
 /// The longest APC string kept; the rest of a longer one is dropped.
 const MAX_APC: usize = 64 << 20;
+/// The longest OSC 52 payload (base64) kept; a longer one is dropped.
+const MAX_CLIPBOARD_BYTES: usize = 16 << 20;
 /// The longest OSC string kept (vte drops the rest): room for long
 /// hyperlinks and notifications, but an unterminated OSC can't grow
 /// without bound.
@@ -32,21 +34,72 @@ const MAX_LINK_BYTES: usize = 2048;
 pub struct Terminal {
     parser: vte::Parser<MAX_OSC_BYTES>,
     screen: Screen,
-    apc: Apc,
+    string: Intercepted,
 }
 
-/// Where the byte stream is relative to an APC string (`ESC _ … ESC \`),
-/// which vte ignores; graphics commands come in them.
+/// The strings taken out of the byte stream before vte sees it: APC
+/// strings (`ESC _ … ESC \`), which vte ignores and graphics commands come
+/// in, and OSC 52 (clipboard) strings, which outgrow vte's OSC buffer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StringKind {
+    Apc,
+    Clipboard,
+}
+
+impl StringKind {
+    const ALL: [StringKind; 2] = [StringKind::Apc, StringKind::Clipboard];
+
+    fn introducer(self) -> &'static [u8] {
+        match self {
+            StringKind::Apc => b"\x1b_",
+            StringKind::Clipboard => b"\x1b]52;",
+        }
+    }
+
+    fn max_len(self) -> usize {
+        match self {
+            StringKind::Apc => MAX_APC,
+            StringKind::Clipboard => MAX_CLIPBOARD_BYTES,
+        }
+    }
+}
+
+/// The longest introducer, `ESC ] 52 ;`.
+const MAX_INTRODUCER: usize = 5;
+
+/// A string introducer at the start of some bytes.
+enum Introducer {
+    Whole(StringKind),
+    /// The bytes end in the middle of one: its first bytes.
+    Partial(&'static [u8]),
+}
+
+/// The introducer `bytes` start with, if any.
+fn introducer(bytes: &[u8]) -> Option<Introducer> {
+    StringKind::ALL.into_iter().find_map(|kind| {
+        let start = kind.introducer();
+        let n = bytes.len().min(start.len());
+        (bytes[..n] == start[..n]).then(|| {
+            if n == start.len() {
+                Introducer::Whole(kind)
+            } else {
+                Introducer::Partial(&start[..n])
+            }
+        })
+    })
+}
+
+/// Where the byte stream is relative to an intercepted string.
 #[derive(Default)]
-enum Apc {
+enum Intercepted {
     #[default]
     Outside,
-    /// An `ESC` ended the last read.
-    Escape,
+    /// The last read ended in these first bytes of an introducer.
+    Start(&'static [u8]),
     /// Inside, with the body so far (`None` when it grew too long).
-    Body(Option<Vec<u8>>),
+    Body(StringKind, Option<Vec<u8>>),
     /// Inside, after an `ESC`.
-    BodyEscape(Option<Vec<u8>>),
+    BodyEscape(StringKind, Option<Vec<u8>>),
 }
 
 /// The string tables that extras refer to, see `Screen::make_room`.
@@ -62,84 +115,120 @@ impl Terminal {
         Terminal {
             parser: vte::Parser::new_with_size(),
             screen: Screen::new(cols, rows, scrollback),
-            apc: Apc::Outside,
+            string: Intercepted::Outside,
         }
     }
 
-    /// Processes output from the child process. APC strings are taken out
-    /// before the parser sees the bytes.
+    /// Processes output from the child process. Intercepted strings are
+    /// taken out before the parser sees the bytes.
     pub fn feed(&mut self, mut bytes: &[u8]) {
         while let Some(&first) = bytes.first() {
-            match std::mem::take(&mut self.apc) {
-                Apc::Outside => {
-                    // The first `ESC _`, or an `ESC` at the end.
-                    let start = memchr::memchr_iter(0x1b, bytes)
-                        .find(|&i| bytes.get(i + 1).is_none_or(|&b| b == b'_'));
-                    let Some(i) = start else {
+            match std::mem::take(&mut self.string) {
+                Intercepted::Outside => {
+                    // The first introducer, or the start of one at the end.
+                    let found = memchr::memchr_iter(0x1b, bytes)
+                        .find_map(|i| Some((i, introducer(&bytes[i..])?)));
+                    let Some((i, found)) = found else {
                         self.parser.advance(&mut self.screen, bytes);
                         return;
                     };
                     self.parser.advance(&mut self.screen, &bytes[..i]);
-                    if i + 1 == bytes.len() {
-                        self.apc = Apc::Escape;
-                        return;
+                    match found {
+                        Introducer::Whole(kind) => {
+                            self.begin_string(kind);
+                            bytes = &bytes[i + kind.introducer().len()..];
+                        }
+                        Introducer::Partial(start) => {
+                            self.string = Intercepted::Start(start);
+                            return;
+                        }
                     }
-                    self.begin_apc();
-                    bytes = &bytes[i + 2..];
                 }
-                Apc::Escape if first == b'_' => {
-                    self.begin_apc();
-                    bytes = &bytes[1..];
+                Intercepted::Start(start) => {
+                    let more = &bytes[..bytes.len().min(MAX_INTRODUCER)];
+                    match introducer(&[start, more].concat()) {
+                        Some(Introducer::Whole(kind)) => {
+                            self.begin_string(kind);
+                            bytes = &bytes[kind.introducer().len() - start.len()..];
+                        }
+                        // Still too short to tell: `more` was all of `bytes`.
+                        Some(Introducer::Partial(start)) => {
+                            self.string = Intercepted::Start(start);
+                            return;
+                        }
+                        // Not a string after all: the parser gets it.
+                        None => self.parser.advance(&mut self.screen, start),
+                    }
                 }
-                Apc::Escape => self.parser.advance(&mut self.screen, b"\x1b"),
-                Apc::Body(mut body) => {
-                    let end = memchr::memchr3(0x1b, 0x18, 0x1a, bytes);
+                Intercepted::Body(kind, mut body) => {
+                    // OSC strings also end with BEL.
+                    let end = match kind {
+                        StringKind::Apc => memchr::memchr3(0x1b, 0x18, 0x1a, bytes),
+                        StringKind::Clipboard => bytes
+                            .iter()
+                            .position(|&b| matches!(b, 0x1b | 0x18 | 0x1a | 0x07)),
+                    };
                     let part = &bytes[..end.unwrap_or(bytes.len())];
                     if body
                         .as_ref()
-                        .is_some_and(|b| b.len() + part.len() > MAX_APC)
+                        .is_some_and(|b| b.len() + part.len() > kind.max_len())
                     {
-                        log::debug!("APC string too long; dropping it");
+                        log::debug!("{kind:?} string too long; dropping it");
                         body = None;
                     }
                     if let Some(body) = &mut body {
                         body.extend_from_slice(part);
                     }
-                    match end {
-                        // CAN and SUB cancel the string.
-                        Some(i) if bytes[i] != 0x1b => bytes = &bytes[i + 1..],
-                        Some(i) => {
-                            self.apc = Apc::BodyEscape(body);
+                    match end.map(|i| (i, bytes[i])) {
+                        Some((i, 0x1b)) => {
+                            self.string = Intercepted::BodyEscape(kind, body);
                             bytes = &bytes[i + 1..];
                         }
+                        Some((i, 0x07)) => {
+                            self.end_string(kind, body.as_deref());
+                            bytes = &bytes[i + 1..];
+                        }
+                        // CAN and SUB cancel the string.
+                        Some((i, _)) => bytes = &bytes[i + 1..],
                         None => {
-                            self.apc = Apc::Body(body);
+                            self.string = Intercepted::Body(kind, body);
                             return;
                         }
                     }
                 }
-                Apc::BodyEscape(body) if first == b'\\' => {
-                    if let Some(body) = body {
-                        self.screen.apc_dispatch(&body);
+                Intercepted::BodyEscape(kind, body) if first == b'\\' => {
+                    self.end_string(kind, body.as_deref());
+                    bytes = &bytes[1..];
+                }
+                // Another sequence starts, which ends an OSC string as in
+                // vte but cuts an APC string short. The `ESC` may start
+                // another string.
+                Intercepted::BodyEscape(kind, body) => {
+                    if kind == StringKind::Clipboard {
+                        self.end_string(kind, body.as_deref());
                     }
-                    bytes = &bytes[1..];
+                    self.string = Intercepted::Start(b"\x1b");
                 }
-                // Another string starts, cutting this one short.
-                Apc::BodyEscape(_) if first == b'_' => {
-                    self.begin_apc();
-                    bytes = &bytes[1..];
-                }
-                // Another escape sequence cuts the string short.
-                Apc::BodyEscape(_) => self.parser.advance(&mut self.screen, b"\x1b"),
             }
         }
     }
 
-    /// Enters an APC string. Its `ESC` also ends whatever sequence the
-    /// parser was in, which never gets to see it otherwise.
-    fn begin_apc(&mut self) {
+    /// Enters an intercepted string. Its `ESC` also ends whatever sequence
+    /// the parser was in, which never gets to see it otherwise.
+    fn begin_string(&mut self, kind: StringKind) {
         self.parser.advance(&mut self.screen, b"\x1b\x18");
-        self.apc = Apc::Body(Some(Vec::new()));
+        self.string = Intercepted::Body(kind, Some(Vec::new()));
+    }
+
+    /// Handles a finished string; `None` when it was too long.
+    fn end_string(&mut self, kind: StringKind, body: Option<&[u8]>) {
+        let Some(body) = body else {
+            return;
+        };
+        match kind {
+            StringKind::Apc => self.screen.apc_dispatch(body),
+            StringKind::Clipboard => self.screen.clipboard_dispatch(body),
+        }
     }
 
     #[must_use]
@@ -343,6 +432,8 @@ pub struct Screen {
     /// Desktop notifications programs asked for (OSC 9, OSC 777), oldest
     /// first.
     notifications: Vec<Notification>,
+    /// The last clipboard write a program asked for (OSC 52).
+    clipboard_write: Option<ClipboardWrite>,
     dirty: bool,
     /// How many history rows the view is scrolled back.
     display_offset: usize,
@@ -423,6 +514,15 @@ pub struct Notification {
     pub body: String,
 }
 
+/// Text a program asked to put on the clipboard (OSC 52).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardWrite {
+    pub text: String,
+    /// Whether it goes to the clipboard, the primary selection, or both.
+    pub clipboard: bool,
+    pub primary: bool,
+}
+
 /// Notifications kept between two reads of the pty, so a flood of them
 /// can't fill the desktop.
 const MAX_PENDING_NOTIFICATIONS: usize = 4;
@@ -498,6 +598,7 @@ impl Screen {
             sixel: None,
             bell: false,
             notifications: Vec::new(),
+            clipboard_write: None,
             dirty: true,
             display_offset: 0,
             prompt_end: None,
@@ -769,6 +870,45 @@ impl Screen {
             return;
         }
         self.notifications.push(Notification { title, body });
+    }
+
+    /// The last clipboard write asked for since the last call.
+    pub fn take_clipboard_write(&mut self) -> Option<ClipboardWrite> {
+        self.clipboard_write.take()
+    }
+
+    /// Handles OSC 52 ; targets ; base64 text, which writes the clipboard.
+    /// Queries (`?`) are not answered: any program could read the
+    /// clipboard with them, a password included.
+    fn clipboard_dispatch(&mut self, body: &[u8]) {
+        let Some(i) = memchr::memchr(b';', body) else {
+            return;
+        };
+        let (targets, data) = (&body[..i], &body[i + 1..]);
+        if data == b"?" {
+            log::debug!("ignoring an OSC 52 clipboard query");
+            return;
+        }
+        let text = match graphics::base64(data) {
+            Ok(text) => String::from_utf8_lossy(&text).into_owned(),
+            Err(e) => {
+                log::debug!("bad OSC 52 payload: {e}");
+                return;
+            }
+        };
+        if text.is_empty() {
+            return;
+        }
+        // `c` is the clipboard; `p` and `s` (xterm's "select", PRIMARY by
+        // default) the primary selection. Without either (an empty list,
+        // or only `q` and cut buffers, which Wayland lacks), the clipboard.
+        let primary = targets.iter().any(|t| matches!(t, b'p' | b's'));
+        let clipboard = targets.contains(&b'c') || !primary;
+        self.clipboard_write = Some(ClipboardWrite {
+            text,
+            clipboard,
+            primary,
+        });
     }
 
     /// Whether anything visible changed since the last call.
@@ -2016,10 +2156,11 @@ impl Screen {
         let scrollback = self.primary.max_history;
         let default_colors = self.default_colors.clone();
         let (width, height) = self.cell_size;
-        // Replies and notifications from before the reset are still due,
-        // and the window keeps its title.
+        // Replies, notifications and clipboard writes from before the reset
+        // are still due, and the window keeps its title.
         let responses = std::mem::take(&mut self.responses);
         let notifications = std::mem::take(&mut self.notifications);
+        let clipboard_write = self.clipboard_write.take();
         let (title, title_changed) = (self.title.take(), self.title_changed);
         let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);
@@ -2027,6 +2168,7 @@ impl Screen {
         self.set_cell_size(width, height);
         self.responses = responses;
         self.notifications = notifications;
+        self.clipboard_write = clipboard_write;
         self.title = title;
         self.title_changed = title_changed;
         self.bell = bell;
