@@ -59,6 +59,8 @@ paths at the cursor, quoted for the shell. See
 
 ## Open links and files
 
+<!-- screenshot: open.mp4 -->
+
 Ctrl+click opens a link a program set (OSC 8), a URL in the text, or an
 image, video, audio or document file named in the output, each kind with
 its own launcher. Holding Ctrl underlines what would open. See
