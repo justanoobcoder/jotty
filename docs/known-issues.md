@@ -249,7 +249,8 @@ nothing surprises you.
   Targets that start above the top row or end below the bottom row (a
   long URL cut by the edge) aren't labeled. The path pattern also labels
   text such as `and/or` (but not `1/2` or `2024/11/16`, which have no
-  letter), and leaves out a line
+  letter), and base 64 with a `/` but no `=` padding after it, and leaves
+  out a line
   number after a path (`src/app.rs:120`). Hex hashes are only matched in
   lowercase. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.

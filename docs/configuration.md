@@ -658,7 +658,8 @@ the shortest labels. Targets are:
 - the text that `hints.regex` matches;
 - IPv4 addresses (with a `/24` prefix length or a `:8080` port) and IPv6
   addresses;
-- Nix hashes, in the SRI form (`sha256-…=`) or in base 32 (52 characters);
+- Nix hashes, in the SRI form (`sha256-…=`, of the length its algorithm
+  gives: md5, sha1, sha256 or sha512) or in base 32 (52 characters);
 - paths with a `/` in them (`src/app.rs`, `~/.config`, `/nix/store/…`);
 - git commits and other hexadecimal hashes, 7 to 128 characters with both
   letters and digits (`1af659b`, but not `deadbeef` or `1234567`);

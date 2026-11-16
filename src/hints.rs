@@ -25,7 +25,8 @@ pub struct Patterns {
     /// Runs that may be IPv6 addresses; [`ipv6`] checks them.
     ipv6: Regex,
     ipv4: Regex,
-    /// Hashes in the SRI format Nix prints (`sha256-…=`).
+    /// Hashes in the SRI format Nix prints (`sha256-…=`), each algorithm
+    /// with its length in base 64.
     sri: Regex,
     /// Paths with a `/` in them.
     path: Regex,
@@ -50,7 +51,9 @@ impl Patterns {
             ipv4: Regex::new(&format!(
                 r"\b(?:{octet}\.){{3}}{octet}(?:/\d{{1,2}}|:\d{{1,5}})?\b"
             ))?,
-            sri: Regex::new(r"\b(?:md5|sha1|sha256|sha512)-[A-Za-z0-9+/]{16,}={0,2}")?,
+            sri: Regex::new(
+                r"\b(?:md5-[A-Za-z0-9+/]{22}==|sha1-[A-Za-z0-9+/]{27}=|sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)",
+            )?,
             path: Regex::new(&format!(
                 r"(?:(?:~|\.{{1,2}})?(?:/{path_char}+)+|{path_char}+(?:/{path_char}+)+)/?"
             ))?,
@@ -73,14 +76,22 @@ impl Patterns {
                 .find_iter(text)
                 .filter_map(|m| ipv6(text, m.range())),
         );
-        for pattern in [&self.ipv4, &self.sri] {
-            found.extend(pattern.find_iter(text).map(|m| m.range()));
-        }
-        // Without a letter, it's a fraction or a date (`1/2`, `2024/11/16`).
+        found.extend(self.ipv4.find_iter(text).map(|m| m.range()));
+        // Not followed by more base 64: a hash too long isn't one.
+        let base64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=');
+        found.extend(
+            self.sri
+                .find_iter(text)
+                .filter(|m| !text[m.end()..].starts_with(base64))
+                .map(|m| m.range()),
+        );
+        // Without a letter, it's a fraction or a date (`1/2`, `2024/11/16`);
+        // before a `=`, base 64 (a hash that isn't one of the above).
         found.extend(
             self.path
                 .find_iter(text)
                 .filter(|m| m.as_str().chars().any(char::is_alphabetic))
+                .filter(|m| !text[m.end()..].starts_with('='))
                 .map(|m| without_final_dot(m.as_str(), m.range())),
         );
         for pattern in [&self.nix32, &self.uuid] {
@@ -416,6 +427,18 @@ mod tests {
         );
         let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
         assert_eq!(matched(&format!("hash = \"{sri}\";")), [sri]);
+        let sha512 = format!("sha512-{}==", "A".repeat(86));
+        assert_eq!(matched(&sha512), [sha512.as_str()]);
+        // A character too few or too many, or another algorithm, and it's
+        // not a hash, nor a path for its `/`.
+        for broken in [
+            "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuF=",
+            "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFUx=",
+            "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU==",
+            "sha25-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+        ] {
+            assert_eq!(matched(broken), Vec::<&str>::new(), "{broken}");
+        }
         let nix32 = "0ijcq3g2pxdixh6k6vkfwvx7xjyjnbgvx3nmrh0gmfdmlz7y7rlp";
         assert_eq!(matched(&format!("got: {nix32}")), [nix32]);
         let uuid = "123e4567-E89B-12d3-a456-426614174000";
