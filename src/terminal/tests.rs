@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    Cell, ClipboardWrite, Color, CursorShape, DefaultColors, Extra, FinishedCommand, Flags,
-    MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row,
+    Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, FinishedCommand,
+    Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row,
     Terminal, Underline,
 };
 use crate::color::Rgb;
@@ -471,15 +471,68 @@ fn private_modes() {
     assert!(!modes.app_cursor && !modes.bracketed_paste && modes.show_cursor);
 }
 
+fn style(shape: CursorShape, blink: bool) -> CursorStyle {
+    CursorStyle { shape, blink }
+}
+
 #[test]
 fn cursor_shape() {
     let mut t = term(10, 1);
     t.feed(b"\x1b[6 q");
-    assert_eq!(t.screen().cursor_shape, CursorShape::Beam);
+    assert_eq!(t.screen().cursor_style(), style(CursorShape::Beam, false));
     t.feed(b"\x1b[4 q");
-    assert_eq!(t.screen().cursor_shape, CursorShape::Underline);
+    assert_eq!(
+        t.screen().cursor_style(),
+        style(CursorShape::Underline, false)
+    );
     t.feed(b"\x1b[0 q");
-    assert_eq!(t.screen().cursor_shape, CursorShape::Block);
+    assert_eq!(t.screen().cursor_style(), style(CursorShape::Block, false));
+}
+
+#[test]
+fn odd_cursor_styles_blink() {
+    let mut t = term(10, 1);
+    for (n, shape) in [
+        (1, CursorShape::Block),
+        (3, CursorShape::Underline),
+        (5, CursorShape::Beam),
+    ] {
+        t.feed(format!("\x1b[{n} q").as_bytes());
+        assert_eq!(t.screen().cursor_style(), style(shape, true), "{n}");
+    }
+}
+
+#[test]
+fn the_default_cursor_style_comes_back_with_0_and_a_reset() {
+    let mut t = term(10, 1);
+    let configured = style(CursorShape::Beam, true);
+    t.screen_mut().set_default_cursor_style(configured);
+    assert_eq!(t.screen().cursor_style(), configured);
+    t.feed(b"\x1b[2 q");
+    assert_eq!(t.screen().cursor_style(), style(CursorShape::Block, false));
+    t.feed(b"\x1b[ q");
+    assert_eq!(t.screen().cursor_style(), configured);
+    t.feed(b"\x1b[4 q\x1bc");
+    assert_eq!(t.screen().cursor_style(), configured);
+    // A new default applies unless the program chose a style.
+    t.feed(b"\x1b[4 q");
+    t.screen_mut()
+        .set_default_cursor_style(style(CursorShape::Block, false));
+    assert_eq!(
+        t.screen().cursor_style(),
+        style(CursorShape::Underline, false)
+    );
+}
+
+#[test]
+fn decrqss_reports_the_cursor_style_with_blinking() {
+    let mut t = term(10, 1);
+    t.screen_mut()
+        .set_default_cursor_style(style(CursorShape::Underline, true));
+    t.feed(b"\x1bP$q q\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r3 q\x1b\\");
+    t.feed(b"\x1b[6 q\x1bP$q q\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r6 q\x1b\\");
 }
 
 #[test]
@@ -1177,7 +1230,7 @@ fn decrqss_reports_other_settings() {
     t.feed(b"\x1b[2;4r\x1bP$qr\x1b\\");
     assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r2;4r\x1b\\");
     t.feed(b"\x1b[5 q\x1bP$q q\x1b\\");
-    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r6 q\x1b\\");
+    assert_eq!(t.screen_mut().take_responses(), b"\x1bP1$r5 q\x1b\\");
     // Unknown requests are reported as invalid.
     t.feed(b"\x1bP$qx\x1b\\");
     assert_eq!(t.screen_mut().take_responses(), b"\x1bP0$r\x1b\\");

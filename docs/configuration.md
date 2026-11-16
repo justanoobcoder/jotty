@@ -283,6 +283,8 @@ To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
 | `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
 | `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
+| `cursor_shape` | string | `"block"` | `"block"`, `"beam"` or `"underline"`. Programs can set their own with `CSI Ps SP q` (DECSCUSR); `CSI 0 SP q` and a reset bring this one back. |
+| `cursor_blink` | bool | `false` | Blink the cursor (on and off every 500 ms) while the window is focused, unless a program sets a style; typing shows it at once. |
 
 ### `TERM` and terminfo
 

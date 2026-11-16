@@ -243,12 +243,20 @@ impl Terminal {
 }
 
 /// How the cursor is drawn (DECSCUSR).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CursorShape {
     #[default]
     Block,
     Underline,
     Beam,
+}
+
+/// The cursor's shape and whether it blinks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CursorStyle {
+    pub shape: CursorShape,
+    pub blink: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -391,7 +399,10 @@ pub struct Screen {
     scroll_bottom: usize,
     tabs: Vec<bool>,
     pub modes: Modes,
-    pub cursor_shape: CursorShape,
+    /// The cursor style a program chose (DECSCUSR), if any.
+    cursor_style: Option<CursorStyle>,
+    /// The configured cursor style, for programs that choose none.
+    default_cursor_style: CursorStyle,
     last_char: Option<char>,
     /// Scratch text for `continues_cluster`.
     cluster_scratch: String,
@@ -613,7 +624,8 @@ impl Screen {
             scroll_bottom: rows - 1,
             tabs: default_tabs(cols),
             modes: Modes::default(),
-            cursor_shape: CursorShape::default(),
+            cursor_style: None,
+            default_cursor_style: CursorStyle::default(),
             last_char: None,
             cluster_scratch: String::new(),
             cursor_color: None,
@@ -1311,6 +1323,19 @@ impl Screen {
 
     /// The configured colors, which color queries report while the program
     /// hasn't changed them.
+    /// The cursor style to draw: the program's, or the configured one.
+    #[must_use]
+    pub fn cursor_style(&self) -> CursorStyle {
+        self.cursor_style.unwrap_or(self.default_cursor_style)
+    }
+
+    /// Sets the configured cursor style, which `CSI 0 SP q` and resets
+    /// return to.
+    pub fn set_default_cursor_style(&mut self, style: CursorStyle) {
+        self.default_cursor_style = style;
+        self.dirty = true;
+    }
+
     pub fn set_default_colors(&mut self, colors: DefaultColors) {
         self.default_cursor_color = colors.cursor;
         self.default_colors = colors;
@@ -2235,6 +2260,7 @@ impl Screen {
     fn reset(&mut self) {
         let scrollback = self.primary.max_history;
         let default_colors = self.default_colors.clone();
+        let default_cursor_style = self.default_cursor_style;
         let (width, height) = self.cell_size;
         // Replies, notifications, clipboard writes and finished commands
         // from before the reset are still due, the window keeps its title,
@@ -2248,6 +2274,7 @@ impl Screen {
         let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);
         self.set_default_colors(default_colors);
+        self.set_default_cursor_style(default_cursor_style);
         self.set_cell_size(width, height);
         self.responses = responses;
         self.notifications = notifications;
@@ -2309,12 +2336,13 @@ impl Screen {
                 self.scroll_bottom + 1
             )),
             b" q" => {
-                let style = match self.cursor_shape {
+                let style = self.cursor_style();
+                let steady = match style.shape {
                     CursorShape::Block => 2,
                     CursorShape::Underline => 4,
                     CursorShape::Beam => 6,
                 };
-                Some(format!("{style} q"))
+                Some(format!("{} q", steady - u8::from(style.blink)))
             }
             _ => None,
         };
@@ -2684,11 +2712,22 @@ impl Perform for Screen {
             ([], 'u') => self.restore_cursor(),
             ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, args),
             ([b' '], 'q') => {
-                self.cursor_shape = match raw(0) {
+                // Odd styles blink; 0 (and unknown ones) mean the default.
+                let shape = match raw(0) {
+                    1 | 2 => CursorShape::Block,
                     3 | 4 => CursorShape::Underline,
                     5 | 6 => CursorShape::Beam,
-                    _ => CursorShape::Block,
+                    _ => {
+                        self.cursor_style = None;
+                        self.dirty = true;
+                        return;
+                    }
                 };
+                self.cursor_style = Some(CursorStyle {
+                    shape,
+                    blink: raw(0) % 2 == 1,
+                });
+                self.dirty = true;
             }
             _ => log::debug!(
                 "unhandled CSI {:?} {:?} {action}",
