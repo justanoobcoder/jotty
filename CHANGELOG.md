@@ -13,6 +13,8 @@ CHANGELOG
     kinds for an extension they share
 - Ctrl+drag a file or directory named in the output (such as `ls` output)
     to drop it into another application; its name follows the pointer
+- Dropping files onto a window types their paths at the cursor, quoted
+    for the shell; dropped text is pasted
 - Ctrl+right click or drag marks files and directories, and Ctrl+drag
     from a mark drags all of them; `colors.mark_foreground` and
     `colors.mark_background` set their colors

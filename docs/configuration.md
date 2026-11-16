@@ -618,6 +618,13 @@ one. If a marked file is gone by then, nothing is dragged. Escape clears
 the marks (and only then doesn't reach the program; not in vi mode), as
 does dropping them.
 
+**Dropping files in.** Drop files from another application (a file
+manager, a browser's download list) onto a window to type their paths at
+the cursor, as a paste, each followed by a space and quoted for the shell
+where needed: `'/home/me/Videos/My film (2024).mkv' `. Nothing runs until
+you press Enter. Dropped links are typed the same way, and dropped text as
+it is. Files dragged out of a window aren't taken back by that window.
+
 When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
 clicks, drags and the wheel go to it. Hold **Shift** to select text,
 scroll the history, paste with the middle button, or (with Ctrl) open

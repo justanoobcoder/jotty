@@ -90,6 +90,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 };
 
 use crate::config::{Config, OutputClick, RendererKind, StartupMode};
+use crate::drop;
 use crate::editor::{self, TempFile};
 use crate::file_marks::{FileMark, FileMarks};
 use crate::font::{self, Fonts};
@@ -2816,7 +2817,7 @@ impl TermWindow {
             return;
         };
         match offer.receive(mime) {
-            Ok(pipe) => self.paste_from(pipe),
+            Ok(pipe) => self.paste_from(pipe, None),
             Err(e) => log::warn!("cannot read the primary selection: {e}"),
         }
     }
@@ -2839,13 +2840,14 @@ impl TermWindow {
             return;
         };
         match offer.receive(mime) {
-            Ok(pipe) => self.paste_from(pipe),
+            Ok(pipe) => self.paste_from(pipe, None),
             Err(e) => log::warn!("cannot read clipboard: {e}"),
         }
     }
 
     /// Reads pasted text from another client without blocking, then sends it.
-    fn paste_from(&mut self, pipe: ReadPipe) {
+    /// `dropped` is the drop it comes from, if it isn't a paste.
+    fn paste_from(&mut self, pipe: ReadPipe, dropped: Option<Dropped>) {
         let mut data = Vec::new();
         let id = self.id;
         // When data last arrived, and whether the pipe's source is gone,
@@ -2854,7 +2856,7 @@ impl TermWindow {
         let finished = Rc::new(Cell::new(false));
         let (read_at, done) = (Rc::clone(&last_read), Rc::clone(&finished));
         let inserted = self.loop_handle.insert_source(pipe, move |_, file, app| {
-            let action = Self::read_paste(file, app, id, &mut data);
+            let action = Self::read_paste(file, app, id, &mut data, dropped.as_ref());
             read_at.set(Instant::now());
             if matches!(action, PostAction::Remove) {
                 done.set(true);
@@ -2891,6 +2893,7 @@ impl TermWindow {
         app: &mut App,
         id: WindowId,
         data: &mut Vec<u8>,
+        dropped: Option<&Dropped>,
     ) -> PostAction {
         use std::io::Read;
         // The window closed before the paste arrived.
@@ -2902,7 +2905,11 @@ impl TermWindow {
         let mut buf = [0u8; 1 << 14];
         match file.read(&mut buf) {
             Ok(0) => {
-                window.paste_text(&String::from_utf8_lossy(data));
+                let text = match dropped {
+                    Some(Dropped { uri_list: true, .. }) => drop::uri_list_text(data),
+                    _ => String::from_utf8_lossy(data).into_owned(),
+                };
+                window.paste_text(&text);
                 PostAction::Remove
             }
             Ok(n) if data.len() + n > MAX_PASTE => {
@@ -4537,7 +4544,50 @@ impl ShmHandler for App {
     }
 }
 
+impl App {
+    /// The offer being dragged over a window, the window, and the type
+    /// that window takes from it (`None` for a drag it doesn't take).
+    fn drag_offer(&self) -> Option<(DragOffer, WindowId, Option<&'static str>)> {
+        let offer = self.shared.data_device.as_ref()?.data().drag_offer()?;
+        let window = self
+            .windows
+            .iter()
+            .find(|w| w.window.wl_surface() == &offer.surface)?
+            .id;
+        // Files dragged out of a window would only come back typed into it.
+        let own = self.shared.drag_out.as_ref().map(|d| d.window) == Some(window);
+        let mime = (!own).then(|| offer.with_mime_types(drop_mime)).flatten();
+        Some((offer, window, mime))
+    }
+}
+
+/// The type a window takes from a drop offering `offered`: file names, or
+/// else text.
+fn drop_mime(offered: &[String]) -> Option<&'static str> {
+    if offered.iter().any(|o| o == URI_LIST_MIME) {
+        return Some(URI_LIST_MIME);
+    }
+    PASTE_MIMES
+        .into_iter()
+        .find(|m| offered.iter().any(|o| o == m))
+}
+
+/// A drop being read into a window. Dropping it tells the drag's source
+/// that the drop is done.
+struct Dropped {
+    offer: DragOffer,
+    /// The data is a `text/uri-list`.
+    uri_list: bool,
+}
+
+impl Drop for Dropped {
+    fn drop(&mut self) {
+        self.offer.finish();
+    }
+}
+
 impl DataDeviceHandler for App {
+    // Only a copy is taken: a move would have the source delete the files.
     fn enter(
         &mut self,
         _: &Connection,
@@ -4547,6 +4597,15 @@ impl DataDeviceHandler for App {
         _: f64,
         _: &WlSurface,
     ) {
+        let Some((offer, _, mime)) = self.drag_offer() else {
+            return;
+        };
+        offer.accept_mime_type(offer.serial, mime.map(str::to_string));
+        let action = match mime {
+            Some(_) => DndAction::Copy,
+            None => DndAction::empty(),
+        };
+        offer.set_actions(action, action);
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
@@ -4556,7 +4615,22 @@ impl DataDeviceHandler for App {
     // The offer is read lazily, when the user pastes.
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        let Some((offer, id, Some(mime))) = self.drag_offer() else {
+            return;
+        };
+        let pipe = match offer.receive(mime.to_string()) {
+            Ok(pipe) => pipe,
+            Err(e) => return log::warn!("cannot read the drop: {e}"),
+        };
+        let dropped = Dropped {
+            offer,
+            uri_list: mime == URI_LIST_MIME,
+        };
+        if let Some(window) = self.window_mut(id) {
+            window.paste_from(pipe, Some(dropped));
+        }
+    }
 }
 
 impl DataOfferHandler for App {

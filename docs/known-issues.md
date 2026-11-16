@@ -252,8 +252,12 @@ nothing surprises you.
   lowercase. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
   The label alphabet can't be configured.
-- No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
-  be dropped into a window.
+- No `idle-inhibit`.
+- Dropped files are typed as paths, quoted for POSIX shells and fish. In
+  fish, a path with a backslash right before a `'` or another backslash,
+  or at its end, is read differently, as fish's single quotes take `\\`
+  and `\'` as escapes. A `file://` URI's host is ignored, and a path that
+  isn't UTF-8 has its invalid bytes replaced.
 - A dragged file is offered as a `file://` URI only, not through the
   document portal (`application/vnd.portal.filetransfer`). Sandboxed
   applications, such as Flatpaks, may not be able to read it when it lies
