@@ -85,8 +85,8 @@ nothing surprises you.
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
   placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,
   1024 images and 4096 placements per screen; past that the oldest are
-  evicted. Images are decoded on the event loop, so a very large one stalls
-  the window while it decodes. Images in the history move with
+  evicted. While a large image decodes, the output after it waits, so its
+  window shows nothing new until then. Images in the history move with
   the cursor's line when a width change reflows the text.
 - **Sixel graphics**: images are at most 4096 pixels per side (the rest is
   cut off) and are drawn at their pixel size, whatever the font size. The
@@ -245,8 +245,9 @@ nothing surprises you.
   opened (Ctrl+O looks for them in the multiplexer's directory). IPv6 addresses with a zone (`%eth0`), a prefix
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
-  long URL cut by the edge) aren't labeled. A path leaves out the line
-  number after it (`/etc/x:120`). Hex hashes in mixed case aren't
+  long URL cut by the edge) aren't labeled. A path with a line number
+  opens in the editor with `+LINE`, which some editors (Helix, VS Code)
+  don't take, and its column is ignored. Hex hashes in mixed case aren't
   matched. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
 - No `idle-inhibit`.

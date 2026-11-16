@@ -1,7 +1,9 @@
 # Architecture overview
 
-jotty is a single-threaded, event-driven program. One `calloop` event loop
-waits on the Wayland socket and the PTY. The terminal state is plain data,
+jotty is an event-driven program. One `calloop` event loop waits on the
+Wayland socket and the PTY; threads only do work that would stall it
+(decoding large images, connecting to the session bus, waiting for
+launched programs). The terminal state is plain data,
 and the renderer turns it into quads once per frame, drawn with OpenGL ES or
 on the CPU.
 

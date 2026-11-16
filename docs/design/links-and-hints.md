@@ -27,9 +27,12 @@ files dragged out of a window aren't taken back by it.
 `sha256-…=` of the right length for md5, sha1, sha256 or sha512, or 52
 characters of base 32), paths starting with `/`, `~/`, `./` or `../`, hex
 hashes of 7 to 128 characters in one case with both letters and digits
-(`1af659b` or `1AF659B`, not `deadbeef` or `1aF659b`), and names of existing files. The newest output gets the
-shortest labels. Whether a target names a file is checked when it is
-opened. Copying a link gives its target (the URL of a hyperlink, the
+(`1af659b` or `1AF659B`, not `deadbeef` or `1aF659b`), and names of
+existing files. Paths and names may end in a line number and a column
+(`src/main.rs:12:5`, `x.c:12:` without the final colon). The newest output
+gets the shortest labels. Whether a target names a file is checked when it
+is opened; one with a line number opens in `terminal.editor` with `+LINE`
+in a new window (`hints::split_line`, `TermWindow::open_file_in_editor`). Copying a link gives its target (the URL of a hyperlink, the
 absolute path of a file). Output keeps arriving while the labels are up:
 targets move with their text, those whose text changes are dropped, and a
 resize takes the labels down.

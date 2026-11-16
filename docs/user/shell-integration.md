@@ -83,3 +83,5 @@ editor = ["nvim", "-R"]
   it. Graphical editors such as `code` need their `--wait` flag.
 - Set `editor` in the config if you start jotty from an app launcher,
   which doesn't see the variables your shell sets.
+- The same editor opens files at a line from [hints](hints.md), with
+  `+LINE` before the file.

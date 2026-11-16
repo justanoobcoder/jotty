@@ -104,6 +104,19 @@ enum Intercepted {
     BodyEscape(StringKind, Option<Vec<u8>>),
 }
 
+/// What [`Terminal::feed_until_decode`] did with the output.
+#[derive(Debug)]
+#[must_use]
+pub enum Fed {
+    /// Processed all of it.
+    All,
+    /// Stopped after the first `consumed` bytes, at an image to decode.
+    Paused {
+        consumed: usize,
+        decode: graphics::Decode,
+    },
+}
+
 /// The string tables that extras refer to, see `Screen::make_room`.
 #[derive(Clone, Copy)]
 enum Strings {
@@ -121,10 +134,34 @@ impl Terminal {
         }
     }
 
-    /// Processes output from the child process. Intercepted strings are
-    /// taken out before the parser sees the bytes.
+    /// Processes output from the child process, decoding images as they
+    /// come; the application decodes them elsewhere instead.
+    #[cfg(test)]
     pub fn feed(&mut self, mut bytes: &[u8]) {
-        while let Some(&first) = bytes.first() {
+        while let Fed::Paused { consumed, decode } = self.feed_until_decode(bytes) {
+            self.finish_decode(decode.run());
+            bytes = &bytes[consumed..];
+        }
+    }
+
+    /// Processes output from the child process, up to an image that must
+    /// be decoded first: then it stops, and the caller decodes it (on
+    /// another thread, as it can take long), gives the result to
+    /// [`Terminal::finish_decode`] and feeds the rest. Intercepted strings
+    /// are taken out before the parser sees the bytes.
+    pub fn feed_until_decode(&mut self, bytes: &[u8]) -> Fed {
+        let len = bytes.len();
+        let mut bytes = bytes;
+        loop {
+            if let Some(decode) = self.screen.decoding.take() {
+                return Fed::Paused {
+                    consumed: len - bytes.len(),
+                    decode,
+                };
+            }
+            let Some(&first) = bytes.first() else {
+                return Fed::All;
+            };
             match std::mem::take(&mut self.string) {
                 Intercepted::Outside => {
                     // The first introducer, or the start of one at the end.
@@ -132,7 +169,7 @@ impl Terminal {
                         .find_map(|i| Some((i, introducer(&bytes[i..])?)));
                     let Some((i, found)) = found else {
                         self.parser.advance(&mut self.screen, bytes);
-                        return;
+                        return Fed::All;
                     };
                     self.parser.advance(&mut self.screen, &bytes[..i]);
                     match found {
@@ -142,7 +179,7 @@ impl Terminal {
                         }
                         Introducer::Partial(start) => {
                             self.string = Intercepted::Start(start);
-                            return;
+                            return Fed::All;
                         }
                     }
                 }
@@ -156,7 +193,7 @@ impl Terminal {
                         // Still too short to tell: `more` was all of `bytes`.
                         Some(Introducer::Partial(start)) => {
                             self.string = Intercepted::Start(start);
-                            return;
+                            return Fed::All;
                         }
                         // Not a string after all: the parser gets it.
                         None => self.parser.advance(&mut self.screen, start),
@@ -193,7 +230,7 @@ impl Terminal {
                         Some((i, _)) => bytes = &bytes[i + 1..],
                         None => {
                             self.string = Intercepted::Body(kind, body);
-                            return;
+                            return Fed::All;
                         }
                     }
                 }
@@ -212,6 +249,12 @@ impl Terminal {
                 }
             }
         }
+    }
+
+    /// Finishes the image transmission [`Terminal::feed_until_decode`]
+    /// stopped at, with the image [`graphics::Decode::run`] made of it.
+    pub fn finish_decode(&mut self, decoded: graphics::Decoded) {
+        self.screen.finish_decode(decoded);
     }
 
     /// Enters an intercepted string. Its `ESC` also ends whatever sequence
@@ -449,6 +492,9 @@ pub struct Screen {
     notifications: Vec<Notification>,
     /// The last clipboard writes a program asked for (OSC 52).
     clipboard_write: ClipboardWrite,
+    /// An image transmission waiting to be decoded, which nothing after it
+    /// may be processed before (see [`Terminal::feed_until_decode`]).
+    decoding: Option<graphics::Decode>,
     dirty: bool,
     /// How many history rows the view is scrolled back.
     display_offset: usize,
@@ -651,6 +697,7 @@ impl Screen {
             bell: false,
             notifications: Vec::new(),
             clipboard_write: ClipboardWrite::default(),
+            decoding: None,
             dirty: true,
             display_offset: 0,
             prompt_end: None,
@@ -1466,6 +1513,23 @@ impl Screen {
         };
         let ctx = self.graphics_context();
         let outcome = self.graphics_mut().command(command, &ctx);
+        self.graphics_done(outcome);
+    }
+
+    /// Finishes the image transmission that [`Terminal::feed_until_decode`]
+    /// paused for. Nothing was processed since, so the screen buffer and
+    /// the cursor are where the transmission found them.
+    fn finish_decode(&mut self, decoded: graphics::Decoded) {
+        let ctx = self.graphics_context();
+        let outcome = self.graphics_mut().finish_decode(decoded, &ctx);
+        self.graphics_done(outcome);
+    }
+
+    /// Does what a graphics command left to the screen.
+    fn graphics_done(&mut self, outcome: graphics::Outcome) {
+        if let Some(decode) = outcome.decode {
+            self.decoding = Some(decode);
+        }
         if let Some(response) = outcome.response {
             self.responses.extend_from_slice(response.as_bytes());
         }

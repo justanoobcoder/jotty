@@ -55,7 +55,10 @@ impl Patterns {
             sri: Regex::new(
                 r"\b(?:md5-[A-Za-z0-9+/]{22}==|sha1-[A-Za-z0-9+/]{27}=|sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)",
             )?,
-            path: Regex::new(&format!(r"(?:~|\.{{1,2}})?(?:/{path_char}+)+/?"))?,
+            // With a line number, and maybe a column, after it.
+            path: Regex::new(&format!(
+                r"(?:~|\.{{1,2}})?(?:/{path_char}+)+/?(?::\d+(?::\d+)?\b)?"
+            ))?,
             nix32: Regex::new(r"\b[0-9a-df-np-sv-z]{52}\b")?,
             uuid: Regex::new(r"\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b")?,
             hex: Regex::new(r"\b(?:[0-9a-f]{7,128}|[0-9A-F]{7,128})\b")?,
@@ -213,14 +216,47 @@ pub fn find(
             col: usize::MAX,
         },
         MAX_FILES,
-        // `/`, `.` and `~/` exist, but are punctuation in text (`4 / 5`).
-        |name| (name.chars().any(char::is_alphanumeric) && is_file(name)).then(|| name.to_string()),
+        |name| {
+            // `/`, `.` and `~/` exist, but are punctuation in text (`4 / 5`).
+            if !name.chars().any(char::is_alphanumeric) {
+                return None;
+            }
+            if is_file(name) {
+                return Some(name.to_string());
+            }
+            // A file and a line number, without the colon after them.
+            let (path, _) = split_line(name)?;
+            is_file(path).then(|| name.trim_end_matches(':').to_string())
+        },
     );
     for name in names {
         add(name.start, name.end, name.value, None);
     }
     targets.sort_by_key(|t| t.start);
     targets
+}
+
+/// The path and the line number of a path followed by one, and maybe a
+/// column, as compilers and grep print them: `src/main.rs:12:5`, `x.c:12:`.
+#[must_use]
+pub fn split_line(text: &str) -> Option<(&str, u32)> {
+    let number = |s: &str| {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse::<u32>().ok()
+    };
+    let text = text.strip_suffix(':').unwrap_or(text);
+    let (rest, last) = text.rsplit_once(':')?;
+    let last = number(last)?;
+    // The last number was the column.
+    if let Some((path, line)) = rest.rsplit_once(':')
+        && let Some(line) = number(line)
+        && !path.is_empty()
+    {
+        return Some((path, line));
+    }
+    (!rest.is_empty()).then_some((rest, last))
 }
 
 /// The text of `start..=end` on `screen`.
@@ -486,7 +522,18 @@ mod tests {
     fn finds_paths_from_the_root_home_or_current_directory() {
         assert_eq!(
             matched("/etc/x:120:5 ~/.config/jotty ./run ../lib --prefix=/usr/local"),
-            ["/etc/x", "~/.config/jotty", "./run", "../lib", "/usr/local"]
+            [
+                "/etc/x:120:5",
+                "~/.config/jotty",
+                "./run",
+                "../lib",
+                "/usr/local"
+            ]
+        );
+        // A line number, but not a final colon or a number in a word.
+        assert_eq!(
+            matched("/etc/x:120: oops ./a.rs:7. /b:12ab"),
+            ["/etc/x:120", "./a.rs:7", "/b"]
         );
         assert_eq!(
             matched("see /etc/hosts. or ../lib/.."),
@@ -513,6 +560,32 @@ mod tests {
             found,
             ["https://x.org/a/b", "1af659b", "Cargo.toml", "./src/a.rs"]
         );
+    }
+
+    #[test]
+    fn names_of_files_may_have_a_line_number() {
+        let mut t = Terminal::new(60, 1, 0);
+        t.feed(b"src/a.rs:12:5: warning src/b.rs:3: src/c.rs:4");
+        let found = texts(&t, |name| ["src/a.rs", "src/b.rs"].contains(&name));
+        assert_eq!(found, ["src/a.rs:12:5", "src/b.rs:3"]);
+    }
+
+    #[test]
+    fn splits_off_line_numbers() {
+        assert_eq!(split_line("src/a.rs:12:5"), Some(("src/a.rs", 12)));
+        assert_eq!(split_line("src/a.rs:12:"), Some(("src/a.rs", 12)));
+        assert_eq!(split_line("/etc/x:120"), Some(("/etc/x", 120)));
+        assert_eq!(split_line("a:b:12"), Some(("a:b", 12)));
+        for none in [
+            "src/a.rs",
+            "a.rs:",
+            "a.rs:x",
+            "a.rs:+1",
+            ":12",
+            "a.rs:99999999999",
+        ] {
+            assert_eq!(split_line(none), None, "{none}");
+        }
     }
 
     #[test]

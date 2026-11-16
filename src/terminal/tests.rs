@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, FinishedCommand,
-    Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row,
-    Terminal, Underline,
+    Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, Fed,
+    FinishedCommand, Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode,
+    Notification, Row, Terminal, Underline,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -1350,6 +1350,72 @@ fn placing_an_image_moves_the_cursor_past_it() {
     assert_eq!(t.screen().cursor(), (3, 2));
     let placements = t.screen().graphics().placements();
     assert_eq!(placements[2].line - t.screen().grid().scrolled as i64, 1);
+}
+
+/// A 200×100 RGB image, too large to be decoded on the spot, placed at
+/// the cursor over 2×2 cells.
+fn large_image() -> Vec<u8> {
+    // Three bytes per group: one per pixel.
+    let payload = "AAAA".repeat(200 * 100);
+    format!("\x1b_Ga=T,i=2,f=24,s=200,v=100,c=2,r=2;{payload}\x1b\\").into_bytes()
+}
+
+#[test]
+fn feeding_stops_at_a_large_image_until_it_is_decoded() {
+    let mut t = term(10, 4);
+    let mut input = b"a".to_vec();
+    input.extend(large_image());
+    input.extend(b"xy");
+    let Fed::Paused { consumed, decode } = t.feed_until_decode(&input) else {
+        panic!("a large image should be decoded later");
+    };
+    assert_eq!(consumed, input.len() - 2);
+    // Nothing after it yet, nor the image.
+    assert_eq!(lines(&t), ["a", "", "", ""]);
+    assert!(t.screen().graphics().placements().is_empty());
+    t.finish_decode(decode.run());
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+    assert!(matches!(t.feed_until_decode(&input[consumed..]), Fed::All));
+    // The text goes past the image, as if it had been decoded at once.
+    assert_eq!(lines(&t), ["a", "   xy", "", ""]);
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=2;OK\x1b\\");
+}
+
+#[test]
+fn a_decode_that_never_finished_fails_the_transmission() {
+    let mut t = term(10, 4);
+    let mut input = large_image();
+    input.extend(b"x");
+    let Fed::Paused { consumed, decode } = t.feed_until_decode(&input) else {
+        panic!("a large image should be decoded later");
+    };
+    t.finish_decode(decode.failed());
+    assert!(matches!(t.feed_until_decode(&input[consumed..]), Fed::All));
+    assert!(t.screen().graphics().placements().is_empty());
+    assert_eq!(lines(&t), ["x", "", "", ""]);
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b_Gi=2;EIO: cannot decode the image\x1b\\"
+    );
+}
+
+#[test]
+fn feed_decodes_images_as_they_come() {
+    let mut t = term(10, 4);
+    let mut input = large_image();
+    input.extend(b"x");
+    t.feed(&input);
+    assert_eq!(t.screen().graphics().placements().len(), 1);
+    assert_eq!(lines(&t), ["", "  x", "", ""]);
+}
+
+#[test]
+fn small_images_are_decoded_on_the_spot() {
+    let mut t = term(10, 2);
+    let mut input = IMAGE.to_vec();
+    input.extend(b"x");
+    assert!(matches!(t.feed_until_decode(&input), Fed::All));
+    assert!(t.screen().graphics().image_by_id(1).is_some());
 }
 
 #[test]

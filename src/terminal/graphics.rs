@@ -307,6 +307,67 @@ pub struct Outcome {
     pub response: Option<String>,
     /// The columns and rows to move the cursor past an image placed at it.
     pub moved: Option<(u32, u32)>,
+    /// A transmission whose image must be decoded before the command can
+    /// finish, and before anything after it is processed.
+    pub decode: Option<Decode>,
+}
+
+/// A transmission whose image is still to be read, decompressed and
+/// decoded. For a large image that takes long enough to stall every window,
+/// so it is done with [`Decode::run`] off the event loop; the result goes to
+/// [`Graphics::finish_decode`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct Decode {
+    command: Command,
+    /// The base64 payload: the image, or where to read it from.
+    payload: Vec<u8>,
+}
+
+/// Payloads up to this size, sent directly (`t=d`), are decoded on the
+/// spot: they are quick, and many small images are common.
+const SMALL_PAYLOAD: usize = 64 << 10;
+
+impl Decode {
+    /// Whether it is quick enough to do on the event loop: a small image in
+    /// the payload itself, not in a file or shared memory.
+    #[must_use]
+    pub fn is_small(&self) -> bool {
+        self.command.medium == b'd' && self.payload.len() <= SMALL_PAYLOAD
+    }
+
+    /// What to finish the transmission with if [`Decode::run`] never
+    /// returns (its thread panicked): an error.
+    #[must_use]
+    pub fn failed(&self) -> Decoded {
+        Decoded {
+            command: self.command,
+            image: Err("EIO: cannot decode the image".into()),
+        }
+    }
+
+    /// Reads, decompresses and decodes the image. This may take a while and
+    /// touches the file system, but nothing of the terminal's.
+    #[must_use]
+    pub fn run(self) -> Decoded {
+        let Decode { command, payload } = self;
+        let data = base64(&payload);
+        // Free the base64 text before the later stages make more copies of
+        // the image.
+        drop(payload);
+        let image = data
+            .and_then(|data| read_medium(&command, data))
+            .and_then(|data| decompress(&command, data))
+            .and_then(|data| decode(&command, data));
+        Decoded { command, image }
+    }
+}
+
+/// An image [`Decode::run`] decoded, or why it couldn't.
+#[derive(Debug)]
+pub struct Decoded {
+    command: Command,
+    /// Width, height and RGBA pixels.
+    image: Result<(u32, u32, Vec<u8>), String>,
 }
 
 /// A transmission split into chunks (`m=1`), being received.
@@ -413,7 +474,7 @@ impl Graphics {
             if loading.payload.len() + payload.len() > MAX_DATA * 4 / 3 {
                 return Outcome {
                     response: reply(&loading.command, Err("EFBIG: too much data".into())),
-                    moved: None,
+                    ..Outcome::default()
                 };
             }
             loading.payload.extend_from_slice(payload);
@@ -421,12 +482,8 @@ impl Graphics {
                 self.loading = Some(loading);
                 return Outcome::default();
             }
-            // Free the base64 text before the later stages make more
-            // copies of the image.
             let Loading { command, payload } = loading;
-            let data = base64(&payload);
-            drop(payload);
-            return self.finish(command, data, ctx);
+            return self.transmitted(Decode { command, payload }, ctx);
         }
         match cmd.action {
             b't' | b'T' | b'q' if cmd.more => {
@@ -436,7 +493,13 @@ impl Graphics {
                 });
                 Outcome::default()
             }
-            b't' | b'T' | b'q' => self.finish(cmd, base64(payload), ctx),
+            b't' | b'T' | b'q' => self.transmitted(
+                Decode {
+                    command: cmd,
+                    payload: payload.to_vec(),
+                },
+                ctx,
+            ),
             b'p' => {
                 let image = if cmd.id != 0 {
                     self.image_by_id(cmd.id)
@@ -455,7 +518,7 @@ impl Graphics {
                     }
                     None => Outcome {
                         response: reply(&cmd, Err("ENOENT: no such image".into())),
-                        moved: None,
+                        ..Outcome::default()
                     },
                 }
             }
@@ -467,32 +530,39 @@ impl Graphics {
                 log::debug!("unsupported graphics action {}", action as char);
                 Outcome {
                     response: reply(&cmd, Err("EINVAL: unsupported action".into())),
-                    moved: None,
+                    ..Outcome::default()
                 }
             }
         }
     }
 
-    /// Finishes a transmission (`a=t`, `T` or `q`) with its whole payload,
-    /// decoded from base64.
-    fn finish(
-        &mut self,
-        mut cmd: Command,
-        data: Result<Vec<u8>, String>,
-        ctx: &Context,
-    ) -> Outcome {
-        let image = data
-            .and_then(|data| read_medium(&cmd, data))
-            .and_then(|data| decompress(&cmd, data))
-            .and_then(|data| decode(&cmd, data));
+    /// A transmission (`a=t`, `T` or `q`) has its whole payload: finishes a
+    /// small one, or asks for the image to be decoded first.
+    fn transmitted(&mut self, decode: Decode, ctx: &Context) -> Outcome {
+        if decode.is_small() {
+            return self.finish_decode(decode.run(), ctx);
+        }
+        Outcome {
+            decode: Some(decode),
+            ..Outcome::default()
+        }
+    }
+
+    /// Finishes a transmission with its decoded image: stores it, and
+    /// places it for `a=T`.
+    pub fn finish_decode(&mut self, decoded: Decoded, ctx: &Context) -> Outcome {
+        let Decoded {
+            command: mut cmd,
+            image,
+        } = decoded;
         let error = |cmd: &Command, e| Outcome {
             response: reply(cmd, Err(e)),
-            moved: None,
+            ..Outcome::default()
         };
         match (cmd.action, image) {
             (b'q', result) => Outcome {
                 response: reply(&cmd, result.map(|_| ())),
-                moved: None,
+                ..Outcome::default()
             },
             (_, Err(e)) => {
                 log::debug!("graphics transmission failed: {e}");
@@ -508,7 +578,7 @@ impl Graphics {
                 } else {
                     Outcome {
                         response: reply(&cmd, Ok(())),
-                        moved: None,
+                        ..Outcome::default()
                     }
                 }
             }
@@ -620,6 +690,7 @@ impl Graphics {
         Outcome {
             response: reply(cmd, Ok(())),
             moved,
+            decode: None,
         }
     }
 
@@ -1143,8 +1214,13 @@ mod tests {
         }
     }
 
+    /// Runs a command, decoding its image at once if it asks for that.
     fn run(g: &mut Graphics, command: &str) -> Outcome {
-        g.command(command.as_bytes(), &ctx())
+        let outcome = g.command(command.as_bytes(), &ctx());
+        match outcome.decode {
+            Some(decode) => g.finish_decode(decode.run(), &ctx()),
+            None => outcome,
+        }
     }
 
     #[test]
