@@ -1,6 +1,6 @@
 name: CI
 
-# Markdown, packaging and helper scripts never reach the build or the tests
+# Markdown, packaging, the website and helper scripts never reach the build or the tests
 # (the package's src in flake.nix leaves them out), so changes to them alone
 # skip CI. docs/config.example.toml is not ignored: a test parses it; nor are
 # LICENSE and THIRD-PARTY-LICENSES, which the package installs. The
@@ -14,7 +14,9 @@ on:
       - .gitignore
       - packaging/**
       - scripts/**
+      - site/**
       - .github/workflows/release.yml
+      - .github/workflows/pages.yml
   pull_request:
     paths-ignore: *ignored
   workflow_dispatch:

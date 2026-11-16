@@ -1,0 +1,62 @@
+name: Website
+
+# Builds the website (site/, with docs/, README.md and CHANGELOG.md pulled
+# in) and deploys it to GitHub Pages.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - docs/**
+      - README.md
+      - CHANGELOG.md
+      - extra/jotty.svg
+      - flake.nix
+      - flake.lock
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - site/**
+      - docs/**
+      - README.md
+      - CHANGELOG.md
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+# Deploys never overlap, and an older one in progress finishes.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # mkdocs --strict: broken links and anchors fail the build.
+      - run: nix build .#site --print-build-logs
+      # upload-pages-artifact archives the files, not the result symlink.
+      - run: cp -rL result public
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
