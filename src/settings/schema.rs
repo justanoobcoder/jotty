@@ -196,6 +196,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         ),
         (
             "window",
+            "hide_pointer_while_typing",
+            Bool,
+            "Hide the mouse pointer while typing, until it moves.",
+        ),
+        (
+            "window",
             "command_notify_after",
             Int {
                 min: 0,

@@ -205,6 +205,8 @@ pub struct WindowConfig {
     /// Show the desktop notifications programs ask for (OSC 9, OSC 777)
     /// while the window isn't focused.
     pub notifications: bool,
+    /// Hide the mouse pointer over the window while typing, until it moves.
+    pub hide_pointer_while_typing: bool,
     /// Seconds a command must run for a notification when it finishes
     /// while the window isn't focused; 0 turns these off.
     pub command_notify_after: u32,
@@ -244,6 +246,7 @@ impl Default for WindowConfig {
             renderer: RendererKind::Cpu,
             bell_urgent: true,
             notifications: true,
+            hide_pointer_while_typing: false,
             command_notify_after: 10,
             single_instance: false,
             columns: 80,

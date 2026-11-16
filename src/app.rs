@@ -441,6 +441,8 @@ pub struct TermWindow {
     /// When a link was last clicked.
     last_link_click: Option<u32>,
     pointer_inside: bool,
+    /// The pointer was hidden by typing (`hide_pointer_while_typing`).
+    pointer_hidden: bool,
     /// The cursor last set over the decorations frame, to set it only
     /// when it changes.
     frame_cursor: Option<CursorIcon>,
@@ -803,6 +805,7 @@ impl TermWindow {
             hover_cell: None,
             last_link_click: None,
             pointer_inside: false,
+            pointer_hidden: false,
             frame_cursor: None,
             last_click: None,
             ctrl_press: None,
@@ -1452,8 +1455,39 @@ impl TermWindow {
         };
         if let Some(bytes) = input::encode(&key, shared.modifiers, self.key_modes()) {
             shared.sent_keys.insert(event.raw_code);
+            // Holding Ctrl to click a link isn't typing.
+            if !event.keysym.is_modifier_key() {
+                self.hide_pointer(shared);
+            }
             self.scroll_to_bottom();
             self.send(&bytes);
+        }
+    }
+
+    /// Hides the pointer while it is over the window, if the config asks
+    /// for that; any pointer event shows it again.
+    fn hide_pointer(&mut self, shared: &Shared) {
+        if !self.config.window.hide_pointer_while_typing
+            || !self.pointer_inside
+            || self.pointer_hidden
+        {
+            return;
+        }
+        let Some(pointer) = &shared.pointer else {
+            return;
+        };
+        match pointer.hide_cursor() {
+            Ok(()) => self.pointer_hidden = true,
+            Err(e) => log::debug!("cannot hide the pointer: {e}"),
+        }
+    }
+
+    /// The pointer's shape over the text: a hand over a link.
+    fn text_cursor(&self) -> CursorIcon {
+        if self.hovered_link.is_some() {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Text
         }
     }
 
@@ -1846,17 +1880,14 @@ impl TermWindow {
         if link == self.hovered_link {
             return;
         }
-        let icon = if link.is_some() {
-            CursorIcon::Pointer
-        } else {
-            CursorIcon::Text
-        };
-        if let Some(pointer) = &shared.pointer
-            && let Err(e) = pointer.set_cursor(&shared.conn, icon)
+        self.hovered_link = link;
+        // A hidden pointer gets the new shape when it shows again.
+        if !self.pointer_hidden
+            && let Some(pointer) = &shared.pointer
+            && let Err(e) = pointer.set_cursor(&shared.conn, self.text_cursor())
         {
             log::debug!("cannot set cursor: {e}");
         }
-        self.hovered_link = link;
         self.request_redraw();
     }
 
@@ -2614,7 +2645,12 @@ impl TermWindow {
 
     /// An input method event for this window, which has the input method's
     /// focus (or just lost it).
-    fn text_input_event(&mut self, text_input: &ZwpTextInputV3, event: zwp_text_input_v3::Event) {
+    fn text_input_event(
+        &mut self,
+        shared: &Shared,
+        text_input: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+    ) {
         use zwp_text_input_v3::Event;
         match event {
             Event::Enter { .. } => {
@@ -2651,6 +2687,8 @@ impl TermWindow {
                         // Vi mode takes keys, not text, and the program
                         // isn't the one being typed to.
                     } else if !bytes.is_empty() {
+                        // Text from an input method is typing too.
+                        self.hide_pointer(shared);
                         self.ime_caused_change = true;
                         self.scroll_to_bottom();
                         self.send(&bytes);
@@ -3311,8 +3349,8 @@ impl App {
                 None => return,
             },
         };
-        if let Some(window) = self.window_mut(target) {
-            window.text_input_event(text_input, event);
+        if let Some((shared, window)) = self.split(target) {
+            window.text_input_event(shared, text_input, event);
         }
     }
 }
@@ -3738,6 +3776,18 @@ impl PointerHandler for App {
 impl TermWindow {
     fn pointer_event(&mut self, shared: &mut Shared, conn: &Connection, event: &PointerEvent) {
         self.pointer_pos = event.position;
+        // Any pointer event shows a pointer that typing hid. Entering sets
+        // the shape below, and leaving hands the pointer to another surface.
+        if std::mem::take(&mut self.pointer_hidden)
+            && !matches!(
+                event.kind,
+                PointerEventKind::Enter { .. } | PointerEventKind::Leave { .. }
+            )
+            && let Some(pointer) = &shared.pointer
+            && let Err(e) = pointer.set_cursor(conn, self.text_cursor())
+        {
+            log::debug!("cannot set cursor: {e}");
+        }
         if matches!(event.kind, PointerEventKind::Motion { .. })
             && (shared.modifiers.ctrl || self.hovered_link.is_some())
         {

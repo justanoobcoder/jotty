@@ -21,6 +21,8 @@ CHANGELOG
     seconds (10 by default) finishes while the window isn't focused, a
     notification says so, with the command line, the time it took and
     whether it failed (needs shell integration marks `OSC 133 ; C` and `D`)
+- `window.hide_pointer_while_typing` hides the mouse pointer while typing
+    over the window, until it moves (off by default)
 
 ## 2.2.0
 
