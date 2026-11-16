@@ -2,7 +2,7 @@
 //! event loop tying them to the terminal and the renderer.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::File;
@@ -93,6 +93,7 @@ use crate::config::{Config, OutputClick, RendererKind, StartupMode};
 use crate::editor::{self, TempFile};
 use crate::file_marks::{FileMark, FileMarks};
 use crate::font::{self, Fonts};
+use crate::hints::{self, Hints, Patterns};
 use crate::ime::{Content, ImeState, Surrounding};
 use crate::input::{self, Key, KeyAction, KeyModes, MouseAction, MouseButton, MouseEvent};
 use crate::instance::{self, Client, DecodeError, Received, Reply, Server};
@@ -121,6 +122,17 @@ use wayland_client::protocol::wl_surface::WlSurface;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
+/// What to do with the target a hint picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HintAction {
+    Copy,
+    Open,
+    /// Type it at the cursor, as a paste.
+    Insert,
+    /// Open it, or copy it when it can't be opened.
+    Default,
+}
+
 /// A scrollback search: the query and the current match.
 struct Search {
     query: String,
@@ -341,6 +353,8 @@ pub struct Shared {
     /// A reload is scheduled (changes come in bursts while a file is saved).
     reload_pending: bool,
     links: Detector,
+    /// What hints label besides links.
+    hint_patterns: Patterns,
     /// What windows asked for, done once the current event is handled.
     requests: Vec<Request>,
     next_window: u32,
@@ -445,6 +459,8 @@ pub struct TermWindow {
     last_search: Option<(String, Direction)>,
     /// Vi mode, when on: a keyboard cursor over the screen and scrollback.
     vi: Option<ViMode>,
+    /// Hint labels over the screen, while picking one with the keyboard.
+    hints: Option<Hints>,
     /// The link under the pointer while Ctrl is held, drawn underlined.
     hovered_link: Option<Link>,
     /// The last path checked for a hovered link, with its working
@@ -558,6 +574,7 @@ pub fn run(
         log::info!("no fractional scaling (wp-fractional-scale or wp-viewporter missing)");
     }
     let links = links_detector(&config);
+    let hint_patterns = hint_patterns(&config);
 
     let mut app = App {
         shared: Shared {
@@ -585,6 +602,7 @@ pub fn run(
             config_path,
             reload_pending: false,
             links,
+            hint_patterns,
             requests: Vec::new(),
             next_window: 0,
             keyboard: None,
@@ -631,6 +649,14 @@ fn links_detector(config: &Config) -> Detector {
     Detector::try_new(&kinds, &config.url.regex).unwrap_or_else(|e| {
         log::error!("invalid url.regex, ignoring it: {e}");
         Detector::try_new(&kinds, &[]).expect("the built-in patterns are valid")
+    })
+}
+
+/// The patterns that hints label besides links, from `config`.
+fn hint_patterns(config: &Config) -> Patterns {
+    Patterns::try_new(&config.hints.regex).unwrap_or_else(|e| {
+        log::error!("invalid hints.regex, ignoring it: {e}");
+        Patterns::try_new(&[]).expect("the built-in patterns are valid")
     })
 }
 
@@ -830,6 +856,7 @@ impl TermWindow {
             search: None,
             last_search: None,
             vi: None,
+            hints: None,
             hovered_link: None,
             resolved_path: None,
             attention_requested: false,
@@ -941,6 +968,7 @@ impl TermWindow {
         // only moves if the grid changes.
         if !same_grid {
             self.selection = None;
+            self.hints = None;
             self.shift_mark = None;
             self.file_marks.clear();
         }
@@ -1269,6 +1297,15 @@ impl TermWindow {
                     end.line -= delta;
                 }
             }
+            // The selection shows the target hints picked, and goes with it.
+            if let Some(hints) = &mut self.hints {
+                if !(same_buffer && hints.follow_output(screen, delta)) {
+                    self.hints = None;
+                    self.selection = None;
+                } else if hints.chosen().is_none() {
+                    self.selection = None;
+                }
+            }
             if let Some(mark) = &mut self.shift_mark {
                 mark.line -= delta;
                 if !same_buffer || screen.row_at(mark.line).is_none() {
@@ -1408,6 +1445,7 @@ impl TermWindow {
                     })
                 }),
             search: search_bar.as_deref(),
+            hints: self.hints.as_ref(),
             cursor_blinked_off: self.cursor_blinked_off(),
         };
         // The frame's subsurfaces are synced: what it commits shows with
@@ -1463,6 +1501,9 @@ impl TermWindow {
 
     fn handle_key(&mut self, shared: &mut Shared, event: KeyEvent, action: KeyAction) {
         self.restart_blink();
+        if self.hints.is_some() {
+            return self.hints_key(shared, &event);
+        }
         if self.search.is_some() {
             return self.search_key(shared, &event);
         }
@@ -1645,6 +1686,160 @@ impl TermWindow {
         };
         if let Some(bytes) = input::encode(&key, shared.modifiers, self.key_modes()) {
             self.send(&bytes);
+        }
+    }
+
+    /// Labels the links and other useful text on the screen, for
+    /// [`TermWindow::hints_key`] to pick one; a notice says when there is
+    /// none.
+    fn start_hints(&mut self, shared: &Shared) {
+        let cwd = OnceCell::new();
+        // Whether each path checked is a regular file, or `None` when it
+        // doesn't exist: the same name is often on the screen many times,
+        // and checking touches the file system from the event loop.
+        let checked: RefCell<HashMap<PathBuf, Option<bool>>> = RefCell::default();
+        let check = |text: &str| -> Option<(PathBuf, bool)> {
+            let path = expand_home(text)?;
+            let path = if path.is_relative() {
+                cwd.get_or_init(|| self.pty.foreground_cwd())
+                    .as_ref()?
+                    .join(path)
+            } else {
+                path
+            };
+            let path: PathBuf = path.components().collect();
+            let is_file = *checked
+                .borrow_mut()
+                .entry(path.clone())
+                .or_insert_with_key(|p| std::fs::metadata(p).ok().map(|m| m.is_file()));
+            Some((path, is_file?))
+        };
+        let targets = hints::find(
+            self.term.screen(),
+            &shared.links,
+            &shared.hint_patterns,
+            |text| {
+                check(text)
+                    .filter(|&(_, is_file)| is_file)
+                    .map(|(path, _)| path.to_string_lossy().into_owned())
+            },
+            |name| check(name).is_some(),
+        );
+        self.hints = Hints::new(targets);
+        self.selection = None;
+        if self.hints.is_none() {
+            log::info!("nothing on the screen to hint");
+            self.show_notice("Nothing to hint".into());
+        }
+        self.request_redraw();
+    }
+
+    /// Leaves hints, and the target they highlighted.
+    fn end_hints(&mut self) {
+        self.hints = None;
+        self.selection = None;
+        self.request_redraw();
+    }
+
+    /// A key while hints are shown: letters type a label, which highlights
+    /// its target; Ctrl+C copies it, Ctrl+O opens it, Ctrl+I inserts it,
+    /// and Enter opens it, or copies what can't be opened. Escape (or the
+    /// `hints` binding again) leaves. No key reaches the program.
+    fn hints_key(&mut self, shared: &mut Shared, event: &KeyEvent) {
+        let mods = shared.modifiers;
+        let base = shared.base_keysym(event.raw_code);
+        if event.keysym == Keysym::Escape
+            || self.config.keybinds.lookup(event.keysym, base, mods) == Some(Action::Hints)
+        {
+            return self.end_hints();
+        }
+        // By the key's letter in a Latin layout, whatever the active one.
+        let letter = shared
+            .latin_keysym(event.raw_code)
+            .or(base)
+            .and_then(|k| k.key_char())
+            .map(|c| c.to_ascii_lowercase());
+        match event.keysym {
+            Keysym::Return | Keysym::KP_Enter => self.hint_action(shared, HintAction::Default),
+            Keysym::BackSpace => {
+                if let Some(hints) = &mut self.hints {
+                    hints.backspace();
+                }
+                self.show_hint_pick(shared);
+            }
+            _ if mods.ctrl && !mods.alt && !mods.logo => match letter {
+                Some('c') => self.hint_action(shared, HintAction::Copy),
+                Some('o') => self.hint_action(shared, HintAction::Open),
+                Some('i') => self.hint_action(shared, HintAction::Insert),
+                _ => {}
+            },
+            _ if !mods.ctrl && !mods.alt && !mods.logo => {
+                let Some(c) = letter else {
+                    return;
+                };
+                if let Some(hints) = &mut self.hints {
+                    hints.type_char(c);
+                }
+                self.show_hint_pick(shared);
+            }
+            _ => {}
+        }
+        self.request_redraw();
+    }
+
+    /// Highlights the target picked by a hint, as the selection (and the
+    /// primary selection), or nothing when none is picked.
+    fn show_hint_pick(&mut self, shared: &mut Shared) {
+        let selection = self
+            .hints
+            .as_ref()
+            .and_then(Hints::chosen)
+            .map(|t| Selection::span(t.start, t.end, Unit::Fixed));
+        if selection != self.selection {
+            self.selection = selection;
+            if selection.is_some() {
+                self.set_primary(shared);
+            }
+        }
+    }
+
+    /// Does `action` with the highlighted target, if there is one, and
+    /// leaves hints. Besides links, an existing file or directory that the
+    /// target names opens with `url.launcher`; opening anything else says
+    /// it can't instead.
+    fn hint_action(&mut self, shared: &mut Shared, action: HintAction) {
+        let Some(target) = self.hints.as_ref().and_then(Hints::chosen).cloned() else {
+            return;
+        };
+        // Checked now, not when the labels came up: the file may be gone.
+        let link = match action {
+            HintAction::Open | HintAction::Default => target.link.clone().or_else(|| {
+                let (path, _) = self.resolve_name(&target.text, &OnceCell::new())?;
+                Some(Link {
+                    start: target.start,
+                    end: target.end,
+                    target: path.to_string_lossy().into_owned(),
+                    kind: None,
+                })
+            }),
+            HintAction::Copy | HintAction::Insert => None,
+        };
+        match (action, &link) {
+            (HintAction::Open | HintAction::Default, Some(link)) => {
+                self.end_hints();
+                self.open_link(link);
+            }
+            (HintAction::Open, None) => {
+                self.show_notice("Not a link or an existing file".into());
+            }
+            (HintAction::Copy | HintAction::Default, _) => {
+                self.end_hints();
+                self.copy_text(shared, target.text);
+            }
+            (HintAction::Insert, _) => {
+                self.end_hints();
+                self.paste_text(&target.text);
+            }
         }
     }
 
@@ -1915,6 +2110,7 @@ impl TermWindow {
                     self.open_in_editor(shared, text);
                 }
             }
+            Action::Hints => self.start_hints(shared),
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -3506,6 +3702,9 @@ impl App {
         if (&old.url, &old.files) != (&new.url, &new.files) {
             // `Config::load` has already checked that the detector builds.
             shared.links = links_detector(&new);
+        }
+        if old.hints != new.hints {
+            shared.hint_patterns = hint_patterns(&new);
         }
         let new = Rc::new(new);
         shared.config = Rc::clone(&new);

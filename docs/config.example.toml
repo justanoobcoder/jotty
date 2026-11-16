@@ -153,6 +153,10 @@ reload_config = ["ctrl+shift+r"]
 # terminal.editor in a new window (needs shell integration marks).
 copy_last_output = []
 open_last_output = []
+# Label links, paths, hashes and addresses on the screen; type a label to
+# pick one, then Ctrl+C copies it, Ctrl+O opens it, Ctrl+I inserts it and
+# Enter opens it (or copies what can't be opened).
+hints = ["ctrl+shift+e"]
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set
@@ -164,6 +168,15 @@ launcher = ["xdg-open"]
 # against the line under the pointer. The matched text goes to the launcher
 # above, which also opens files whose kind has no launcher of its own.
 # regex = ['\bJIRA-\d+\b']
+regex = []
+
+[hints]
+# The hints action (Ctrl+Shift+E) labels links and other useful text on the
+# screen: paths, git and Nix hashes, IPv4 and IPv6 addresses. Regular
+# expressions (Rust regex syntax) for more text to label; the match can be
+# copied or inserted, and opened when it is also a link or names an
+# existing file.
+# regex = ['\b[A-Z]+-\d+\b']
 regex = []
 
 # Kinds of files whose paths are links: Ctrl+click opens an existing file

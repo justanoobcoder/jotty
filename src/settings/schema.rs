@@ -8,8 +8,8 @@ use crate::color::Rgb;
 use crate::config;
 
 /// The config's sections, in the order the TUI lists them.
-pub const SECTIONS: [&str; 7] = [
-    "font", "window", "terminal", "colors", "keybinds", "url", "files",
+pub const SECTIONS: [&str; 8] = [
+    "font", "window", "terminal", "colors", "keybinds", "url", "hints", "files",
 ];
 
 /// The type of a config key's value, which says how the TUI edits it.
@@ -345,6 +345,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "regex",
             StrList,
             "Regular expressions for more kinds of links, besides URLs.",
+        ),
+        (
+            "hints",
+            "regex",
+            StrList,
+            "Regular expressions for more text that hints label, to copy or insert.",
         ),
     ]
 };

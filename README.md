@@ -26,6 +26,10 @@
   per frame), at the cost of the 130+ MiB a GPU driver takes.
 - **Vi mode:** Move over the screen and scrollback with vim keys, select
   by character, line or block, yank, and search, all without the mouse.
+- **Hints:** Ctrl+Shift+E labels the links, paths, git and Nix hashes and
+  IP addresses on the screen. Type a label, then copy, open or insert the
+  text at the cursor, without the mouse.
+  See [Hints](docs/configuration.md#hints).
 - **Drag files out:** Ctrl+drag a file or directory named in the output,
   as `ls` prints it, into a file manager, a browser or a chat. Mark several
   with Ctrl+right click or drag to drag them together.
@@ -52,6 +56,7 @@
 | Ctrl+Shift+F           | Search the scrollback                         |
 | Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |
 | Ctrl+Shift+N           | New window in the current directory           |
+| Ctrl+Shift+E           | Hints: label what's on the screen; type a label, then Ctrl+C copies, Ctrl+O opens, Ctrl+I inserts it (see [Hints](docs/configuration.md#hints)) |
 | Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
 | Ctrl+click             | Open a link, URL, or image, video, audio or document file (Ctrl+hover underlines it) |
 | Ctrl+drag              | Drag a file or directory named in the output (as `ls` prints it) into another application |

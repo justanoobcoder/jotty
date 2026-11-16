@@ -8,6 +8,7 @@ mod editor;
 mod emoji;
 mod file_marks;
 mod font;
+mod hints;
 mod ime;
 mod input;
 mod instance;
