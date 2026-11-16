@@ -47,14 +47,6 @@ keys (`hjkl`, `w`, `b`, `gg`, `G`, ...). Select by character, line or
 block with `v`, `V` and Ctrl+V, yank with `y`, and search with `/`, `?`,
 `n` and `N`. See [Vi mode](configuration.md#vi-mode).
 
-## Search
-
-<!-- screenshot: search.png -->
-
-Ctrl+Shift+F searches the scrollback as you type. Up and Down step through
-the matches, Enter keeps the match selected. See
-[Searching](configuration.md#searching).
-
 ## Drag files out, drop files in
 
 <!-- screenshot: drag.mp4 -->
