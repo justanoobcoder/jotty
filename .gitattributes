@@ -1,0 +1,8 @@
+# Left out of source archives (`git archive`, the release's "Source code"
+# downloads and the tarballs Nix fetches for github: flake inputs), which
+# only need what builds jotty: the website with its images and videos, CI,
+# packaging recipes and developer scripts.
+/site export-ignore
+/.github export-ignore
+/packaging export-ignore
+/scripts export-ignore
