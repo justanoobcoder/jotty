@@ -294,7 +294,7 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "terminal",
             "editor",
             StrList,
-            "Editor for command output, in a new window; empty means $VISUAL, $EDITOR, less.",
+            "Editor for command output and files at a line; empty means $VISUAL, $EDITOR, less.",
         ),
         (
             "terminal",

@@ -1820,6 +1820,15 @@ impl TermWindow {
         let Some(target) = self.hints.as_ref().and_then(Hints::chosen).cloned() else {
             return;
         };
+        // A file with a line number opens in the editor, at the line.
+        if matches!(action, HintAction::Open | HintAction::Default)
+            && target.link.is_none()
+            && let Some((name, line)) = hints::split_line(&target.text)
+            && let Some((path, /* is_dir= */ false)) = self.resolve_name(name, &OnceCell::new())
+        {
+            self.end_hints();
+            return self.open_file_in_editor(shared, &path, line);
+        }
         // Checked now, not when the labels came up: the file may be gone.
         let link = match action {
             HintAction::Open | HintAction::Default => target.link.clone().or_else(|| {
@@ -2219,6 +2228,24 @@ impl TermWindow {
             command: Some(command),
             cwd: self.pty.foreground_cwd(),
             temp_file: Some(file),
+            ..Spawn::default()
+        }));
+    }
+
+    /// Opens the file at `path` in `terminal.editor` at `line`, in a new
+    /// window in the current directory.
+    fn open_file_in_editor(&self, shared: &mut Shared, path: &Path, line: u32) {
+        let mut command = editor::command(&self.config.terminal.editor);
+        command.push(format!("+{line}").into());
+        command.push(path.into());
+        log::info!(
+            "opening {} at line {line} in {:?}",
+            path.display(),
+            command[0]
+        );
+        shared.requests.push(Request::NewWindow(Spawn {
+            command: Some(command),
+            cwd: self.pty.foreground_cwd(),
             ..Spawn::default()
         }));
     }

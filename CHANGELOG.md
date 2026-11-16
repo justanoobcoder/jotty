@@ -9,6 +9,8 @@ CHANGELOG
 - Add `terminal.word_delimiters`, the characters that end a word for
     double-click selection
 - Vi mode: `f`, `F`, `t`, `T`, `;` and `,`
+- Hints label paths with a line number (`src/main.rs:12:5`) and open them
+    in `terminal.editor` at that line
 
 ## 2.3.0
 

@@ -323,8 +323,9 @@ pub struct TerminalConfig {
     pub cursor_blink: bool,
     /// What a Ctrl+double click on a command's output does.
     pub output_click: OutputClick,
-    /// The editor that opens command output, in a new window; empty means
-    /// `$VISUAL`, then `$EDITOR`, then `less`. See `editor.rs`.
+    /// The editor that opens command output, and files at a line from
+    /// hints, in a new window; empty means `$VISUAL`, then `$EDITOR`, then
+    /// `less`. See `editor.rs`.
     pub editor: Vec<String>,
     /// Let programs write the clipboard and the primary selection (OSC 52).
     pub osc52: bool,

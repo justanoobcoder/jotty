@@ -83,7 +83,7 @@ cursor_blink = false
 output_click = "select"
 # The editor that opens command output, in a new window, with a file
 # holding the output as its last argument. Empty: $VISUAL, then $EDITOR,
-# then less.
+# then less. Hints also open files at a line with it, as `editor +LINE file`.
 editor = []    # e.g. ["nvim", "-R"]
 # Let programs write the clipboard and the primary selection (OSC 52).
 # Reading them is always refused.

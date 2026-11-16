@@ -15,7 +15,12 @@ Hints let you pick text on the screen from the keyboard.
 | Enter | Open it, or copy it if it can't be opened |
 | Escape | Leave |
 
-The newest output gets the shortest labels. Labels are typed by the
+The newest output gets the shortest labels.
+
+A path followed by a line number, as compilers and `grep -n` print it
+(`src/main.rs:12:5`), opens in [`terminal.editor`](shell-integration.md#the-editor)
+at that line, in a new window. The editor gets `+12` before the file, which
+vi, Vim, Neovim, nano, Emacs and micro understand. Labels are typed by the
 key's letter in a Latin layout, whatever layout is active.
 
 ## Labels

@@ -245,8 +245,9 @@ nothing surprises you.
   opened (Ctrl+O looks for them in the multiplexer's directory). IPv6 addresses with a zone (`%eth0`), a prefix
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
-  long URL cut by the edge) aren't labeled. A path leaves out the line
-  number after it (`/etc/x:120`). Hex hashes in mixed case aren't
+  long URL cut by the edge) aren't labeled. A path with a line number
+  opens in the editor with `+LINE`, which some editors (Helix, VS Code)
+  don't take, and its column is ignored. Hex hashes in mixed case aren't
   matched. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
 - No `idle-inhibit`.
