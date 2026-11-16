@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::color::Rgb;
 use crate::keybinds::Keybinds;
 use crate::links::Detector;
+use crate::terminal::CursorShape;
 
 /// The config file. Every key is optional; missing keys keep their defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -291,6 +292,9 @@ pub struct TerminalConfig {
     pub scrollback: usize,
     /// Render bold text with the bright variant of the first eight colors.
     pub bold_is_bright: bool,
+    /// The cursor's shape and blinking, unless a program sets them.
+    pub cursor_shape: CursorShape,
+    pub cursor_blink: bool,
 }
 
 impl Default for TerminalConfig {
@@ -300,6 +304,8 @@ impl Default for TerminalConfig {
             term: "auto".into(),
             scrollback: 10_000,
             bold_is_bright: true,
+            cursor_shape: CursorShape::Block,
+            cursor_blink: false,
         }
     }
 }

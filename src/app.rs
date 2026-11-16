@@ -102,7 +102,9 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{ClipboardWrite, FinishedCommand, Flags, MouseMode, Notification, Terminal};
+use crate::terminal::{
+    ClipboardWrite, CursorStyle, FinishedCommand, Flags, MouseMode, Notification, Terminal,
+};
 use crate::vi::{self, ViMode};
 use crate::watch;
 use smithay_client_toolkit::seat::pointer::AxisScroll;
@@ -166,6 +168,8 @@ const DOUBLE_CLICK_MS: u32 = 400;
 /// Longest a program can hold drawing with synchronized output (mode 2026),
 /// in case it never ends the update.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+/// How long a blinking cursor stays on, then off.
+const BLINK: Duration = Duration::from_millis(500);
 /// Read at most this much child output before drawing, to stay responsive.
 const READ_BUDGET: usize = 1 << 20;
 /// How long the child gets to exit after hanging up, for its exit status.
@@ -185,6 +189,14 @@ const MAX_DRAW_FAILURES: u32 = 50;
 /// How long a jotty handing over its window may take to send its request.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+
+/// The configured cursor style.
+fn cursor_style(config: &Config) -> CursorStyle {
+    CursorStyle {
+        shape: config.terminal.cursor_shape,
+        blink: config.terminal.cursor_blink,
+    }
+}
 
 /// A duration as a notification shows it: `12s`, `4m 05s`, `1h 03m`.
 fn format_duration(duration: Duration) -> String {
@@ -443,6 +455,10 @@ pub struct TermWindow {
     pointer_inside: bool,
     /// The pointer was hidden by typing (`hide_pointer_while_typing`).
     pointer_hidden: bool,
+    /// When a blinking cursor last started its on phase.
+    blink_epoch: Instant,
+    /// Whether the blink timer runs.
+    blink_timer: bool,
     /// The cursor last set over the decorations frame, to set it only
     /// when it changes.
     frame_cursor: Option<CursorIcon>,
@@ -758,6 +774,8 @@ impl TermWindow {
         let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
         term.screen_mut()
             .set_default_colors(Theme::from_config(&config).default_colors());
+        term.screen_mut()
+            .set_default_cursor_style(cursor_style(&config));
         term.screen_mut().set_cell_size(cell.width, cell.height);
         let font_points = config.font.size;
         Ok(TermWindow {
@@ -806,6 +824,8 @@ impl TermWindow {
             last_link_click: None,
             pointer_inside: false,
             pointer_hidden: false,
+            blink_epoch: Instant::now(),
+            blink_timer: false,
             frame_cursor: None,
             last_click: None,
             ctrl_press: None,
@@ -1180,6 +1200,8 @@ impl TermWindow {
         if let Some(done) = finished_command {
             self.command_finished(shared, done);
         }
+        // A program may have turned blinking on.
+        self.update_blink();
         if let Some(write) = clipboard_write {
             // Only a write from before the first focus waits for it; a
             // later one landing on the next focus would replace whatever
@@ -1364,6 +1386,7 @@ impl TermWindow {
                 Some(vi::Visual::Block) => "V-BLOCK",
             }),
             search: search_bar.as_deref(),
+            cursor_blinked_off: self.cursor_blinked_off(),
         };
         // The frame's subsurfaces are synced: what it commits shows with
         // the window's next commit, which the renderer makes.
@@ -1417,6 +1440,7 @@ impl TermWindow {
     }
 
     fn handle_key(&mut self, shared: &mut Shared, event: KeyEvent, action: KeyAction) {
+        self.restart_blink();
         if self.search.is_some() {
             return self.search_key(shared, &event);
         }
@@ -1479,6 +1503,60 @@ impl TermWindow {
         match pointer.hide_cursor() {
             Ok(()) => self.pointer_hidden = true,
             Err(e) => log::debug!("cannot hide the pointer: {e}"),
+        }
+    }
+
+    /// Whether the cursor blinks now: only in a focused window.
+    fn blinking(&self) -> bool {
+        self.focused && self.term.screen().cursor_style().blink
+    }
+
+    /// Whether a blinking cursor is in its off phase.
+    fn cursor_blinked_off(&self) -> bool {
+        self.blinking() && (self.blink_epoch.elapsed().as_millis() / BLINK.as_millis()) % 2 == 1
+    }
+
+    /// Time until the cursor next blinks on or off.
+    fn until_blink(&self) -> Duration {
+        let into_phase = self.blink_epoch.elapsed().as_nanos() % BLINK.as_nanos();
+        BLINK - Duration::from_nanos(into_phase as u64)
+    }
+
+    /// Shows a blinking cursor at once, as typing does, and starts over
+    /// its on phase.
+    fn restart_blink(&mut self) {
+        let was_off = self.cursor_blinked_off();
+        // Before drawing, which may happen at once and reads the phase.
+        self.blink_epoch = Instant::now();
+        if was_off {
+            self.request_redraw();
+        }
+    }
+
+    /// Starts the blink timer when the cursor blinks; the timer stops
+    /// itself once it doesn't.
+    fn update_blink(&mut self) {
+        if self.blink_timer || !self.blinking() {
+            return;
+        }
+        let id = self.id;
+        let timer = Timer::from_duration(self.until_blink());
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, app| {
+            let Some(window) = app.window_mut(id) else {
+                return TimeoutAction::Drop;
+            };
+            // Draw the phase change, or the cursor back on when it stops.
+            window.request_redraw();
+            if window.blinking() {
+                TimeoutAction::ToDuration(window.until_blink())
+            } else {
+                window.blink_timer = false;
+                TimeoutAction::Drop
+            }
+        });
+        match inserted {
+            Ok(_) => self.blink_timer = true,
+            Err(e) => log::warn!("cannot start the cursor blink timer: {e}"),
         }
     }
 
@@ -2617,6 +2695,10 @@ impl TermWindow {
         self.term
             .screen_mut()
             .set_default_colors(theme.default_colors());
+        self.term
+            .screen_mut()
+            .set_default_cursor_style(cursor_style(new));
+        self.update_blink();
         self.renderer.set_theme(theme);
 
         if (old.window.opacity >= 1.0) != (new.window.opacity >= 1.0) {
@@ -2689,6 +2771,7 @@ impl TermWindow {
                     } else if !bytes.is_empty() {
                         // Text from an input method is typing too.
                         self.hide_pointer(shared);
+                        self.restart_blink();
                         self.ime_caused_change = true;
                         self.scroll_to_bottom();
                         self.send(&bytes);
@@ -3562,6 +3645,8 @@ impl KeyboardHandler for App {
         shared.last_serial = serial;
         window.focused = true;
         window.ever_focused = true;
+        window.restart_blink();
+        window.update_blink();
         window.attention_requested = false;
         if let Some(write) = window.pending_clipboard_write.take() {
             window.write_clipboard(shared, write);

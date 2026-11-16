@@ -577,6 +577,8 @@ pub struct Frame<'frame> {
     pub label: Option<&'frame str>,
     /// The search bar's text, drawn over the bottom row while searching.
     pub search: Option<&'frame str>,
+    /// A blinking cursor is in its off phase.
+    pub cursor_blinked_off: bool,
 }
 
 fn style_of(cell: &Cell) -> Style {
@@ -608,10 +610,13 @@ pub fn build(
         batch,
     } = layers;
 
-    let cursor_visible =
-        screen.cursor_visible() && frame.preedit.is_none() && frame.vi_cursor.is_none();
+    let cursor_visible = screen.cursor_visible()
+        && !frame.cursor_blinked_off
+        && frame.preedit.is_none()
+        && frame.vi_cursor.is_none();
     let (cursor_row, cursor_col) = screen.cursor();
-    let block_cursor = cursor_visible && frame.focused && screen.cursor_shape == CursorShape::Block;
+    let block_cursor =
+        cursor_visible && frame.focused && screen.cursor_style().shape == CursorShape::Block;
     let cursor_color = screen.cursor_color().unwrap_or(theme.cursor);
     let offset = screen.display_offset() as isize;
     let mut images = Vec::new();
@@ -747,7 +752,7 @@ pub fn build(
         let px = ox + cursor_col as f32 * cw;
         let py = oy + cursor_row as f32 * ch;
         let beam = (stroke * 2.0).max(1.0).min(cw);
-        match (frame.focused, screen.cursor_shape) {
+        match (frame.focused, screen.cursor_style().shape) {
             (true, CursorShape::Beam) => front.rect(px, py, beam, ch, cursor_color),
             (true, CursorShape::Underline) => {
                 front.rect(px, py + ch - beam, cw, beam, cursor_color)
@@ -1061,6 +1066,7 @@ mod tests {
             vi_cursor: None,
             label: None,
             search: None,
+            cursor_blinked_off: false,
         }
     }
 

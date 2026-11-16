@@ -23,6 +23,9 @@ CHANGELOG
     whether it failed (needs shell integration marks `OSC 133 ; C` and `D`)
 - `window.hide_pointer_while_typing` hides the mouse pointer while typing
     over the window, until it moves (off by default)
+- `terminal.cursor_shape` and `terminal.cursor_blink` set the cursor's
+    default shape and blinking; programs' blinking styles (DECSCUSR 1, 3,
+    5) blink, and DECRQSS reports them
 
 ## 2.2.0
 

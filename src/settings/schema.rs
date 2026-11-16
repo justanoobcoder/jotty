@@ -266,6 +266,18 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             Bool,
             "Draw bold text in the bright variant of the first eight colors.",
         ),
+        (
+            "terminal",
+            "cursor_shape",
+            Enum(&["block", "beam", "underline"]),
+            "The cursor's shape, unless a program sets one.",
+        ),
+        (
+            "terminal",
+            "cursor_blink",
+            Bool,
+            "Blink the cursor, unless a program sets a style.",
+        ),
         ("colors", "foreground", Color, "Default text color."),
         ("colors", "background", Color, "Default background color."),
         (
