@@ -313,6 +313,8 @@ pub struct TerminalConfig {
     /// The editor that opens command output, in a new window; empty means
     /// `$VISUAL`, then `$EDITOR`, then `less`. See `editor.rs`.
     pub editor: Vec<String>,
+    /// Let programs write the clipboard and the primary selection (OSC 52).
+    pub osc52: bool,
 }
 
 /// What a Ctrl+double click on a command's output does with it.
@@ -337,6 +339,7 @@ impl Default for TerminalConfig {
             cursor_blink: false,
             output_click: OutputClick::Select,
             editor: Vec::new(),
+            osc52: true,
         }
     }
 }

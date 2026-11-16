@@ -1215,7 +1215,9 @@ impl TermWindow {
         let title = screen.take_title();
         let bell = screen.take_bell();
         let notifications = screen.take_notifications();
-        let clipboard_write = screen.take_clipboard_write();
+        let clipboard_write = screen
+            .take_clipboard_write()
+            .filter(|_| self.config.terminal.osc52);
         let finished_command = screen.take_finished_command();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {

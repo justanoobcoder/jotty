@@ -20,7 +20,8 @@ CHANGELOG
 - `window.startup_mode` opens new windows maximized or fullscreen
 - Programs can write the clipboard and the primary selection with OSC 52,
     also over SSH and through multiplexers; reading it is refused. The
-    terminfo entry advertises it (`Ms`)
+    terminfo entry advertises it (`Ms`); `terminal.osc52 = false` turns
+    writing off
 - When a command that ran for at least `window.command_notify_after`
     seconds (10 by default) finishes while the window isn't focused, a
     notification says so, with the command line, the time it took and

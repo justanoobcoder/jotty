@@ -289,6 +289,7 @@ To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
 | `cursor_blink` | bool | `false` | Blink the cursor (on and off every 500 ms) while the window is focused, unless a program sets a style; typing shows it at once. |
 | `output_click` | string | `"select"` | What a Ctrl+double click on a command's output does: `"select"` it, `"copy"` it to the clipboard as well, or `"open"` it in `editor` (see [Mouse](#mouse)). |
 | `editor` | list of strings | `[]` | The editor that opens command output, in a new window in the current directory, with a temporary file holding the output as its last argument. It must not exit before you are done (see below). Empty, or an empty program name, means `$VISUAL`, then `$EDITOR` (split at spaces), then `less`. |
+| `osc52` | bool | `true` | Let programs write the clipboard and the primary selection (see [Clipboard from programs](#clipboard-from-programs-osc-52)). Off, what they send is dropped. |
 
 **The editor.** jotty runs `editor` itself in a new window, so it should be
 a program that runs in a terminal (`nvim`, `hx`, `less`); a graphical
@@ -358,6 +359,10 @@ printf '\e]52;c;%s\a' "$(printf hello | base64 -w0)"
 Reading the clipboard this way (`OSC 52 ; c ; ?`) is refused, since any
 program, or a file shown with `cat`, could read it, a password included.
 The terminfo entry advertises the capability as `Ms`.
+
+Writing is on by default, as programs rely on it, but it also lets a file
+shown with `cat` replace what you copied. `osc52 = false` drops these
+writes; the terminfo entry still advertises `Ms`.
 
 ## `[colors]`
 

@@ -296,6 +296,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             StrList,
             "Editor for command output, in a new window; empty means $VISUAL, $EDITOR, less.",
         ),
+        (
+            "terminal",
+            "osc52",
+            Bool,
+            "Let programs write the clipboard and the primary selection (OSC 52).",
+        ),
         ("colors", "foreground", Color, "Default text color."),
         ("colors", "background", Color, "Default background color."),
         (
