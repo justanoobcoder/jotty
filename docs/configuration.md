@@ -150,6 +150,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
 | `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
 | `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
+| `copy_notice` | bool | `true` | Say in the window's top right corner, for 1.5 seconds, what was just copied to the clipboard (`Copied 3 lines`, `Copied 12 chars`), that a program set it (`Clipboard set by program`, OSC 52), that there is no clipboard, or that `copy_last_output` or `open_last_output` found no output (`No command output`). Selecting text, which only sets the primary selection, isn't shown. The notice covers vi mode's label while it is up. |
 | `hide_pointer_while_typing` | bool | `false` | Hide the mouse pointer while you type over the window (keys that reach the program, or text from an input method; modifiers alone don't count). Moving, clicking or scrolling shows it again. |
 | `command_notify_after` | integer | `10` | When a command that ran at least this many seconds finishes while the window isn't focused, show a notification. `0` turns it off. See [Long commands](#long-commands). |
 | `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
@@ -483,7 +484,8 @@ new_window = ["shift+return"]
 command that finished printed, and `open_last_output` opens it in
 [`terminal.editor`](#terminal): the command before the prompt you are at,
 or, while a command runs, the one before it. A command that printed
-nothing has no output to take. Both need the shell to mark its prompts
+nothing has no output to take; the window then says `No command output`
+(unless `window.copy_notice` is off). Both need the shell to mark its prompts
 and commands (see [Shell integration](#shell-integration)), and don't see
 through multiplexers (zellij, tmux), which don't pass the marks on.
 
