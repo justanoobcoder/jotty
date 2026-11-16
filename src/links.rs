@@ -470,7 +470,7 @@ fn found<T>(
 /// How many rows of a wrapped line around the pointer are searched for links.
 /// This runs on every pointer motion while Ctrl is held, and a line can wrap
 /// over the whole history; no link is that long.
-const LINK_REACH: isize = 64;
+pub(crate) const LINK_REACH: isize = 64;
 
 /// Whether a target can be given to a launcher as its argument. Programs can
 /// set a hyperlink's target to anything, and an option isn't a place to open.

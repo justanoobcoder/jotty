@@ -12,6 +12,7 @@ use std::{fmt, io};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::color::Rgb;
+use crate::hints::Patterns;
 use crate::keybinds::Keybinds;
 use crate::links::Detector;
 use crate::terminal::CursorShape;
@@ -27,8 +28,17 @@ pub struct Config {
     /// Key bindings for jotty's actions; see `keybinds.rs`.
     pub keybinds: Keybinds,
     pub url: UrlConfig,
+    pub hints: HintsConfig,
     /// Kinds of files that Ctrl+click opens, such as images, videos and documents.
     pub files: Files,
+}
+
+/// The `[hints]` section: what the `hints` action labels besides links.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HintsConfig {
+    /// Regular expressions for more text to label, to copy or insert.
+    pub regex: Vec<String>,
 }
 
 /// The `[url]` section: opening links.
@@ -558,6 +568,8 @@ impl Config {
             regex::Regex::new(pattern)
                 .map_err(|e| toml::de::Error::custom(format!("url.regex: {e}")))?;
         }
+        Patterns::try_new(&self.hints.regex)
+            .map_err(|e| toml::de::Error::custom(format!("hints.regex: {e}")))?;
         // The extensions become one regex, which can be too large.
         Detector::try_new(&self.files.extensions_by_precedence(), &[])
             .map_err(|e| toml::de::Error::custom(format!("files: {e}")))?;
@@ -649,6 +661,12 @@ mod tests {
         let mut table = toml::Table::new();
         table.insert("url".into(), toml::toml! { regex = ["("] }.into());
         assert!(Config::from_table(table).is_err());
+    }
+
+    #[test]
+    fn invalid_hints_regex_is_rejected() {
+        let error = Config::parse("[hints]\nregex = [\"ok\", \"(\"]").unwrap_err();
+        assert!(error.to_string().contains("hints.regex"), "{error}");
     }
 
     #[test]

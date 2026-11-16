@@ -166,6 +166,14 @@ launcher = ["xdg-open"]
 # regex = ['\bJIRA-\d+\b']
 regex = []
 
+[hints]
+# The hints action (Ctrl+Shift+E) labels links and other useful text on the
+# screen: paths, git and Nix hashes, IPv4 and IPv6 addresses. Regular
+# expressions (Rust regex syntax) for more text to label; the match can be
+# copied or inserted, and opened when it is also a link.
+# regex = ['\b[A-Z]+-\d+\b']
+regex = []
+
 # Kinds of files whose paths are links: Ctrl+click opens an existing file
 # with one of the kind's extensions (relative paths are resolved in the
 # current directory of the program in the terminal). Each kind has its own
