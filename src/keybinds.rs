@@ -42,6 +42,11 @@ pub enum Action {
     ViMode,
     /// Read the config file again.
     ReloadConfig,
+    /// Copy the output of the last command that finished (OSC 133).
+    CopyLastOutput,
+    /// Open the output of the last command that finished in
+    /// `terminal.editor`.
+    OpenLastOutput,
 }
 
 impl Action {
@@ -71,11 +76,13 @@ impl Action {
             | Action::Search
             | Action::NewWindow
             | Action::ViMode
-            | Action::ReloadConfig => false,
+            | Action::ReloadConfig
+            | Action::CopyLastOutput
+            | Action::OpenLastOutput => false,
         }
     }
 
-    const ALL: [(&'static str, Action); 18] = [
+    const ALL: [(&'static str, Action); 20] = [
         ("copy", Action::Copy),
         ("copy_or_interrupt", Action::CopyOrInterrupt),
         ("paste", Action::Paste),
@@ -94,6 +101,8 @@ impl Action {
         ("new_window", Action::NewWindow),
         ("vi_mode", Action::ViMode),
         ("reload_config", Action::ReloadConfig),
+        ("copy_last_output", Action::CopyLastOutput),
+        ("open_last_output", Action::OpenLastOutput),
     ];
 
     fn from_name(name: &str) -> Option<Action> {
@@ -105,7 +114,11 @@ impl Action {
         match self {
             Action::Copy => &["ctrl+shift+c"],
             Action::Paste => &["ctrl+shift+v", "shift+insert"],
-            Action::CopyOrInterrupt | Action::ScrollLineUp | Action::ScrollLineDown => &[],
+            Action::CopyOrInterrupt
+            | Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::CopyLastOutput
+            | Action::OpenLastOutput => &[],
             Action::ScrollPageUp => &["shift+page_up"],
             Action::ScrollPageDown => &["shift+page_down"],
             Action::ScrollToTop => &["shift+home"],
@@ -429,6 +442,8 @@ mod tests {
                     | Action::Search
                     | Action::Copy
                     | Action::Paste
+                    | Action::CopyLastOutput
+                    | Action::OpenLastOutput
             );
             assert_eq!(action.repeats(), !one_shot, "{action:?}");
         }

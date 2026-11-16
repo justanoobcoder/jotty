@@ -30,6 +30,9 @@ CHANGELOG
     also copy it to the clipboard (`"copy"`) or open it in
     `terminal.editor` in a new window (`"open"`); `terminal.editor`
     defaults to `$VISUAL`, then `$EDITOR`, then `less`
+- The `copy_last_output` and `open_last_output` actions (unbound by
+    default) copy the output of the last command that finished, or open it
+    in `terminal.editor`
 
 ## 2.2.0
 

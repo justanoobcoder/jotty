@@ -1851,6 +1851,16 @@ impl TermWindow {
             }
             Action::NewWindow => self.new_window(shared),
             Action::ReloadConfig => shared.requests.push(Request::ReloadConfig),
+            Action::CopyLastOutput => {
+                if let Some(text) = self.last_output_text() {
+                    self.copy_text(shared, text);
+                }
+            }
+            Action::OpenLastOutput => {
+                if let Some(text) = self.last_output_text() {
+                    self.open_in_editor(shared, text);
+                }
+            }
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -1904,6 +1914,17 @@ impl TermWindow {
     fn output_selection(&self, point: Point) -> Option<Selection> {
         let lines = self.term.screen().command_output(point.line)?;
         self.lines_selection(lines)
+    }
+
+    /// The text of the last command's output that finished, if the shell
+    /// marked it and it printed something.
+    fn last_output_text(&self) -> Option<String> {
+        let screen = self.term.screen();
+        let Some(lines) = screen.last_command_output() else {
+            log::info!("no output of a finished command to take");
+            return None;
+        };
+        Some(self.lines_selection(lines)?.text(screen))
     }
 
     /// Does what `terminal.output_click` says with the command output a

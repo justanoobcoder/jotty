@@ -428,6 +428,8 @@ Actions you don't list keep their defaults.
 | `reload_config` | `ctrl+shift+r` | Read the config file again |
 | `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
 | `new_window` | `ctrl+shift+n` | Open another window in the current directory of the shell (or whatever runs in the terminal) |
+| `copy_last_output` | unbound | Copy the output of the last command that finished (needs [shell integration](#shell-integration)) |
+| `open_last_output` | unbound | Open the output of the last command that finished in [`terminal.editor`](#terminal), in a new window |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -471,6 +473,20 @@ programs that use it, such as some chat CLIs and Neovim mappings):
 ```toml
 [keybinds]
 new_window = ["shift+return"]
+```
+
+**The last command's output.** `copy_last_output` copies what the last
+command that finished printed, and `open_last_output` opens it in
+[`terminal.editor`](#terminal): the command before the prompt you are at,
+or, while a command runs, the one before it. A command that printed
+nothing has no output to take. Both need the shell to mark its prompts
+and commands (see [Shell integration](#shell-integration)), and don't see
+through multiplexers (zellij, tmux), which don't pass the marks on.
+
+```toml
+[keybinds]
+copy_last_output = ["ctrl+shift+o"]
+open_last_output = ["ctrl+shift+e"]
 ```
 
 **Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C

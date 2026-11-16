@@ -146,6 +146,10 @@ vi_mode = ["ctrl+shift+space"]
 # Read the config file again (it also reloads by itself when saved, and on
 # SIGUSR1).
 reload_config = ["ctrl+shift+r"]
+# Copy the output of the last command that finished, or open it in
+# terminal.editor in a new window (needs shell integration marks).
+copy_last_output = []
+open_last_output = []
 
 [url]
 # Ctrl+click opens the link under the pointer: a hyperlink a program set

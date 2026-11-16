@@ -144,6 +144,13 @@ nothing surprises you.
   a row's worth. Replies to queries are dropped while over 1 MiB of input
   waits for a program that isn't reading, and a paste over 64 MiB is
   refused.
+- **Opening command output** (`output_click = "open"`, `open_last_output`)
+  runs `terminal.editor` in a new jotty window, so a graphical editor
+  leaves that window empty until it exits. The output is plain text,
+  without its colors. Its file is removed when the window closes, so an
+  editor that keeps running after its window closed (a server or daemon
+  mode) loses it; one that jotty never got to close (a crash or `kill -9`)
+  stays in `$XDG_RUNTIME_DIR` until logout.
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
   plain key in some cases, as in classic xterm, unless the program turns on
   the kitty keyboard protocol.
