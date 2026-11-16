@@ -4801,17 +4801,16 @@ fn copied_notice(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn copied_notice_counts_lines_or_characters() {
-        use super::copied_notice;
         assert_eq!(copied_notice("x"), "Copied 1 char");
         assert_eq!(copied_notice("héllo"), "Copied 5 chars");
         assert_eq!(copied_notice("a\n"), "Copied 2 chars");
         assert_eq!(copied_notice("a\nb"), "Copied 2 lines");
         assert_eq!(copied_notice("a\nb\nc\n"), "Copied 3 lines");
     }
-
-    use super::*;
 
     #[test]
     fn durations_are_shown_in_their_largest_units() {
