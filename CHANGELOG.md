@@ -13,6 +13,7 @@ CHANGELOG
     in `terminal.editor` at that line
 - Large kitty graphics images no longer freeze every window while they
     decode
+- Blinking text blinks (`terminal.text_blink`)
 
 ## 2.3.0
 

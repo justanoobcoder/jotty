@@ -18,6 +18,7 @@ cursor_blink = true
 | `bold_is_bright` | `true` | Draw bold text in the first eight colors with their bright variants. |
 | `cursor_shape` | `"block"` | `"block"`, `"beam"` or `"underline"`. |
 | `cursor_blink` | `false` | Blink the cursor while the window is focused. |
+| `text_blink` | `true` | Let text that programs ask for blinks blink, while the window is focused. |
 | `output_click` | `"select"` | What Ctrl+double click on a command's output does; see [Shell integration](shell-integration.md#command-output). |
 | `editor` | `[]` | Editor that opens a command's output, and files at a line from hints; see [Shell integration](shell-integration.md#the-editor). |
 | `osc52` | `true` | Let programs copy to the clipboard; see [below](#clipboard-from-programs). |

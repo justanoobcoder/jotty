@@ -302,6 +302,18 @@ pub struct Spawn {
     pub temp_file: Option<TempFile>,
 }
 
+/// Whether a blink that started its on phase at `epoch` is off now.
+fn blinked_off(epoch: Instant) -> bool {
+    (epoch.elapsed().as_millis() / BLINK.as_millis()) % 2 == 1
+}
+
+/// Time until a blink that started its on phase at `epoch` next turns on
+/// or off.
+fn until_phase(epoch: Instant) -> Duration {
+    let into_phase = epoch.elapsed().as_nanos() % BLINK.as_nanos();
+    BLINK - Duration::from_nanos(into_phase as u64)
+}
+
 /// What output may move, recorded before it comes so that the selection,
 /// marks and the vi cursor can follow their text.
 struct BeforeOutput {
@@ -496,6 +508,9 @@ pub struct TermWindow {
     pointer_hidden: bool,
     /// When a blinking cursor last started its on phase.
     blink_epoch: Instant,
+    /// When blinking text started its on phase; unlike the cursor, typing
+    /// doesn't restart it.
+    text_blink_epoch: Instant,
     /// Whether the blink timer runs.
     blink_timer: bool,
     /// A short message drawn in the top right corner (over vi mode's
@@ -885,6 +900,7 @@ impl TermWindow {
             pointer_inside: false,
             pointer_hidden: false,
             blink_epoch: Instant::now(),
+            text_blink_epoch: Instant::now(),
             blink_timer: false,
             notice: None,
             notice_timer: false,
@@ -1597,6 +1613,7 @@ impl TermWindow {
             search: search_bar.as_deref(),
             hints: self.hints.as_ref(),
             cursor_blinked_off: self.cursor_blinked_off(),
+            text_blinked_off: self.text_blinked_off(),
         };
         // The frame's subsurfaces are synced: what it commits shows with
         // the window's next commit, which the renderer makes.
@@ -1606,10 +1623,20 @@ impl TermWindow {
         {
             decorations.draw();
         }
+        let had_blinking_text = self.renderer.blinking_text();
         match self.renderer.draw(&frame) {
-            Ok(()) => self.draw_failures = 0,
+            Ok(()) => {
+                self.draw_failures = 0;
+                // Blinking text that just came into view starts shown,
+                // rather than hidden for up to a phase.
+                if !had_blinking_text && self.renderer.blinking_text() && self.text_blinked_off() {
+                    self.text_blink_epoch = Instant::now();
+                    self.request_redraw();
+                }
+            }
             Err(e) => self.draw_failed(&e),
         }
+        self.update_blink();
         self.update_text_input(/* force= */ false);
     }
 
@@ -1720,19 +1747,37 @@ impl TermWindow {
     }
 
     /// Whether the cursor blinks now: only in a focused window.
-    fn blinking(&self) -> bool {
+    fn cursor_blinks(&self) -> bool {
         self.focused && self.term.screen().cursor_style().blink
+    }
+
+    /// Whether text may blink now: only in a focused window, with
+    /// `terminal.text_blink`.
+    fn text_may_blink(&self) -> bool {
+        self.focused && self.config.terminal.text_blink
+    }
+
+    /// Whether anything blinks now, which the blink timer redraws.
+    fn blinking(&self) -> bool {
+        self.cursor_blinks() || self.text_may_blink() && self.renderer.blinking_text()
     }
 
     /// Whether a blinking cursor is in its off phase.
     fn cursor_blinked_off(&self) -> bool {
-        self.blinking() && (self.blink_epoch.elapsed().as_millis() / BLINK.as_millis()) % 2 == 1
+        self.cursor_blinks() && blinked_off(self.blink_epoch)
     }
 
-    /// Time until the cursor next blinks on or off.
+    /// Whether blinking text is in its off phase.
+    fn text_blinked_off(&self) -> bool {
+        self.text_may_blink() && blinked_off(self.text_blink_epoch)
+    }
+
+    /// Time until the cursor or the text next blinks on or off.
     fn until_blink(&self) -> Duration {
-        let into_phase = self.blink_epoch.elapsed().as_nanos() % BLINK.as_nanos();
-        BLINK - Duration::from_nanos(into_phase as u64)
+        let cursor = self.cursor_blinks().then(|| until_phase(self.blink_epoch));
+        let text = (self.text_may_blink() && self.renderer.blinking_text())
+            .then(|| until_phase(self.text_blink_epoch));
+        cursor.into_iter().chain(text).min().unwrap_or(BLINK)
     }
 
     /// Shows a blinking cursor at once, as typing does, and starts over
@@ -1746,8 +1791,8 @@ impl TermWindow {
         }
     }
 
-    /// Starts the blink timer when the cursor blinks; the timer stops
-    /// itself once it doesn't.
+    /// Starts the blink timer when the cursor or text blinks; the timer
+    /// stops itself once nothing does.
     fn update_blink(&mut self) {
         if self.blink_timer || !self.blinking() {
             return;
@@ -1758,7 +1803,7 @@ impl TermWindow {
             let Some(window) = app.window_mut(id) else {
                 return TimeoutAction::Drop;
             };
-            // Draw the phase change, or the cursor back on when it stops.
+            // Draw the phase change, or what blinked back on when it stops.
             window.request_redraw();
             if window.blinking() {
                 TimeoutAction::ToDuration(window.until_blink())
@@ -1769,7 +1814,7 @@ impl TermWindow {
         });
         match inserted {
             Ok(_) => self.blink_timer = true,
-            Err(e) => log::warn!("cannot start the cursor blink timer: {e}"),
+            Err(e) => log::warn!("cannot start the blink timer: {e}"),
         }
     }
 

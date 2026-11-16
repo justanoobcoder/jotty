@@ -17,6 +17,17 @@ restores the configured colors. Colors 16–255 are the xterm 6×6×6 cube and
 and a reset bring back the configured one. A blinking cursor toggles every
 500 ms while the window is focused, and typing shows it at once.
 
+**Blinking text.** SGR 5 and 6 (both blink alike) toggle text every 500 ms
+on their own clock, which typing doesn't restart, while the window is
+focused and `terminal.text_blink` is on. In the off phase a cell's text and
+decorations aren't drawn, leaving only its background (decorations in the
+background color would show over a translucent one), except under a block
+cursor. Blinking text that comes into view during an off phase restarts
+the clock, so it shows at once.
+`build` reports whether the frame shows blinking text that draws
+something (`Layers::blinking_text`), and the blink timer runs only while
+the cursor or such text blinks.
+
 **Notifications.** `OSC 9 ; message ST` (iTerm2) uses the window title as
 the summary; `OSC 777 ; notify ; title ; body ST` (rxvt-unicode) gives both.
 `OSC 9` followed by a number (`OSC 9 ; 4 ; …`, progress bars) is ignored.

@@ -286,6 +286,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         ),
         (
             "terminal",
+            "text_blink",
+            Bool,
+            "Let text that programs ask for blinks blink.",
+        ),
+        (
+            "terminal",
             "output_click",
             Enum(&["select", "copy", "open"]),
             "What Ctrl+double click does with a command's output: select, copy or open it.",
