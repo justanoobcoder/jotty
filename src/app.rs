@@ -1623,12 +1623,17 @@ impl TermWindow {
         }
     }
 
-    /// Shows `text` in the top right corner for [`NOTICE`], replacing the
-    /// notice already up, if `window.copy_notice` allows notices.
-    fn show_notice(&mut self, text: String) {
-        if !self.config.window.copy_notice {
-            return;
+    /// Shows a notice about the clipboard, if `window.copy_notice` allows
+    /// those.
+    fn show_copy_notice(&mut self, text: String) {
+        if self.config.window.copy_notice {
+            self.show_notice(text);
         }
+    }
+
+    /// Shows `text` in the top right corner for [`NOTICE`], replacing the
+    /// notice already up.
+    fn show_notice(&mut self, text: String) {
         self.notice = Some((text, Instant::now() + NOTICE));
         self.request_redraw();
         if self.notice_timer {
@@ -2727,7 +2732,7 @@ impl TermWindow {
     fn copy_text(&mut self, shared: &mut Shared, text: String) {
         let notice = copied_notice(&text);
         if self.set_clipboard(shared, text) {
-            self.show_notice(notice);
+            self.show_copy_notice(notice);
         }
     }
 
@@ -2740,7 +2745,7 @@ impl TermWindow {
         let (Some(manager), Some(device)) = (&shared.data_device_manager, &shared.data_device)
         else {
             log::warn!("no clipboard support (wl_data_device_manager missing)");
-            self.show_notice("Nothing copied: no clipboard".into());
+            self.show_copy_notice("Nothing copied: no clipboard".into());
             return false;
         };
         let source = manager.create_copy_paste_source(&self.qh, PASTE_MIMES);
@@ -2756,7 +2761,7 @@ impl TermWindow {
         if let Some(text) = write.clipboard
             && self.set_clipboard(shared, text)
         {
-            self.show_notice("Clipboard set by program".into());
+            self.show_copy_notice("Clipboard set by program".into());
         }
         if let Some(text) = write.primary {
             self.set_primary_text(shared, text);
