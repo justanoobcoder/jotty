@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Site page -> repository file it comes from.
 SOURCES = {
+    "usage.md": "docs/usage.md",
     "configuration.md": "docs/configuration.md",
     "known-issues.md": "docs/known-issues.md",
     "architecture.md": "docs/architecture.md",
@@ -30,6 +31,7 @@ GENERATED = {"config-reference.md": "docs/config.example.toml"}
 # Repository files that are pages of the site under another name.
 SITE_PAGE = {repo: page for page, repo in {**SOURCES, **GENERATED}.items()}
 SITE_PAGE["README.md#install"] = "install.md"
+SITE_PAGE["README.md#keybinds"] = "features.md#keybinds"
 
 # Pages filled from README sections, for the edit link.
 README_PAGES = {"install.md"}

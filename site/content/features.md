@@ -36,7 +36,7 @@ that support `ext-background-effect-v1`. See
 Ctrl+Shift+E labels the links, paths, git and Nix hashes and IP addresses
 on the screen. Type a label, then Ctrl+C copies the text, Ctrl+O opens it
 and Ctrl+I inserts it at the cursor, all without the mouse. `hints.regex`
-labels more kinds of text. See [Hints](configuration.md#hints).
+labels more kinds of text. See [Hints](usage.md#hints).
 
 ## Vi mode
 
@@ -45,7 +45,7 @@ labels more kinds of text. See [Hints](configuration.md#hints).
 Ctrl+Shift+Space moves a cursor over the screen and scrollback with vim
 keys (`hjkl`, `w`, `b`, `gg`, `G`, ...). Select by character, line or
 block with `v`, `V` and Ctrl+V, yank with `y`, and search with `/`, `?`,
-`n` and `N`. See [Vi mode](configuration.md#vi-mode).
+`n` and `N`. See [Vi mode](usage.md#vi-mode).
 
 ## Drag files out, drop files in
 
@@ -55,7 +55,7 @@ Ctrl+drag a file or directory named in the output, as `ls` prints it, into
 a file manager, a browser or a chat. Mark several with Ctrl+right click or
 drag, then drag them together. Dropping files onto the window types their
 paths at the cursor, quoted for the shell. See
-[Mouse](configuration.md#mouse).
+[Dragging files](usage.md#dragging-files).
 
 ## Open links and files
 
@@ -73,7 +73,7 @@ with Ctrl+Shift+PageUp/PageDown, select, copy or open a command's whole
 output with Ctrl+double click, and notify you when a long command finishes
 while the window isn't focused. See
 [Shell integration](configuration.md#shell-integration) and
-[Long commands](configuration.md#long-commands).
+[Notifications](usage.md#notifications).
 
 ## Live config and `jotty config`
 
@@ -89,7 +89,7 @@ your config, so it works on a config managed by home-manager too. See
 
 With `--single-instance` (or `window.single_instance`), new windows open
 in the jotty already running instead of starting another process. See
-[Single instance](configuration.md#single-instance).
+[Single instance](usage.md#single-instance).
 
 ## Keybinds
 

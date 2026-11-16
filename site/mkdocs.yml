@@ -18,6 +18,7 @@ nav:
   - Home: index.md
   - Features: features.md
   - Install: install.md
+  - Usage: usage.md
   - Configuration:
       - Guide: configuration.md
       - Reference: config-reference.md
