@@ -154,8 +154,14 @@ impl Detector {
             target,
             kind,
         };
-        for (span, link) in hyperlinks(line, screen) {
+        for (span, start, end, target) in hyperlinks(line, screen) {
             if wanted(&span) {
+                let link = Link {
+                    start,
+                    end,
+                    target: target.to_string(),
+                    kind: None,
+                };
                 each(span, link)?;
             }
         }
@@ -248,11 +254,11 @@ fn trim_url(url: &str) -> usize {
 }
 
 /// The hyperlinks in `line`: runs of cells with the same link id, with
-/// their byte spans.
+/// their byte spans, first and last cells and targets.
 fn hyperlinks<'line>(
     line: &'line LineText,
     screen: &'line Screen,
-) -> impl Iterator<Item = (Range<usize>, Link)> + 'line {
+) -> impl Iterator<Item = (Range<usize>, Point, Point, &'line str)> + 'line {
     let cells = &line.cells;
     let mut first = 0;
     std::iter::from_fn(move || {
@@ -267,13 +273,7 @@ fn hyperlinks<'line>(
             if let Some(target) = screen.link(id) {
                 let span =
                     cells[start].offset..cells.get(end).map_or(line.text.len(), |c| c.offset);
-                let link = Link {
-                    start: cells[start].point,
-                    end: cells[end - 1].point,
-                    target: target.to_string(),
-                    kind: None,
-                };
-                return Some((span, link));
+                return Some((span, cells[start].point, cells[end - 1].point, target));
             }
         }
         None
