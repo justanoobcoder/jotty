@@ -44,7 +44,7 @@
 | Ctrl+Shift+C           | Copy the selection to the clipboard           |
 | Ctrl+Shift+V, Shift+Insert | Paste the clipboard                       |
 | Middle click           | Paste the primary selection (the last selected text) |
-| Ctrl+double click      | Select a command's whole output (needs [shell integration](docs/configuration.md#shell-integration)) |
+| Ctrl+double click      | Select a command's whole output, or copy or open it in your editor with [`terminal.output_click`](docs/configuration.md#terminal) (needs [shell integration](docs/configuration.md#shell-integration)) |
 | Shift+PageUp/PageDown  | Scroll the history by a page                  |
 | Shift+Home/End         | Jump to the top or bottom of the history      |
 | Ctrl+Shift+PageUp/PageDown | Scroll to the previous or next shell prompt (needs [shell integration](docs/configuration.md#shell-integration)) |

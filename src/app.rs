@@ -89,7 +89,8 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     self, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
 };
 
-use crate::config::{Config, RendererKind, StartupMode};
+use crate::config::{Config, OutputClick, RendererKind, StartupMode};
+use crate::editor::{self, TempFile};
 use crate::file_marks::{FileMark, FileMarks};
 use crate::font::{self, Fonts};
 use crate::ime::{Content, ImeState, Surrounding};
@@ -280,6 +281,8 @@ pub struct Spawn {
     /// An xdg-activation token from whoever asked for the window, to give
     /// it focus.
     pub activation_token: Option<String>,
+    /// A file the command reads, removed when the window closes.
+    pub temp_file: Option<TempFile>,
 }
 
 /// Something a window asks of the whole application, done after the event
@@ -469,6 +472,9 @@ pub struct TermWindow {
     file_marks: FileMarks,
     /// Where the current Ctrl+right press started marking.
     mark_sweep: Option<Point>,
+    /// The file the program was given to read (`Spawn::temp_file`), kept
+    /// only to be removed when the window goes.
+    _temp_file: Option<TempFile>,
     /// The current left press was a Shift+click (it marks a cell unless
     /// it becomes a drag).
     shift_press: bool,
@@ -832,6 +838,7 @@ impl TermWindow {
             shift_mark: None,
             file_marks: FileMarks::default(),
             mark_sweep: None,
+            _temp_file: spawn.temp_file,
             shift_press: false,
             text_input: None,
             ime: ImeState::default(),
@@ -1844,6 +1851,16 @@ impl TermWindow {
             }
             Action::NewWindow => self.new_window(shared),
             Action::ReloadConfig => shared.requests.push(Request::ReloadConfig),
+            Action::CopyLastOutput => {
+                if let Some(text) = self.last_output_text() {
+                    self.copy_text(shared, text);
+                }
+            }
+            Action::OpenLastOutput => {
+                if let Some(text) = self.last_output_text() {
+                    self.open_in_editor(shared, text);
+                }
+            }
         }
         if self.term.screen_mut().take_dirty() {
             self.request_redraw();
@@ -1895,8 +1912,55 @@ impl TermWindow {
     /// A selection of the whole command output under `point`, for a
     /// Ctrl+double click.
     fn output_selection(&self, point: Point) -> Option<Selection> {
+        let lines = self.term.screen().command_output(point.line)?;
+        self.lines_selection(lines)
+    }
+
+    /// The text of the last command's output that finished, if the shell
+    /// marked it and it printed something.
+    fn last_output_text(&self) -> Option<String> {
         let screen = self.term.screen();
-        let (first, last) = screen.command_output(point.line)?;
+        let Some(lines) = screen.last_command_output() else {
+            log::info!("no output of a finished command to take");
+            return None;
+        };
+        Some(self.lines_selection(lines)?.text(screen))
+    }
+
+    /// Does what `terminal.output_click` says with the command output a
+    /// Ctrl+double click selected.
+    fn output_clicked(&mut self, shared: &mut Shared, output: Selection) {
+        match self.config.terminal.output_click {
+            OutputClick::Select => {}
+            OutputClick::Copy => self.copy_text(shared, output.text(self.term.screen())),
+            OutputClick::Open => self.open_in_editor(shared, output.text(self.term.screen())),
+        }
+    }
+
+    /// Opens `text` in `terminal.editor`, in a new window in the current
+    /// directory.
+    fn open_in_editor(&self, shared: &mut Shared, mut text: String) {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        let file = match TempFile::create(&text) {
+            Ok(file) => file,
+            Err(e) => return log::warn!("cannot write the text for the editor: {e}"),
+        };
+        let mut command = editor::command(&self.config.terminal.editor);
+        command.push(file.path().into());
+        log::info!("opening {} in {:?}", file.path().display(), command[0]);
+        shared.requests.push(Request::NewWindow(Spawn {
+            command: Some(command),
+            cwd: self.pty.foreground_cwd(),
+            temp_file: Some(file),
+            ..Spawn::default()
+        }));
+    }
+
+    /// A selection of whole lines, from `first` to `last` inclusive.
+    fn lines_selection(&self, (first, last): (isize, isize)) -> Option<Selection> {
+        let screen = self.term.screen();
         let end = screen.row_at(last)?.cells().len().saturating_sub(1);
         Some(Selection::span(
             Point {
@@ -3198,6 +3262,7 @@ impl App {
             cwd: Some(request.cwd),
             env: Some(request.env),
             activation_token,
+            temp_file: None,
         };
         match self.open_window(spawn) {
             Ok(_) => Reply::Opened,
@@ -4039,11 +4104,12 @@ impl TermWindow {
                     _ => 1,
                 };
                 self.last_click = Some((*time, point, clicks));
+                let output = (clicks == 2 && shared.modifiers.ctrl)
+                    .then(|| self.output_selection(point))
+                    .flatten();
                 let screen = self.term.screen();
                 let selection = match clicks {
-                    2 if shared.modifiers.ctrl => self
-                        .output_selection(point)
-                        .or_else(|| Selection::word(screen, point)),
+                    2 if output.is_some() => output,
                     2 => Selection::word(screen, point),
                     3 => Some(Selection::line(screen, point)),
                     _ => None,
@@ -4057,6 +4123,9 @@ impl TermWindow {
                     serial: *serial,
                     position: event.position,
                 });
+                if let Some(output) = output {
+                    self.output_clicked(shared, output);
+                }
                 self.request_redraw();
             }
             PointerEventKind::Release {

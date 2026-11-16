@@ -748,23 +748,53 @@ impl Screen {
         let (marked, mark) = (top..=line)
             .rev()
             .find_map(|l| mark_at(l).map(|m| (l, m)))?;
-        let first = match mark {
-            Mark::Prompt => return None,
-            Mark::Output { col: 0 } => marked,
-            Mark::Output { .. } => marked + 1,
+        let first = self.output_start(marked, mark)?;
+        // The output ends before the next mark, or at the cursor while the
+        // command is still running.
+        let last = (line + 1..self.rows as isize)
+            .find(|&l| mark_at(l).is_some())
+            .map_or(self.cursor.row as isize, |l| l - 1);
+        let last = self.without_blank_end(first, last);
+        (first <= line && line <= last).then_some((first, last))
+    }
+
+    /// The lines of the output of the last command that finished, the one
+    /// before the prompt the cursor is at (or before the running command's
+    /// prompt), as [`Screen::command_output`] finds them. `None` when that
+    /// command printed nothing or the shell didn't mark it.
+    #[must_use]
+    pub fn last_command_output(&self) -> Option<(isize, isize)> {
+        let prompt = self.prompt_above(self.cursor.row as isize + 1)?;
+        let top = -(self.grid().history.len() as isize);
+        let (marked, mark) = (top..prompt)
+            .rev()
+            .find_map(|l| self.row_at(l)?.mark.map(|m| (l, m)))?;
+        let first = self.output_start(marked, mark)?;
+        let last = self.without_blank_end(first, prompt - 1);
+        (first <= last).then_some((first, last))
+    }
+
+    /// The first line of the output that follows `mark` on line `marked`:
+    /// the line of a `C` mark at the start of a row, else the line after
+    /// it, or after the (wrapped) command line of a `B` mark. `None` for a
+    /// prompt.
+    fn output_start(&self, marked: isize, mark: Mark) -> Option<isize> {
+        match mark {
+            Mark::Prompt => None,
+            Mark::Output { col: 0 } => Some(marked),
+            Mark::Output { .. } => Some(marked + 1),
             Mark::Input => {
                 let mut l = marked;
                 while self.row_at(l).is_some_and(|r| r.wrapped) {
                     l += 1;
                 }
-                l + 1
+                Some(l + 1)
             }
-        };
-        // The output ends before the next mark, or at the cursor while the
-        // command is still running.
-        let mut last = (line + 1..self.rows as isize)
-            .find(|&l| mark_at(l).is_some())
-            .map_or(self.cursor.row as isize, |l| l - 1);
+        }
+    }
+
+    /// `last`, moved up past blank lines, but not above `first - 1`.
+    fn without_blank_end(&self, first: isize, mut last: isize) -> isize {
         let blank = |l: isize| {
             self.row_at(l)
                 .is_none_or(|r| r.cells().iter().all(|c| c.c == ' '))
@@ -772,7 +802,7 @@ impl Screen {
         while last >= first && blank(last) {
             last -= 1;
         }
-        (first <= line && line <= last).then_some((first, last))
+        last
     }
 
     /// How many rows the view is scrolled back into the history.

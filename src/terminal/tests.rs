@@ -709,6 +709,48 @@ fn command_output_after_c_mark_mid_row() {
     assert_eq!(t.screen().command_output(1), Some((1, 1)));
 }
 
+#[test]
+fn last_command_output_is_before_the_current_prompt() {
+    let mut t = term(20, 10);
+    run_command(&mut t, "ls", "a\r\nb\r\n\r\n");
+    t.feed(PROMPT.as_bytes());
+    assert_eq!(t.screen().last_command_output(), Some((1, 2)));
+}
+
+#[test]
+fn last_command_output_skips_the_running_command() {
+    let mut t = term(20, 10);
+    run_command(&mut t, "ls", "a\r\n");
+    t.feed(format!("{PROMPT}cat\r\n\x1b]133;C\x07one\r\n").as_bytes());
+    assert_eq!(t.screen().last_command_output(), Some((1, 1)));
+}
+
+#[test]
+fn last_command_output_without_output_is_none() {
+    let mut t = term(20, 10);
+    run_command(&mut t, "ls", "a\r\n");
+    run_command(&mut t, "true", "");
+    t.feed(PROMPT.as_bytes());
+    assert_eq!(t.screen().last_command_output(), None);
+}
+
+#[test]
+fn last_command_output_with_two_row_prompts_and_history() {
+    const PROMPT2: &str = "\x1b]133;A\x07~\r\n$ \x1b]133;B\x07";
+    let mut t = term(20, 4);
+    t.feed(format!("{PROMPT2}seq 4\r\n\x1b]133;C\x071\r\n2\r\n3\r\n4\r\n").as_bytes());
+    t.feed(format!("\x1b]133;D;0\x07{PROMPT2}").as_bytes());
+    // Rows: ~, $ seq 4, 1, 2, 3, 4, ~, $ — the last four on the screen.
+    assert_eq!(t.screen().last_command_output(), Some((-2, 1)));
+}
+
+#[test]
+fn last_command_output_without_marks_is_none() {
+    let mut t = term(20, 5);
+    t.feed(b"$ ls\r\na\r\n$ ");
+    assert_eq!(t.screen().last_command_output(), None);
+}
+
 /// Jumps to the prompt in `direction` and returns the new display offset.
 fn jump(t: &mut Terminal, direction: Direction) -> usize {
     t.screen_mut().scroll_to_prompt(direction);

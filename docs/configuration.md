@@ -285,6 +285,26 @@ To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
 | `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
 | `cursor_shape` | string | `"block"` | `"block"`, `"beam"` or `"underline"`. Programs can set their own with `CSI Ps SP q` (DECSCUSR); `CSI 0 SP q` and a reset bring this one back. |
 | `cursor_blink` | bool | `false` | Blink the cursor (on and off every 500 ms) while the window is focused, unless a program sets a style; typing shows it at once. |
+| `output_click` | string | `"select"` | What a Ctrl+double click on a command's output does: `"select"` it, `"copy"` it to the clipboard as well, or `"open"` it in `editor` (see [Mouse](#mouse)). |
+| `editor` | list of strings | `[]` | The editor that opens command output, in a new window in the current directory, with a temporary file holding the output as its last argument. It must not exit before you are done (see below). Empty, or an empty program name, means `$VISUAL`, then `$EDITOR` (split at spaces), then `less`. |
+
+**The editor.** jotty runs `editor` itself in a new window, so it should be
+a program that runs in a terminal (`nvim`, `hx`, `less`); a graphical
+editor would leave that window empty. The editor must keep running until
+you are done with the file: the file is removed when its window closes,
+and that window closes when the editor exits, so an editor that hands the
+file to a process already running and exits at once (`code` or `subl`
+without `--wait`) finds it gone. The output is written as plain text
+(no colors) to a file in `$XDG_RUNTIME_DIR` that only you can read, and the
+file is removed when the window closes. `$VISUAL` and `$EDITOR` are read
+from jotty's own environment: started from a desktop launcher, jotty
+doesn't see variables your shell's startup files export, so set `editor`
+in that case:
+
+```toml
+[terminal]
+editor = ["nvim", "-R"]
+```
 
 ### `TERM` and terminfo
 
@@ -412,6 +432,8 @@ Actions you don't list keep their defaults.
 | `reload_config` | `ctrl+shift+r` | Read the config file again |
 | `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
 | `new_window` | `ctrl+shift+n` | Open another window in the current directory of the shell (or whatever runs in the terminal) |
+| `copy_last_output` | unbound | Copy the output of the last command that finished (needs [shell integration](#shell-integration)) |
+| `open_last_output` | unbound | Open the output of the last command that finished in [`terminal.editor`](#terminal), in a new window |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -455,6 +477,20 @@ programs that use it, such as some chat CLIs and Neovim mappings):
 ```toml
 [keybinds]
 new_window = ["shift+return"]
+```
+
+**The last command's output.** `copy_last_output` copies what the last
+command that finished printed, and `open_last_output` opens it in
+[`terminal.editor`](#terminal): the command before the prompt you are at,
+or, while a command runs, the one before it. A command that printed
+nothing has no output to take. Both need the shell to mark its prompts
+and commands (see [Shell integration](#shell-integration)), and don't see
+through multiplexers (zellij, tmux), which don't pass the marks on.
+
+```toml
+[keybinds]
+copy_last_output = ["ctrl+shift+o"]
+open_last_output = ["ctrl+shift+e"]
 ```
 
 **Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C
@@ -536,7 +572,10 @@ command's output selects all of it, from the line after the command to the
 line before the next prompt, without trailing blank lines. Copy it as
 usual. This needs the shell to mark its prompts and commands (see
 [Shell integration](#shell-integration)); on prompts and command lines, a
-Ctrl+double click selects a word.
+Ctrl+double click selects a word. Set
+[`terminal.output_click`](#terminal) to `"copy"` to also copy the output
+to the clipboard, or to `"open"` to open it in
+[`terminal.editor`](#terminal) in a new window.
 
 **Primary selection.** Selecting text also makes it the primary
 selection, and a middle click pastes the primary selection, as is usual on

@@ -295,6 +295,22 @@ pub struct TerminalConfig {
     /// The cursor's shape and blinking, unless a program sets them.
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
+    /// What a Ctrl+double click on a command's output does.
+    pub output_click: OutputClick,
+    /// The editor that opens command output, in a new window; empty means
+    /// `$VISUAL`, then `$EDITOR`, then `less`. See `editor.rs`.
+    pub editor: Vec<String>,
+}
+
+/// What a Ctrl+double click on a command's output does with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputClick {
+    Select,
+    /// Select it and copy it to the clipboard.
+    Copy,
+    /// Select it and open it in `terminal.editor`.
+    Open,
 }
 
 impl Default for TerminalConfig {
@@ -306,6 +322,8 @@ impl Default for TerminalConfig {
             bold_is_bright: true,
             cursor_shape: CursorShape::Block,
             cursor_blink: false,
+            output_click: OutputClick::Select,
+            editor: Vec::new(),
         }
     }
 }
