@@ -62,16 +62,24 @@ def on_page_markdown(markdown, page, config, files):
         # CHANGELOG.md has a setext title in capitals.
         markdown = re.sub(r"\ACHANGELOG\n=+\n", "# Changelog\n", markdown)
     markdown = README_MARKER.sub(lambda m: readme_section(m.group(1)), markdown)
-    return SCREENSHOT_MARKER.sub(lambda m: screenshot(m, config), markdown)
+    return SCREENSHOT_MARKER.sub(lambda m: screenshot(m, page, config), markdown)
 
 
-def screenshot(m, config):
+def screenshot(m, page, config):
     """The image a `<!-- screenshot: name -->` marker names, once it exists
     in assets/screenshots/; until then the marker stays a comment."""
     name = m.group(1)
     if not (Path(config.docs_dir) / "assets/screenshots" / name).is_file():
         return m.group(0)
     alt = Path(name).stem.replace("-", " ")
+    if name.endswith((".mp4", ".webm")):
+        # Raw HTML: MkDocs doesn't rewrite its URLs, so make it relative to
+        # the page's own URL. Muted, so browsers autoplay it like a GIF.
+        src = posixpath.relpath(f"assets/screenshots/{name}", page.url or ".")
+        return (
+            f'<video class="jotty-shot" src="{src}" title="{alt}" '
+            "autoplay loop muted playsinline></video>"
+        )
     return f'![{alt}](assets/screenshots/{name}){{ .jotty-shot loading="lazy" }}'
 
 

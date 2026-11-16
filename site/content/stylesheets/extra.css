@@ -45,3 +45,6 @@
 .config-hidden {
   display: none !important;
 }
+video.jotty-shot {
+  width: 100%;
+}
