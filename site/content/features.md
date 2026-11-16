@@ -1,7 +1,7 @@
 # Features
 
-<!-- Screenshots and recordings go in assets/screenshots/. Each section
-     below has a marked spot for one. -->
+<!-- Screenshots and recordings go in assets/screenshots/. A section's
+     screenshot marker shows the file it names once that file exists. -->
 
 ## Wayland native
 

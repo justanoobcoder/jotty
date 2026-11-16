@@ -2,7 +2,8 @@
 
 The site has no copies of the documentation: this hook adds docs/*.md,
 CHANGELOG.md and the logo as pages of the site, fills `<!-- readme: X -->`
-markers with the README section headed X, rewrites links that point
+markers with the README section headed X and `<!-- screenshot: X -->`
+markers with assets/screenshots/X once it exists, rewrites links that point
 outside the site to GitHub, and generates the config reference from
 docs/config.example.toml.
 """
@@ -35,6 +36,7 @@ README_PAGES = {"install.md"}
 
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 README_MARKER = re.compile(r"^<!-- readme: (.+?) -->$", re.M)
+SCREENSHOT_MARKER = re.compile(r"^<!-- screenshot: (\S+) -->$", re.M)
 
 
 def on_files(files, config):
@@ -59,7 +61,18 @@ def on_page_markdown(markdown, page, config, files):
     if src == "changelog.md":
         # CHANGELOG.md has a setext title in capitals.
         markdown = re.sub(r"\ACHANGELOG\n=+\n", "# Changelog\n", markdown)
-    return README_MARKER.sub(lambda m: readme_section(m.group(1)), markdown)
+    markdown = README_MARKER.sub(lambda m: readme_section(m.group(1)), markdown)
+    return SCREENSHOT_MARKER.sub(lambda m: screenshot(m, config), markdown)
+
+
+def screenshot(m, config):
+    """The image a `<!-- screenshot: name -->` marker names, once it exists
+    in assets/screenshots/; until then the marker stays a comment."""
+    name = m.group(1)
+    if not (Path(config.docs_dir) / "assets/screenshots" / name).is_file():
+        return m.group(0)
+    alt = Path(name).stem.replace("-", " ")
+    return f'![{alt}](assets/screenshots/{name}){{ .jotty-shot loading="lazy" }}'
 
 
 def on_page_context(context, page, config, nav):

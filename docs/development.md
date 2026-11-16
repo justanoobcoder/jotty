@@ -253,7 +253,9 @@ nix develop -c mkdocs serve -f site/mkdocs.yml
 `nix build .#site` builds it with `--strict`, so a broken link or anchor
 fails the build. The `Website` workflow builds it for pull requests and
 deploys it to GitHub Pages on pushes to `main` that touch it.
-Screenshots and recordings go in `site/content/assets/screenshots/`.
+Screenshots and recordings go in `site/content/assets/screenshots/`; a
+`<!-- screenshot: name.png -->` line in a page shows the file once it
+exists there.
 
 ## Code layout and conventions
 
