@@ -224,7 +224,9 @@ connected.
 
 ## Debugging
 
-- `RUST_LOG=debug` logs every escape sequence jotty doesn't handle.
+- jotty logs to stderr through `env_logger`, at level `warn` by default.
+  `RUST_LOG=info` adds the fonts loaded, the GL version and scale changes;
+  `RUST_LOG=jotty=debug` also every escape sequence jotty doesn't handle.
 - `WAYLAND_DEBUG=1` traces all Wayland messages. Combine it with `grep
   text_input` to debug the input method.
 - To test the CPU renderer, set `renderer = "cpu"` in `[window]`. To test

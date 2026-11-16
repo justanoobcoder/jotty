@@ -32,6 +32,9 @@ on the CPU.
 - [Windows and single instance (`app.rs`, `instance.rs`)](#windows-and-single-instance-apprs-instancers)
 - [Window and scaling (`app.rs`)](#window-and-scaling-apprs)
 - [Clipboard (`app.rs`)](#clipboard-apprs)
+- [Config and overrides (`config.rs`, `settings/`)](#config-and-overrides-configrs-settings)
+- [Escape sequences for programs](#escape-sequences-for-programs)
+- [Links, files and hints (`links.rs`, `hints.rs`)](#links-files-and-hints-linksrs-hintsrs)
 - [Lifetimes and safety](#lifetimes-and-safety)
 
 ## Modules
@@ -198,6 +201,20 @@ and `TERM_PROGRAM=jotty`. The master is non-blocking:
   a large text into a program that isn't reading), the remainder waits and a
   temporary writable-fd source drains it, so the loop never blocks.
 
+**`TERM` and terminfo (`terminfo.rs`).** The entry in
+`extra/jotty.terminfo` is `xterm-256color` plus styled and colored
+underlines (`Smulx`, `Setulc`, `Su`), `Tc`, cursor shape and color, and
+`Ms` (OSC 52). With it, programs know what jotty supports without probing
+at startup, which matters behind tools that relay the terminal and swallow
+the probes (`devenv shell` does, so Neovim falls back to plain underlines
+unless `TERM=jotty`). With `term = "auto"`, jotty looks for the compiled
+entry next to its executable (`<prefix>/share/terminfo`, where the Nix
+package and the dev shell put it), then in `$TERMINFO`, `~/.terminfo`,
+`$TERMINFO_DIRS` and the system directories. If it finds one, the child
+gets `TERM=jotty` and `TERMINFO` pointing at that directory; otherwise
+`TERM=xterm-256color`. The child also gets `TERM_PROGRAM_VERSION`.
+`tic -x -o ~/.terminfo extra/jotty.terminfo` installs the entry by hand.
+
 ## Input (`input.rs`)
 
 SCTK delivers keys already translated by xkbcommon: a keysym plus the UTF-8
@@ -214,6 +231,18 @@ sequences:
 - Alt adds an ESC prefix; Ctrl+key maps to control characters when xkb didn't
   already. xkb only does so for ASCII symbols, so on a Cyrillic or Greek
   layout the key's base symbol (the Latin letter at that position) is used.
+
+Combos (`keybinds.rs`) take the modifiers `ctrl`, `alt`, `shift` and
+`super` (also `control`, `meta`, `logo`, `mod1`, `mod4`), which must match
+exactly, ignoring Caps Lock and Num Lock. The key is a character or an xkb
+keysym name, matched case-insensitively (`ctrl++` binds plus). A combo
+matches the key's symbol without modifiers (`ctrl+shift+equal`) or the
+symbol it produces, minus the Shift that produced it (`ctrl+plus` where `+`
+is Shift+`=`); `ctrl+c` never matches Ctrl+Shift+C. Wheel combos run once
+per notch (touchpads: once per line's worth), and take precedence over
+scrolling and over programs that read the mouse. Unknown actions,
+modifiers or keys are reported with their line. Middle-click paste is not
+a binding.
 
 Key repeat is done client-side by SCTK's calloop timer. A repeat runs a
 bound action again only if it makes sense repeated (`Action::repeats`):
@@ -363,6 +392,24 @@ Font files are memory-mapped rather than read, so a large fallback font
 Box-drawing lines and block elements are drawn procedurally to fill the cell
 exactly, so they join without gaps.
 
+**Memory.** The CPU renderer loads no GPU driver, so jotty stays around
+20–30 MiB; output that scrolls the whole screen repaints all of it, so on a
+large high-DPI window constant fast scrolling costs more CPU than the GPU
+renderer. Loading OpenGL loads the GPU driver into the process: about
+100 MiB with the NVIDIA driver, plus as much again for Mesa when both are
+installed, since EGL loads every installed vendor before picking one.
+Setting `__EGL_VENDOR_LIBRARY_FILENAMES` to the NVIDIA vendor file
+(`/run/opengl-driver/share/glvnd/egl_vendor.d/10_nvidia.json` on NixOS)
+skips Mesa. If EGL or OpenGL ES 3 is missing, jotty logs a warning and uses
+the CPU renderer.
+
+Glyphs that stick out of the cell by more than a pixel (such as ♥ in some
+fonts) are shrunk to fit. The fallback order for a missing character is
+the regular face, the `fallback` families, a font fontconfig considers like
+`family` (DejaVu Sans Mono rather than DejaVu Sans), then any installed
+font that has it. Box drawing, block elements, braille, the triangles
+`◢◣◤◥` and the Symbols for Legacy Computing are drawn procedurally.
+
 **Frame pacing.** `eglSwapInterval(0)` keeps `eglSwapBuffers` from blocking.
 Each draw first requests a `wl_surface.frame` callback, and new content only
 marks the window dirty until that callback arrives. Output therefore costs at
@@ -401,6 +448,12 @@ and replies with a status byte. If no jotty answers (no socket, or one
 whose owner died), this one removes the stale file, binds the socket and
 serves. When it exits, it removes the socket only if the file is still
 the one it created.
+
+The later jotty exits with status 0 once the window is open, or prints the
+error and exits with 1 if it can't be (no such program, say). The running
+jotty exits when its last window closes, with that window's exit status,
+and the next jotty to start becomes the new instance. A jotty of another
+version doesn't join, and opens a window of its own.
 
 ## Window and scaling (`app.rs`)
 
@@ -456,7 +509,8 @@ event loop. Pasting reads the current selection offer through a calloop
 source on the pipe. When jotty owns the selection itself, it pastes directly
 without a round trip. The primary selection works the same way through
 `primary-selection-unstable-v1`: finishing a selection offers it, and a
-middle click pastes it. Text a program sends with OSC 52 takes the same
+middle click pastes it. Text a program sends with OSC 52 (`OSC 52 ; c ; <base64> ST`; `p` or `s`
+for the primary selection, `pc` for both) takes the same
 path, after the read of child output that carried it; of several in one
 read, the last for each selection wins. Before the window's first keyboard focus it waits for
 the focus, whose serial the compositor accepts.
@@ -468,6 +522,116 @@ number of rows that scrolled, and keeps it only if every fingerprinted row
 still holds the same text. Pasted text is wrapped in bracketed-paste markers when
 the application asked for them, and ESC characters are removed so the paste
 can't end bracketed mode early.
+
+## Config and overrides (`config.rs`, `settings/`)
+
+The config file and `~/.local/state/jotty/overrides.toml` (under
+`$XDG_STATE_HOME`) are merged key by key, the overrides winning; lists are
+replaced as a whole. jotty creates the state directory at startup so that
+`watch.rs` can watch it. Reload triggers are a change to either file
+(inotify on their directories), the `reload_config` binding and SIGUSR1.
+An invalid default config file is logged and the defaults are used; an
+invalid `--config` file stops jotty from starting. A reload that fails
+keeps the current settings. A new `font.size` replaces any zoom. Values
+are clamped where a range makes sense: `font.size` to 4–200,
+`font.size_step` to 0.1–10.
+
+If the overrides file is broken, or valid alone but not over the config
+file, jotty logs it and ignores the overrides. `jotty config` refuses to
+open a broken file, so it can't overwrite it; `jotty config reset` removes
+it. In the TUI, `Space` only toggles or cycles, `i` edits any value as
+text, `R` removes a section's overrides, and lists are typed
+comma-separated or as a TOML array. The palette is listed as 16 named
+colors; changing one saves the whole list, which the TUI drops again once
+it matches the config file. Saving an empty value removes the override of
+an optional key such as `colors.cursor`. `export --merged` has only the
+keys set in either file, without the config file's comments.
+
+## Escape sequences for programs
+
+**Colors.** Programs can set and query colors while they run. *color* is
+`#rrggbb`, `#rgb` or `rgb:rr/gg/bb`, and `?` queries the current value
+(Neovim does with OSC 11 to pick a dark or light background). A full reset
+restores the configured colors. Colors 16–255 are the xterm 6×6×6 cube and
+24-step grayscale ramp.
+
+| Sequence | Color | Reset with |
+| --- | --- | --- |
+| OSC 4 ; *n* ; *color* | palette entry *n* (0–255) | OSC 104 |
+| OSC 10 ; *color* | default foreground | OSC 110 |
+| OSC 11 ; *color* | default background (also the padding) | OSC 111 |
+| OSC 12 ; *color* | cursor | OSC 112 |
+
+**Cursor.** `CSI Ps SP q` (DECSCUSR) sets the cursor style; `CSI 0 SP q`
+and a reset bring back the configured one. A blinking cursor toggles every
+500 ms while the window is focused, and typing shows it at once.
+
+**Notifications.** `OSC 9 ; message ST` (iTerm2) uses the window title as
+the summary; `OSC 777 ; notify ; title ; body ST` (rxvt-unicode) gives both.
+`OSC 9` followed by a number (`OSC 9 ; 4 ; …`, progress bars) is ignored.
+A program can show 4 notifications at once, then one every 2 seconds; more
+are dropped. A click focuses the window when the daemon sends an
+activation token (version 1.2 of the notification specification);
+otherwise the window is only marked urgent. For long commands, the summary
+is the command line (sent by fish 4, otherwise read from the screen after
+the `OSC 133 ; B` mark) and the body says how long it took and whether it
+failed.
+
+**Clipboard.** OSC 52 reads (`OSC 52 ; c ; ?`) are always refused, since
+any program, or a file shown with `cat`, could read the clipboard. With
+`osc52 = false` writes are dropped too; the terminfo entry still
+advertises `Ms`.
+
+**Shell marks (OSC 133).** `A` marks the start of the prompt, `B` its end,
+`C` the start of a command's output, and `D ; status` its end. Selecting a
+command's output needs `A` (where it ends) and `C`, or `B` for a one-row
+command line (where it starts). Scrolling between prompts needs `A` or
+`B`; with only `B`, a prompt of several rows is shown from its command
+line. Long-command notifications need `C` and `D`. The text reported to
+input methods starts after `B`.
+
+**The editor.** Command output opened in `terminal.editor` is written as
+plain text to a file in `$XDG_RUNTIME_DIR` that only the user can read, and
+removed when the editor's window closes. That window closes when the
+editor exits, so an editor that hands the file to a running process and
+exits (`code` or `subl` without `--wait`) finds it gone. `$VISUAL` and
+`$EDITOR` are split at spaces.
+
+## Links, files and hints (`links.rs`, `hints.rs`)
+
+**URLs** are recognized by their scheme (`https://`, `file://`, `ssh://`,
+`git://`, `mailto:`, ...) and may wrap across rows. Trailing punctuation
+and unmatched closing brackets are left out, so `(see https://x.org/a).`
+opens `https://x.org/a`. `url.regex` patterns are matched against the line
+under the pointer; an invalid one is logged and only the built-in URL
+pattern is used. A link opens when the button is released, unless the
+pointer moved.
+
+**Files.** A path is absolute, starts with `~/`, or is relative to the
+current directory of the foreground program; names `ls` quotes for spaces
+work too, and only files that exist are links. Extensions match
+case-insensitively. When an extension is in several kinds, kinds added
+under new names win over the built-in ones, and otherwise the first kind
+in alphabetical order wins; a built-in kind keeps its place even when
+changed. Ctrl+drag takes the whitespace-delimited word under the pointer,
+or the single-quoted name around it, dropping a trailing `ls -F` indicator
+(`/`, `*`, `@`) if needed. Marks keep the path they had when made, even
+after a `cd`; if a marked file is gone when dragged, nothing is dragged.
+Dropped links are typed like paths, and dropped text is pasted as it is;
+files dragged out of a window aren't taken back by it.
+
+**Hints** label, in this order of precedence where targets overlap: links
+(as Ctrl+click finds them), `hints.regex` matches, IPv4 addresses (with a
+`/24` prefix length or a `:8080` port) and IPv6 addresses, Nix hashes (SRI
+`sha256-…=` of the right length for md5, sha1, sha256 or sha512, or 52
+characters of base 32), paths starting with `/`, `~/`, `./` or `../`, hex
+hashes of 7 to 128 characters with both letters and digits (`1af659b`, not
+`deadbeef`), and names of existing files. The newest output gets the
+shortest labels. Whether a target names a file is checked when it is
+opened. Copying a link gives its target (the URL of a hyperlink, the
+absolute path of a file). Output keeps arriving while the labels are up:
+targets move with their text, those whose text changes are dropped, and a
+resize takes the labels down.
 
 ## Lifetimes and safety
 

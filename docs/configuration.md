@@ -1,414 +1,178 @@
 # Configuration
 
-jotty reads `$XDG_CONFIG_HOME/jotty/config.toml`, which falls back to
-`~/.config/jotty/config.toml`. Use `jotty --config PATH` to read another file.
-
-With home-manager, `programs.jotty.settings` writes this file from Nix
-(see the [README](../README.md#install)).
-
-Every option has a default, so the file is optional and may contain only what
-you change. Unknown keys and invalid values are errors:
-
-- For a file given with `--config`, jotty refuses to start.
-- For the default file, jotty logs the error and starts with the defaults, so
-  a typo never leaves you without a terminal.
-
-**Reloading.** jotty reloads the config when you save the file (or
-[`jotty config`](#overrides-and-jotty-config) changes the overrides), when you
-press Ctrl+Shift+R (`reload_config`), and when it receives `SIGUSR1`
-(`pkill -USR1 jotty` reloads every window, handy for theme switchers). If
-the new file has an error, jotty logs it and keeps the current settings.
-Fonts, colors, opacity, blur, padding, key bindings, `[url]`, `[files]`
-and the other window and terminal options apply right away. A new
-`font.size` replaces any zooming done with Ctrl+=/Ctrl+-. A few options
-only apply to new windows, which jotty logs when they change:
-`terminal.shell`, `terminal.term`, `terminal.scrollback`,
-`window.renderer`, `window.columns`, `window.lines`,
-`window.startup_mode`, `window.title` and `window.app_id`.
-`window.single_instance` applies when jotty next starts.
+jotty reads `~/.config/jotty/config.toml` (or `$XDG_CONFIG_HOME/jotty/config.toml`),
+or the file given with `jotty --config PATH`. The file is optional: every
+option has a default, so put in it only what you want to change.
 
 [`config.example.toml`](config.example.toml) lists every option with its
-default value. A test checks that it matches the built-in defaults.
+default value and what it does. This page explains how they fit together,
+with examples. For how to use jotty's features day to day, see
+[Usage](usage.md).
+
+With home-manager, `programs.jotty.settings` writes this file from Nix
+(see [Install](../README.md#install)).
+
+**Reloading.** Saving the file applies it to every open window, with no
+restart. Ctrl+Shift+R and `pkill -USR1 jotty` reload it too. A few options
+only apply to windows opened afterwards: `terminal.shell`, `terminal.term`,
+`terminal.scrollback`, `window.renderer`, `window.columns`, `window.lines`,
+`window.startup_mode`, `window.title` and `window.app_id`.
+
+**Mistakes.** A misspelled option or an invalid value is an error. jotty
+logs it and keeps the settings it had (or starts with the defaults), so a
+typo never leaves you without a terminal. Only a file given with
+`--config` stops jotty from starting.
 
 **Contents**
 
 - [Overrides and `jotty config`](#overrides-and-jotty-config)
 - [`[font]`](#font)
 - [`[window]`](#window)
-  - [Transparency](#transparency)
-  - [Notifications](#notifications)
-    - [Long commands](#long-commands)
-  - [Single instance](#single-instance)
-  - [Renderer](#renderer)
 - [`[terminal]`](#terminal)
-  - [`TERM` and terminfo](#term-and-terminfo)
-  - [Clipboard from programs (OSC 52)](#clipboard-from-programs-osc-52)
 - [`[colors]`](#colors)
 - [`[keybinds]`](#keybinds)
-  - [Searching](#searching)
-  - [Vi mode](#vi-mode)
-  - [Mouse](#mouse)
 - [`[url]`](#url)
 - [`[hints]`](#hints)
 - [`[files]`](#files)
 - [Shell integration](#shell-integration)
-- [Logging](#logging)
 
 ## Overrides and `jotty config`
 
 `jotty config` opens a TUI that lists every option with its current value
-and lets you change it. It never writes your config file. Its changes go to
-`$XDG_STATE_HOME/jotty/overrides.toml` instead, which defaults to
-`~/.local/state/jotty/overrides.toml`. This is meant for configs managed by
-home-manager, which are read-only and slow to change: try things in the TUI,
-then move them into Nix once they are settled.
+and lets you change it, with each change applied at once. It never touches
+your config file: its changes go to `~/.local/state/jotty/overrides.toml`,
+which takes precedence over the config file. That makes it handy with
+home-manager, whose config file is read-only: try things in the TUI, then
+move them into Nix.
 
-- **Precedence.** The overrides are merged over the config file key by key.
-  A key set in the overrides wins, and the rest come from the config file
-  or the defaults. Lists are replaced as a whole, not appended to. With
-  `--config PATH`, the overrides apply over that file too.
-- **Live.** Each change is checked and then saved at once, and running
-  windows reload it, like a change to the config file. jotty creates
-  `~/.local/state/jotty/` at startup so that it can watch the file.
-- **Errors.** The TUI refuses values the config would refuse. If the
-  overrides file is broken anyway, for example after a hand edit, jotty logs
-  the error and ignores the overrides. The config file still applies.
-  `jotty config` won't open such a file, so that it can't overwrite it;
-  fix it by hand, or remove it with `jotty config reset`, which works on a
-  broken file too. Overrides that are valid alone but not over the config
-  file are ignored the same way, and the TUI says so in its header.
+In the TUI, `Enter` changes the selected option, `r` removes its override,
+`/` filters, `?` lists every key and `q` quits. Overridden options are
+marked `●`.
 
-In the TUI, `Enter` toggles a bool, cycles a choice, or edits anything else.
-`Space` only toggles or cycles, and `i` edits any value as text. `?` shows
-every key.
-Lists are typed comma-separated, or as a TOML array (`["a,b", "c"]`) when an
-item contains a comma. `r` removes the override of a key, `R` removes those
-of a whole section, `/` filters keys across sections, and `q` quits. An
-overridden key is marked `●`. The palette is listed as its 16 colors by name
-(`palette[9] bright red`). Changing one saves the whole list, which the TUI
-drops again once it matches the config file. For optional keys such as `colors.cursor`,
-saving an empty value removes the override.
-
-Without the TUI:
-
-| Command | Prints |
+| Command | Does |
 | --- | --- |
-| `jotty config export` | The overrides, as TOML |
-| `jotty config export --merged` | The config file merged with the overrides, as one TOML file |
-| `jotty config export --nix` | The overrides as a Nix attrset for `programs.jotty.settings` |
-| `jotty config export --merged --nix` | Both merged, as Nix |
-| `jotty config reset` | Nothing; removes all overrides |
+| `jotty config` | Change options in the TUI |
+| `jotty config export` | Print the overrides as TOML |
+| `jotty config export --merged` | Print the config file and the overrides merged into one |
+| `jotty config export --nix` | Print the overrides as Nix, for `programs.jotty.settings` |
+| `jotty config reset` | Remove all overrides |
 
-`--merged` only has the keys set in either file, not every default, and it
-drops the config file's comments. To move overrides into home-manager, paste
-`jotty config export --nix` into `programs.jotty.settings` (or `--merged --nix`
-to replace it), run `home-manager switch`, then `jotty config reset`.
+To move your overrides into home-manager, paste the output of
+`jotty config export --nix` into `programs.jotty.settings`, run
+`home-manager switch`, then `jotty config reset`.
 
 ## `[font]`
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `family` | string | `"monospace"` | A fontconfig family name (`fc-list : family`) or a generic name. |
-| `size` | float | `11.0` | Size in points at 96 DPI. It is multiplied by the output scale, and clamped to 4–200. |
-| `size_step` | float | `1.0` | Points that `font_larger` and `font_smaller` add or remove, per key press or wheel notch. Clamped to 0.1–10. |
-| `fallback` | list of strings | `[]` | Families tried, in order, for characters the main font lacks. |
-
-jotty asks fontconfig for the regular, bold, italic and bold-italic faces of
-`family`. If a character is missing, it tries the regular face, then each
-`fallback` family, then a font fontconfig considers like `family` (DejaVu
-Sans Mono rather than DejaVu Sans for a monospace font), then any installed
-font that has the character. Symbols that stick out of the cell by more
-than a pixel, such as ♥ in some fonts, are shrunk to fit. Color
-(bitmap emoji) fonts are skipped because jotty can't draw them; see
-[known issues](known-issues.md).
-
-Box-drawing characters (`─│┌┐└┘├┤┬┴┼` with their heavy, double, dashed,
-rounded and diagonal forms), block elements (`█▀▄▌▐░▒▓▁…▇▏…▉▖…▟`), braille
-(`⣿`), the black triangles `◢◣◤◥` and the Symbols for Legacy Computing
-(sextants, wedges, checker boards, and the circle and diagonal pieces) are
-drawn by jotty itself. They fill the cell exactly, whatever the font, so
-they join across cells.
-
-Example:
-
 ```toml
 [font]
-family = "JetBrains Mono"
-size = 10.5
+family = "JetBrains Mono"   # any name from `fc-list : family`
+size = 10.5                 # in points
 fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 ```
 
+Characters the font lacks are taken from the `fallback` fonts, in order,
+then from any installed font that has them. Ctrl+= and Ctrl+- change the
+size by `size_step` points; Ctrl+0 goes back to `size`.
+
+Box-drawing characters, block elements and braille are drawn by jotty
+itself, so they line up whatever the font. Color emoji are drawn from your
+emoji font.
+
 ## `[window]`
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `title` | string | `"jotty"` | Initial title. Programs can change it with OSC 0/2. |
-| `app_id` | string | `"jotty"` | Wayland application ID, for compositor window rules. |
-| `padding` | integer | `4` | Space around the grid, in logical pixels. |
-| `opacity` | float | `1.0` | Background opacity, 0.0–1.0. Text, the cursor and the selection stay opaque. |
-| `transparent_cell_backgrounds` | bool | `false` | Also apply `opacity` to cells with an explicit background color. |
-| `blur` | bool | `false` | Blur what is behind the window, if the compositor supports `ext-background-effect-v1`. |
-| `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
-| `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
-| `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
-| `copy_notice` | bool | `true` | Say in the window's top right corner, for 1.5 seconds, what was just copied to the clipboard (`Copied 3 lines`, `Copied 12 chars`), that a program set it (`Clipboard set by program`, OSC 52), or that there is no clipboard. Selecting text, which only sets the primary selection, isn't shown. The notice covers vi mode's label while it is up. |
-| `hide_pointer_while_typing` | bool | `false` | Hide the mouse pointer while you type over the window (keys that reach the program, or text from an input method; modifiers alone don't count). Moving, clicking or scrolling shows it again. |
-| `command_notify_after` | integer | `10` | When a command that ran at least this many seconds finishes while the window isn't focused, show a notification. `0` turns it off. See [Long commands](#long-commands). |
-| `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
-| `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
-| `lines` | integer | `24` | Initial height in cells. |
-| `startup_mode` | string | `"windowed"` | `"windowed"` opens new windows at `columns` × `lines`; `"maximized"` and `"fullscreen"` ask the compositor to open them maximized or fullscreen. Tiling compositors may ignore it. |
-
-### Transparency
-
-`opacity` makes the default background translucent. Cells whose background
-an application set explicitly (status bars, vim or tmux themes, `ls`
-highlights) stay opaque unless `transparent_cell_backgrounds = true`, even
-when the color they set equals `colors.background`. To have Neovim show
-the transparency without that option, let its theme leave the background
-unset (most themes have a `transparent` setting). That
-option matters for full-screen programs whose theme paints every cell, since
-otherwise the window looks completely opaque while they run.
 
 ```toml
 [window]
-opacity = 0.85
-transparent_cell_backgrounds = true
+padding = 8                 # space around the text
+opacity = 0.9
 blur = true
+startup_mode = "maximized"  # or "windowed", "fullscreen"
 ```
 
-`blur` asks the compositor to blur what is behind the window, which keeps
-text readable over busy wallpapers. It needs the `ext-background-effect-v1`
-protocol; without it, jotty logs a warning and stays unblurred. When
-`opacity` is 1.0, jotty marks the window opaque so the compositor can skip
-drawing what is behind it.
+### Transparency
 
-### Notifications
+`opacity` makes the background see-through; text stays opaque. Colored
+backgrounds that programs paint (vim and tmux themes, status bars) stay
+opaque unless you also set `transparent_cell_backgrounds = true`. Without
+it, a full-screen program whose theme paints every cell looks opaque.
 
-Programs can ask for a desktop notification with either of these escape
-sequences:
-
-| Sequence | Origin | Notification |
-| --- | --- | --- |
-| `OSC 9 ; message ST` | iTerm2 | the window title as the summary, the message as the body |
-| `OSC 777 ; notify ; title ; body ST` | rxvt-unicode | the title and the body |
-
-jotty shows them only while its window isn't focused, through the
-notification daemon (`org.freedesktop.Notifications` on the session bus).
-Clicking a notification focuses the window again, when the daemon sends an
-activation token with the click (version 1.2 of the notification
-specification); otherwise the window is only marked urgent. `OSC 9`
-followed by a number (`OSC 9 ; 4 ; …`, ConEmu's progress bar and similar)
-is not a notification and is ignored.
-
-A program can show 4 notifications at once, then one every 2 seconds; more are
-dropped.
-
-For example, to be told when a command finishes, whatever it took:
-
-```sh
-make; printf '\e]777;notify;make;finished with status %d\a' $?
-```
-
-#### Long commands
-
-When a command that ran for at least `command_notify_after` seconds (10 by
-default) finishes while the window isn't focused, jotty shows a notification
-with the command line as the summary, and how long it took and whether it
-failed as the body. It needs `notifications = true` and a shell that marks
-where commands start and end (`OSC 133 ; C` and `OSC 133 ; D ; status`; see
-[Shell integration](#shell-integration)). fish 4 does by itself, and also
-sends the command line. With other shells, jotty reads the command line
-from the screen, after the end of the prompt (`OSC 133 ; B`).
-
-Like the other marks, these don't pass through multiplexers: inside zellij
-or tmux, jotty can't tell when a command finishes.
-
-### Single instance
-
-With `single_instance = true`, or when started with `--single-instance`,
-jotty opens its window in the jotty that is already running instead of
-starting another process, as `kitty --single-instance` does:
-
-1. The first jotty finds none running. It opens its window and listens on
-   a socket in `$XDG_RUNTIME_DIR`
-   (`jotty-<wayland display>-<config>.sock`).
-2. Each later jotty connects to that socket and sends its current
-   directory, its environment and its `-e` command. The running jotty opens
-   the window, and the later one exits at once, with status 0. If the
-   window can't be opened (no such program, say), it prints the error and
-   exits with status 1.
-3. The running jotty exits when its last window closes, with the exit status
-   of the program in that window. The next jotty becomes the new one.
-
-New windows open faster this way, as fonts and the Wayland connection are
-already loaded, and all windows share one process's memory.
-
-The window gets the directory and environment of the command that asked for
-it, so a jotty started from a `nix develop` shell runs its shell in that
-environment, and the launcher's activation token gives it focus. The config
-is the running jotty's: each config file (`--config`, or none for the
-default one) and each Wayland display has its own instance, so `jotty -c
-other.toml --single-instance` doesn't join the default one. A jotty of
-another version doesn't join either, and opens a window of its own.
-
-All windows of an instance go down together if it crashes. See
-[known issues](known-issues.md#wayland-integration).
+`blur = true` blurs what is behind the window, which keeps text readable
+over a busy wallpaper. It works on compositors that support it (the
+`ext-background-effect-v1` protocol); elsewhere it does nothing.
 
 ### Renderer
 
-`renderer = "cpu"` (the default) draws into shared-memory buffers on the
-CPU, as foot does. No GPU driver is loaded, so jotty uses about 20 MiB. It
-repaints only the rows that changed and tells the compositor which ones, so
-typing and most output cost little. Output that scrolls the whole screen
-repaints all of it, so on a large high-DPI window, constant fast scrolling
-uses more CPU than the GPU renderer.
+`renderer = "cpu"` (the default) draws in software and uses little memory,
+about 30 MiB. `renderer = "gpu"` draws with OpenGL, which is cheaper when
+a large window redraws all the time, but the graphics driver it loads
+brings jotty to 130 MiB or more. jotty falls back to the CPU when OpenGL
+isn't available.
 
-`renderer = "gpu"` draws with OpenGL ES 3 through EGL: each frame is one
-draw call, whatever the window size. Loading OpenGL loads the GPU driver
-into the process, which costs about 100 MiB of memory with the NVIDIA
-driver, plus as much again for Mesa if both are installed (EGL loads every
-installed driver before picking one).
+### Other window options
 
-If the GPU renderer can't start (no EGL or OpenGL ES 3), jotty logs a
-warning and uses the CPU renderer.
-
-To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
-`__EGL_VENDOR_LIBRARY_FILENAMES=/run/opengl-driver/share/glvnd/egl_vendor.d/10_nvidia.json`
-(NixOS path).
+- `notifications`, `command_notify_after`: desktop notifications from
+  programs and for long commands. See [Notifications](usage.md#notifications).
+- `single_instance`: open new windows in the jotty already running. See
+  [Single instance](usage.md#single-instance).
+- `bell_urgent`: mark the window urgent when a program rings the bell while
+  you're elsewhere.
+- `copy_notice`: say "Copied 3 lines" in the corner after copying.
+- `hide_pointer_while_typing`: hide the mouse pointer until it moves.
 
 ## `[terminal]`
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `shell` | string | unset | Program to run. Unset means `$SHELL`, then `/bin/sh`. `-e` overrides it. |
-| `term` | string | `"auto"` | `$TERM` for the child. `"auto"` means `jotty` when its terminfo entry is installed, otherwise `xterm-256color`. |
-| `scrollback` | integer | `10000` | Lines kept in history. `0` disables scrollback. |
-| `bold_is_bright` | bool | `true` | Bold text in colors 0–7 uses colors 8–15. |
-| `cursor_shape` | string | `"block"` | `"block"`, `"beam"` or `"underline"`. Programs can set their own with `CSI Ps SP q` (DECSCUSR); `CSI 0 SP q` and a reset bring this one back. |
-| `cursor_blink` | bool | `false` | Blink the cursor (on and off every 500 ms) while the window is focused, unless a program sets a style; typing shows it at once. |
-| `output_click` | string | `"select"` | What a Ctrl+double click on a command's output does: `"select"` it, `"copy"` it to the clipboard as well, or `"open"` it in `editor` (see [Mouse](#mouse)). |
-| `editor` | list of strings | `[]` | The editor that opens command output, in a new window in the current directory, with a temporary file holding the output as its last argument. It must not exit before you are done (see below). Empty, or an empty program name, means `$VISUAL`, then `$EDITOR` (split at spaces), then `less`. |
-| `osc52` | bool | `true` | Let programs write the clipboard and the primary selection (see [Clipboard from programs](#clipboard-from-programs-osc-52)). Off, what they send is dropped. |
+```toml
+[terminal]
+shell = "/usr/bin/fish"     # default: $SHELL
+scrollback = 50000          # lines of history
+cursor_shape = "beam"       # "block", "beam" or "underline"
+cursor_blink = true
+```
 
-**The editor.** jotty runs `editor` itself in a new window, so it should be
-a program that runs in a terminal (`nvim`, `hx`, `less`); a graphical
-editor would leave that window empty. The editor must keep running until
-you are done with the file: the file is removed when its window closes,
-and that window closes when the editor exits, so an editor that hands the
-file to a process already running and exits at once (`code` or `subl`
-without `--wait`) finds it gone. The output is written as plain text
-(no colors) to a file in `$XDG_RUNTIME_DIR` that only you can read, and the
-file is removed when the window closes. `$VISUAL` and `$EDITOR` are read
-from jotty's own environment: started from a desktop launcher, jotty
-doesn't see variables your shell's startup files export, so set `editor`
-in that case:
+Programs such as Neovim can change the cursor shape while they run.
+
+**The editor.** `open_last_output` and `output_click = "open"` show a
+command's output in an editor, in a new window. jotty uses `editor`, or
+else `$VISUAL`, `$EDITOR`, then `less`. Pick an editor that runs in a
+terminal and stays open until you close it:
 
 ```toml
 [terminal]
 editor = ["nvim", "-R"]
 ```
 
+Set it in the config if you start jotty from an app launcher, which doesn't
+see the variables your shell sets.
+
 ### `TERM` and terminfo
 
-jotty ships a terminfo entry, [`extra/jotty.terminfo`](../extra/jotty.terminfo):
-`xterm-256color` plus styled and colored underlines (`Smulx`, `Setulc`,
-`Su`), `Tc`, and cursor shape and color. With it, programs know what jotty
-supports without having to ask at startup. That matters behind anything
-that relays the terminal: `devenv shell`, for example, swallows the
-attribute probe Neovim uses, so Neovim falls back to plain underlines for
-diagnostics unless `TERM=jotty`.
+jotty sets `TERM=jotty` when its terminfo entry is installed (the packages
+install it), and `xterm-256color` otherwise. The entry tells programs about
+features such as curly and colored underlines.
 
-With `term = "auto"` (the default), jotty looks for the compiled entry next
-to its executable (`<prefix>/share/terminfo`, where the Nix package and the
-dev shell put it), then in `$TERMINFO`, `~/.terminfo`, `$TERMINFO_DIRS` and
-the system directories. If it finds one, the child gets `TERM=jotty` and
-`TERMINFO` pointing at that directory; otherwise `TERM=xterm-256color`.
-
-To install the entry by hand (for example for a `cargo build` outside the
-dev shell):
-
-```sh
-tic -x -o ~/.terminfo extra/jotty.terminfo
-```
-
-**SSH.** Remote hosts don't know `jotty`. Copy the entry over once:
+Hosts you `ssh` into don't know `jotty`. Copy the entry to a host once:
 
 ```sh
 infocmp -x jotty | ssh host -- tic -x -
 ```
 
-or set `term = "xterm-256color"`, which works everywhere but makes programs
-fall back to probing (or plain underlines).
-
-The child also gets `COLORTERM=truecolor`, `TERM_PROGRAM=jotty` and
-`TERM_PROGRAM_VERSION`.
+or set `term = "xterm-256color"`, which works everywhere.
 
 ### Clipboard from programs (OSC 52)
 
-Programs can put text on the clipboard with `OSC 52 ; c ; <base64 text> ST`
-(`p` or `s` instead of `c` for the primary selection, `pc` for both). The
-sequence travels through SSH and multiplexers, so Neovim (`"+y`), tmux
-(`set-clipboard on`) and zellij (when `copy_command` isn't set) copy to the
-desktop's clipboard even on a remote host:
-
-```sh
-printf '\e]52;c;%s\a' "$(printf hello | base64 -w0)"
-```
-
-Reading the clipboard this way (`OSC 52 ; c ; ?`) is refused, since any
-program, or a file shown with `cat`, could read it, a password included.
-The terminfo entry advertises the capability as `Ms`.
-
-Writing is on by default, as programs rely on it, but it also lets a file
-shown with `cat` replace what you copied. `osc52 = false` drops these
-writes; the terminfo entry still advertises `Ms`.
+Programs can copy to your clipboard with the OSC 52 escape sequence, even
+over SSH or inside tmux and zellij: Neovim's `"+y`, for example. Programs
+can't read the clipboard this way. Set `osc52 = false` to refuse copies
+from programs as well.
 
 ## `[colors]`
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `foreground` | `"#rrggbb"` | `"#dcdcdc"` | Default text color. |
-| `background` | `"#rrggbb"` | `"#181818"` | Default background color. |
-| `cursor` | `"#rrggbb"` | the foreground | Cursor color. Programs can change it at runtime (see below). |
-| `cursor_text` | `"#rrggbb"` | the cell's background | Color of the character under a block cursor. |
-| `selection_foreground` | `"#rrggbb"` | inverse | Text color of selected cells. Unset means the cell's background color. |
-| `selection_background` | `"#rrggbb"` | inverse | Background of selected cells. Unset means the cell's text color. |
-| `mark_foreground` | `"#rrggbb"` | the background | Text color of files marked for dragging. |
-| `mark_background` | `"#rrggbb"` | palette blue | Background of files marked for dragging. |
-| `palette` | list of `"#rrggbb"` | built-in | The 16 ANSI colors in order: black, red, green, yellow, blue, magenta, cyan, white, then the bright variants. A shorter list overrides only the first entries. |
-
-Programs can override colors while they run, and query them:
-
-| Sequence | Color | Reset with |
-| --- | --- | --- |
-| OSC 4 ; *n* ; *color* | palette entry *n* (0–255) | OSC 104 (all, or listed entries) |
-| OSC 10 ; *color* | default foreground | OSC 110 |
-| OSC 11 ; *color* | default background (also the padding) | OSC 111 |
-| OSC 12 ; *color* | cursor | OSC 112 |
-
-*color* is `#rrggbb`, `#rgb` or `rgb:rr/gg/bb`; `?` instead queries the
-current value, as Neovim does with OSC 11 to pick `background=dark` or
-`light`. For example, `printf '\e]12;#ff8800\a'` sets the cursor color,
-as Neovim and some shell vi modes do to show the current mode. A full
-reset (`reset`, `tput reset`) restores the configured colors.
-
-To match foot's `cursor=<text> <cursor>`, set both colors:
-
-```toml
-[colors]
-cursor = "#ebdbb2"       # foot's second value
-cursor_text = "#282828"  # foot's first value
-```
-
-Colors 16–255 are the standard xterm 6×6×6 cube and 24-step grayscale ramp.
-
-Example with the Solarized Dark palette:
 
 ```toml
 [colors]
 foreground = "#839496"
 background = "#002b36"
+cursor = "#93a1a1"
+# The 16 ANSI colors: black, red, green, yellow, blue, magenta, cyan,
+# white, then their bright variants.
 palette = [
     "#073642", "#dc322f", "#859900", "#b58900",
     "#268bd2", "#d33682", "#2aa198", "#eee8d5",
@@ -417,240 +181,47 @@ palette = [
 ]
 ```
 
+Unset colors have sensible defaults: the cursor takes the text color, and
+selected text has its colors swapped. Programs may change colors while they
+run; `reset` brings yours back.
+
 ## `[keybinds]`
 
 Each action takes a list of key combos. Listing an action replaces its
-default combos; an empty list unbinds it, so those keys reach the program.
-Actions you don't list keep their defaults.
+defaults, and an empty list unbinds it so the keys reach the program. The
+[keybinds table](../README.md#keybinds) shows the defaults, and
+[`config.example.toml`](config.example.toml) every action.
 
-| Action | Default | Does |
-| --- | --- | --- |
-| `copy` | `ctrl+shift+c` | Copy the selection |
-| `copy_or_interrupt` | unbound | Copy and clear the selection if there is one; otherwise pass the key to the program |
-| `paste` | `ctrl+shift+v`, `shift+insert` | Paste the clipboard |
-| `scroll_line_up` / `scroll_line_down` | unbound | Scroll the history by a line |
-| `scroll_page_up` / `scroll_page_down` | `shift+page_up` / `shift+page_down` | Scroll the history by a screen |
-| `scroll_to_top` / `scroll_to_bottom` | `shift+home` / `shift+end` | Jump to the top or bottom of the history |
-| `scroll_to_prev_prompt` / `scroll_to_next_prompt` | `ctrl+shift+page_up` / `ctrl+shift+page_down` | Scroll to the previous or next shell prompt (needs [shell integration](#shell-integration)); past the first one, to the top of the history, and past the last one, back to the bottom |
-| `font_larger` | `ctrl+plus`, `ctrl+equal`, `ctrl+kp_add`, `ctrl+wheel_up` | Increase the font size by `font.size_step` |
-| `font_smaller` | `ctrl+minus`, `ctrl+kp_subtract`, `ctrl+wheel_down` | Decrease it |
-| `font_reset` | `ctrl+0`, `ctrl+kp_0` | Back to `font.size` |
-| `search` | `ctrl+shift+f` | Search the scrollback (see [Searching](#searching)) |
-| `reload_config` | `ctrl+shift+r` | Read the config file again |
-| `vi_mode` | `ctrl+shift+space` | Turn vi mode on or off (see [Vi mode](#vi-mode)) |
-| `new_window` | `ctrl+shift+n` | Open another window in the current directory of the shell (or whatever runs in the terminal) |
-| `copy_last_output` | unbound | Copy the output of the last command that finished (needs [shell integration](#shell-integration)) |
-| `open_last_output` | unbound | Open the output of the last command that finished in [`terminal.editor`](#terminal), in a new window |
-| `hints` | `ctrl+shift+e` | Label links, paths, hashes and addresses on the screen, to copy, open or insert one with the keyboard (see [`[hints]`](#hints)) |
-
-A combo is modifiers and a key joined by `+`:
-
-- Modifiers: `ctrl`, `alt`, `shift`, `super` (also `control`, `meta`,
-  `logo`, `mod1`, `mod4`). They must match exactly; Caps Lock and Num Lock
-  are ignored.
-- Key: a single character (`c`, `0`, `ä`) or an xkb keysym name, matched
-  case-insensitively (`page_up`, `insert`, `F5`, `plus`, `kp_add`,
-  `return`). `ctrl++` binds the plus key.
-- Or a direction of the mouse wheel: `wheel_up`, `wheel_down`,
-  `wheel_left`, `wheel_right`. The action runs once per notch (touchpads:
-  once per line's worth of scrolling). A bound wheel combo takes
-  precedence over scrolling and over programs that read the mouse; with
-  other modifiers, or none, the wheel scrolls or goes to the program as
-  usual.
-- A combo matches the key's symbol without modifiers (`ctrl+shift+equal`)
-  or the symbol it produces with them, minus the Shift that produced it
-  (`ctrl+plus` on layouts where `+` is Shift+`=`). Letters are
-  case-insensitive, and `ctrl+c` never matches Ctrl+Shift+C.
-
-Example: copy and paste with Ctrl+Insert / Shift+Insert, free
-Ctrl+Shift+V for the program, scroll by line with Shift+Up/Down, and by a
-screen with Shift and the wheel:
+A combo is modifiers (`ctrl`, `alt`, `shift`, `super`) and a key joined by
+`+`: a character (`c`, `0`), a key name (`page_up`, `insert`, `return`,
+`F5`, `plus`) or a wheel direction (`wheel_up`, `wheel_down`).
 
 ```toml
 [keybinds]
+# Ctrl+C copies when text is selected, and interrupts the program otherwise.
+copy_or_interrupt = ["ctrl+c"]
+# Copy and paste with Ctrl+Insert / Shift+Insert, and leave Ctrl+Shift+V
+# to programs.
 copy = ["ctrl+insert"]
 paste = ["shift+insert"]
+# Scroll by a line with Shift+Up/Down, by a page with Shift and the wheel.
 scroll_line_up = ["shift+up"]
 scroll_line_down = ["shift+down"]
 scroll_page_up = ["shift+page_up", "shift+wheel_up"]
 scroll_page_down = ["shift+page_down", "shift+wheel_down"]
-```
-
-**A new window in the same directory.** `new_window` opens another window,
-in the same jotty process, where you are: in the current directory of the program running in the
-terminal, usually your shell after its last `cd`. It is bound to
-Ctrl+Shift+N; to use Shift+Enter instead (which then no longer reaches
-programs that use it, such as some chat CLIs and Neovim mappings):
-
-```toml
-[keybinds]
+# Open a new window in the same directory with Shift+Enter.
 new_window = ["shift+return"]
-```
-
-**The last command's output.** `copy_last_output` copies what the last
-command that finished printed, and `open_last_output` opens it in
-[`terminal.editor`](#terminal): the command before the prompt you are at,
-or, while a command runs, the one before it. A command that printed
-nothing has no output to take; the window then says `No command output`.
-Both need the shell to mark its prompts and commands (see
-[Shell integration](#shell-integration)), and don't see through
-multiplexers (zellij, tmux), which don't pass the marks on.
-
-```toml
-[keybinds]
+# Copy or open the last command's output (needs shell integration).
 copy_last_output = ["ctrl+shift+o"]
 open_last_output = ["ctrl+shift+u"]
 ```
 
-**Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C
-copies when text is selected, and interrupts the running program (sends
-`^C`) when nothing is. Copying clears the selection, so pressing Ctrl+C
-again interrupts:
-
-```toml
-[keybinds]
-copy_or_interrupt = ["ctrl+c"]
-```
-
-Unknown actions, modifiers or keys are reported with their line when the
-config is loaded. Middle-click paste isn't a key binding and can't be
-changed.
-
-### Searching
-
-The `search` binding (Ctrl+Shift+F) opens a search bar over the bottom row.
-Type to search the scrollback and the screen, from the bottom up; the
-match is selected and scrolled into view. The search ignores case unless
-the query has an uppercase letter, and finds text that wraps across rows.
-
-| Key | Does |
-| --- | --- |
-| Up, Ctrl+R | Previous (older) match |
-| Down, Ctrl+S | Next (newer) match |
-| Backspace | Delete the last character of the query |
-| Enter | Close the bar and keep the match selected (and as the primary selection) |
-| Escape | Close the bar and clear the selection |
-
-### Vi mode
-
-`vi_mode` (Ctrl+Shift+Space) puts a block cursor on the screen, at the
-terminal's cursor, to move around the screen and scrollback with vim keys,
-select text and yank it to the clipboard. A label in the top-right corner
-shows the mode (`VI`, `VISUAL`, `V-LINE`, `V-BLOCK`). Keys don't reach the
-program while vi mode is on; output keeps arriving, and the cursor stays on
-its text as it scrolls.
-
-| Keys | Do |
-| --- | --- |
-| `h` `j` `k` `l`, arrows | Move by a character or line; a count repeats (`5j`) |
-| `w` `b` `e`, `W` `B` `E` | Next word, previous word, end of word (`W`: words separated only by blanks) |
-| `0` `^` `$` | Start of the line, first non-blank, last non-blank |
-| `gg` `G` | Top of the scrollback, bottom of the screen |
-| `H` `M` `L` | Top, middle, bottom of the view |
-| Ctrl+U / Ctrl+D, Ctrl+B / Ctrl+F | Half a page, a page up or down |
-| `v` `V` Ctrl+V | Visual mode by character, line, or block; the same key again ends it |
-| `o` | In visual mode: go to the other end of the selection |
-| `y` | Yank the selection to the clipboard; `yy` (`3yy`) yanks lines |
-| `/` `?` | Search down or up from the cursor; Enter jumps to the match |
-| `n` `N` | Next match of the last search, in its direction or the other way (wrapping around) |
-| Escape | Leave visual mode, then vi mode (also `i`, `I`, `a`, `A`, `q`, Ctrl+C) |
-
-Key bindings still work in vi mode, so Ctrl+Shift+C copies the visual
-selection too.
-
-### Mouse
-
-**Double click** selects the word under the pointer. A word is a run of
-characters other than whitespace and `` "'`()[]{}<>|,; ``, so paths, URLs
-and options such as `--color=auto` are selected whole. Words continue
-across soft-wrapped lines. **Triple click** selects the whole line,
-including the rows a long line wraps onto.
-
-Keep the button down after a double or triple click and drag to extend the
-selection by whole words or whole lines. The clicked word or line always
-stays selected.
-
-**Shift+click to select a range.** Shift+click a character to mark it (it
-is highlighted), then Shift+click another one: everything from the first
-to the second is selected, in either direction, even across a long stretch
-of history. A plain click or Escape cancels the mark. Shift+dragging still
-selects as usual.
-
-**Selecting a command's output.** Ctrl+double-clicking anywhere in a
-command's output selects all of it, from the line after the command to the
-line before the next prompt, without trailing blank lines. Copy it as
-usual. This needs the shell to mark its prompts and commands (see
-[Shell integration](#shell-integration)); on prompts and command lines, a
-Ctrl+double click selects a word. Set
-[`terminal.output_click`](#terminal) to `"copy"` to also copy the output
-to the clipboard, or to `"open"` to open it in
-[`terminal.editor`](#terminal) in a new window.
-
-**Primary selection.** Selecting text also makes it the primary
-selection, and a middle click pastes the primary selection, as is usual on
-Linux. Compositors without `primary-selection-unstable-v1` get the
-clipboard instead. The selection stays while output arrives elsewhere,
-following its text as it scrolls into the history.
-
-**Links.** Hold Ctrl over a link to underline it, and Ctrl+click to open
-it with `url.launcher`. Links are hyperlinks that programs set (OSC 8, as
-`ls --hyperlink`, `gcc` and `delta` emit), URLs in the text, which may
-wrap across rows, and paths of image, video, audio and document files;
-see [`[url]`](#url) and [`[files]`](#files) to change launchers or add
-kinds. A link opens when the button is released, unless the pointer moved.
-
-**Dragging files out.** Ctrl+press on the name of a file or directory and
-drag it into another application (a file manager, a browser's upload, a
-chat) to give it that file, as a copy; its name follows the pointer. Any
-name in the output works, not just links: the whitespace-delimited word
-under the pointer, or the name in single quotes around it (as `ls` quotes
-names with spaces), with a trailing `ls -F` indicator (such as `/`, `*` or
-`@`) dropped if needed. A relative name is taken from the current directory
-of the program in the foreground, and the file must exist. A Ctrl+press
-elsewhere selects as usual.
-
-**Dragging several files.** Ctrl+right click a name to mark it (again to
-unmark it), or Ctrl+right drag over output to mark every existing file and
-directory named in it. Marks are drawn in `colors.mark_background` and keep
-the path they had when marked, even after a `cd`. Ctrl+drag starting on a
-marked name drags all of them; starting on another name drags just that
-one. If a marked file is gone by then, nothing is dragged. Escape clears
-the marks (and only then doesn't reach the program; not in vi mode), as
-does dropping them.
-
-**Dropping files in.** Drop files from another application (a file
-manager, a browser's download list) onto a window to type their paths at
-the cursor, as a paste, each followed by a space and quoted for the shell
-where needed: `'/home/me/Videos/My film (2024).mkv' `. Nothing runs until
-you press Enter. Dropped links are typed the same way, and dropped text as
-it is. Files dragged out of a window aren't taken back by that window.
-
-When a program enables mouse reporting (Neovim, htop, tmux, mc, ...),
-clicks, drags and the wheel go to it. Hold **Shift** to select text,
-scroll the history, paste with the middle button, or (with Ctrl) open
-links and drag files in jotty instead.
-
-Any other key goes to the program. Typing, pasting or committing input-method
-text scrolls back to the bottom.
-
 ## `[url]`
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `launcher` | list of strings | `["xdg-open"]` | Command that opens URLs, regex matches, and files whose kind has no launcher; the link is added as the last argument. |
-| `regex` | list of strings | `[]` | Regular expressions for more kinds of links, besides URLs. |
-
-URLs are recognized by their scheme (`https://`, `file://`, `ssh://`,
-`git://`, `mailto:`, ...). Trailing punctuation and unmatched closing
-brackets are not part of them, so `(see https://x.org/a).` opens
-`https://x.org/a`.
-
-`regex` patterns use [Rust regex syntax](https://docs.rs/regex) and are
-matched against the line under the pointer; the matched text goes to the
-launcher as is. If a pattern is invalid, jotty logs the error and uses only
-the built-in URL pattern. The launcher
-gets every kind of link, so for matches that aren't URLs, use a small
-script that turns them into one. For example, to open issue numbers:
+Ctrl+click opens links with `launcher` (`xdg-open` by default). `regex`
+turns more text into links, using [Rust regex syntax](https://docs.rs/regex);
+the launcher gets the matched text. For example, to open issue keys such as
+`JOT-123` in a tracker:
 
 ```toml
 [url]
@@ -660,47 +231,9 @@ regex = ['\bJOT-\d+\b']
 
 ## `[hints]`
 
-The `hints` binding (Ctrl+Shift+E) puts a short label (`a`, `s`, `ma`,
-...) over the start of every target on the screen. The newest output gets
-the shortest labels. Targets are:
-
-- links, as Ctrl+click finds them (see [Mouse](#mouse)): hyperlinks, URLs,
-  files of the [`[files]`](#files) kinds and [`url.regex`](#url) matches;
-- the text that `hints.regex` matches;
-- IPv4 addresses (with a `/24` prefix length or a `:8080` port) and IPv6
-  addresses;
-- Nix hashes, in the SRI form (`sha256-…=`, of the length its algorithm
-  gives: md5, sha1, sha256 or sha512) or in base 32 (52 characters);
-- paths that start with `/`, `~/`, `./` or `../` (`/nix/store/…`,
-  `~/.config`, `./build.sh`). Other relative paths, such as `src/app.rs`,
-  are only labeled as names of files that exist (below);
-- git commits and other hexadecimal hashes, 7 to 128 characters with both
-  letters and digits (`1af659b`, but not `deadbeef` or `1234567`);
-- names of files and directories that exist, as Ctrl+drag finds them.
-
-Where targets overlap, the first in this list wins. Type a label to
-highlight its target (it also becomes the primary selection); typing
-another label highlights that one instead. Then:
-
-| Key | Does |
-| --- | --- |
-| Ctrl+C | Copy the target and leave |
-| Ctrl+O | Open the target and leave: a link with its launcher, as Ctrl+click does, and any other target that names an existing file or directory with `url.launcher`. Anything else stays, with a notice |
-| Ctrl+I | Type the target at the cursor, as a paste, and leave |
-| Enter | Open the target as Ctrl+O does, or copy it when it can't be opened |
-| Backspace | Take back the last letter typed of a label |
-| Escape, Ctrl+Shift+E | Leave without doing anything |
-
-Whether a target names a file is checked when it is opened, in the
-current directory of the program in the foreground (usually the shell).
-Copying or inserting a link gives its target: the URL of a hyperlink, the
-absolute path of a file. No key reaches the program while the labels are
-up. Output keeps arriving: targets move with their text, and those whose
-text changes are dropped. Resizing the window takes the labels down.
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `regex` | list of strings | `[]` | Regular expressions for more text to label. Their matches can be copied and inserted, and opened when they name an existing file; to open them with `url.launcher` anyway, put them in `url.regex` instead. |
+[Hints](usage.md#hints) (Ctrl+Shift+E) label links, paths, hashes and
+addresses on the screen. `regex` labels more kinds of text, which you can
+then copy or insert:
 
 ```toml
 [hints]
@@ -709,96 +242,49 @@ regex = ['\b[A-Z]+-\d+\b']   # issue keys, such as JOT-123
 
 ## `[files]`
 
-Paths of files are links too, so Ctrl+clicking `cat.png` in `ls` output
-shows the image and `clip.mp4` plays the video. Files come in kinds, each
-a table `[files.<name>]` with its own extensions and launcher:
-
-| Key | Type | Description |
-| --- | --- | --- |
-| `extensions` | list of strings | File name extensions, matched case-insensitively. `[]` turns the kind off. |
-| `launcher` | list of strings | Command that opens these files, with the absolute path added as the last argument. Empty (the default) means `url.launcher`. |
-
-Four kinds are built in:
-
-- `audio`: mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, aiff, aif, ape,
-  alac, mka
-- `document`: pdf, epub, djvu, doc, docx, odt, rtf, xls, xlsx, ods, ppt,
-  pptx, odp
-- `image`: png, jpg, jpeg, gif, webp, avif, jxl, heic, heif, bmp, tif,
-  tiff, svg, ico
-- `video`: mp4, mkv, webm, mov, avi, m4v, wmv, flv, mpg, mpeg, ogv, 3gp
-
-A kind in the config changes only the keys it sets, so this keeps the
-default extensions and opens videos in mpv and PDFs and other documents in
-zathura, while URLs still go to `xdg-open`:
+Names of existing files in the output are links too: Ctrl+click
+`cat.png` in `ls` output to view the image. Files come in kinds, by
+extension: `image`, `video`, `audio` and `document` are built in. Each kind
+has a `launcher`; empty means `url.launcher`.
 
 ```toml
+# Play videos in mpv and open documents in zathura.
 [files.video]
 launcher = ["mpv"]
 
 [files.document]
 launcher = ["zathura"]
-```
 
-Text files such as CSV or HTML aren't built in, since they are usually
-opened in an editor. Add them, or any other kind, with new names:
-
-```toml
+# Add a kind of your own.
 [files.sheet]
 extensions = ["csv", "tsv"]
 launcher = ["libreoffice", "--calc"]
 ```
 
-A path can be absolute, start with `~/`, or be relative to the current
-directory of the program running in the terminal (usually the shell).
-Names that `ls` quotes because of spaces (`'my clip.mp4'`) work too. Only
-files that exist are links. When an extension is in several kinds, the
-kinds you add under new names win over the built-in ones, and otherwise
-the first kind in alphabetical order wins. So `[files.pdf]` with
-`extensions = ["pdf"]` takes PDFs from `document`. A built-in kind you
-change keeps its place: to move `pdf` from `document` to `image`, also
-remove it from `document`'s extensions.
+A built-in kind keeps its extensions unless you set them;
+`extensions = []` turns it off. A kind you add wins over the built-in ones
+for an extension they share.
 
 ## Shell integration
 
-Shells can mark where their prompt starts (`OSC 133 ; A`), where the prompt
-ends and the command line starts (`B`), and where the command's output
-starts (`C`), and when the command finished, with its exit status
-(`D ; status`). jotty uses these marks for four things: the text it reports
-to input methods, selecting a command's output with a Ctrl+double click,
-scrolling from prompt to prompt (Ctrl+Shift+PageUp/PageDown), and
-[notifying when a long command finishes](#long-commands).
+A few features need your shell to tell jotty where its prompt and each
+command's output are:
 
-Input methods ask the application for the text around the cursor, so they can
-correct or replace what was typed. A terminal doesn't really know which text
-is being edited, so jotty reports the cursor's row. If the shell marks the end
-of its prompt with the escape sequence `OSC 133 ; B`, jotty reports only what
-comes after the prompt, which is your command line.
+- scrolling from prompt to prompt (Ctrl+Shift+PageUp/PageDown),
+- selecting a command's whole output with Ctrl+double click,
+- copying or opening the last command's output,
+- a [notification](usage.md#notifications) when a long command finishes,
+- better input-method support on the command line.
 
-This is optional. Without it, the surrounding text also includes the prompt.
-That still works with most input methods, since they only look at the last
-few characters.
-
-To select a command's output, jotty needs `A`, to know where the output
-ends, and `C` (or `B`, if the command fits on one line) to know where it
-starts.
-
-To scroll from prompt to prompt, jotty needs `A` or `B`. With `A`, a prompt
-of several rows is shown from its first row; with only `B`, from the row of
-the command line.
-
-These marks only reach jotty from a shell that runs directly in it. Inside
-a multiplexer (zellij, tmux), jotty sees the multiplexer's screen, which
-doesn't pass them on.
-
-**bash** (`~/.bashrc`, after `PS1` is set):
+**fish** 4.0 and later does this by itself. For **bash**, add to
+`~/.bashrc`, after `PS1` is set:
 
 ```bash
 PS1='\[\e]133;D;$?\a\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
 PS0='\e]133;C\a'
 ```
 
-**zsh** (`~/.zshrc`, after the prompt is set up):
+For **zsh**, add to `~/.zshrc`, after the prompt is set up:
 
 ```zsh
 autoload -Uz add-zsh-hook
@@ -809,8 +295,7 @@ add-zsh-hook preexec _jotty_output_start
 PS1="$PS1"$'%{\e]133;B\a%}'
 ```
 
-**fish** emits all of these marks itself since version 4.0. For older
-versions, add this to `~/.config/fish/config.fish`:
+For **fish** before 4.0, add to `~/.config/fish/config.fish`:
 
 ```fish
 functions -c fish_prompt __jotty_fish_prompt
@@ -824,11 +309,5 @@ function __jotty_output_start --on-event fish_preexec
 end
 ```
 
-## Logging
-
-jotty logs to stderr through `env_logger`. The default level is `warn`.
-
-```sh
-RUST_LOG=info jotty          # fonts loaded, GL version, scale changes
-RUST_LOG=jotty=debug jotty   # also escape sequences jotty doesn't handle
-```
+These features don't work inside zellij or tmux, which don't pass the
+marks on to jotty.

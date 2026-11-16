@@ -29,11 +29,11 @@
 - **Hints:** Ctrl+Shift+E labels the links, paths, git and Nix hashes and
   IP addresses on the screen. Type a label, then copy, open or insert the
   text at the cursor, without the mouse.
-  See [Hints](docs/configuration.md#hints).
+  See [Hints](docs/usage.md#hints).
 - **Drag files out:** Ctrl+drag a file or directory named in the output,
   as `ls` prints it, into a file manager, a browser or a chat. Mark several
   with Ctrl+right click or drag to drag them together.
-  See [Dragging files out](docs/configuration.md#mouse).
+  See [Dragging files](docs/usage.md#dragging-files).
 - **Drop files in:** Drop files onto the window to type their paths at the
   cursor, quoted for the shell.
 - **Live config reload:** Saving the config file reloads every running
@@ -41,7 +41,7 @@
 - **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
 - **Single instance:** With `--single-instance`, new windows open in the
   jotty already running instead of starting another process.
-  See [Single instance](docs/configuration.md#single-instance).
+  See [Single instance](docs/usage.md#single-instance).
 
 ## Keybinds
 
@@ -58,7 +58,7 @@
 | Ctrl+Shift+F           | Search the scrollback                         |
 | Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |
 | Ctrl+Shift+N           | New window in the current directory           |
-| Ctrl+Shift+E           | Hints: label what's on the screen; type a label, then Ctrl+C copies, Ctrl+O opens, Ctrl+I inserts it (see [Hints](docs/configuration.md#hints)) |
+| Ctrl+Shift+E           | Hints: label what's on the screen; type a label, then Ctrl+C copies, Ctrl+O opens, Ctrl+I inserts it (see [Hints](docs/usage.md#hints)) |
 | Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
 | Ctrl+click             | Open a link, URL, or image, video, audio or document file (Ctrl+hover underlines it) |
 | Ctrl+drag              | Drag a file or directory named in the output (as `ls` prints it) into another application |
@@ -253,6 +253,7 @@ The documentation is also on the website,
 <https://justanoobcoder.github.io/jotty/>, with a searchable
 [config reference](https://justanoobcoder.github.io/jotty/config-reference/).
 
+- [Usage](docs/usage.md): selecting, links, dragging files, search, vi mode, hints
 - [Configuration](docs/configuration.md): options, colors, fonts, shell integration
 - [Architecture](docs/architecture.md): how the pieces fit together
 - [Development](docs/development.md): building, testing, debugging
