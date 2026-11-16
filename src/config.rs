@@ -321,6 +321,8 @@ pub struct TerminalConfig {
     /// The cursor's shape and blinking, unless a program sets them.
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
+    /// Let text that programs ask for blinks (SGR 5 and 6) blink.
+    pub text_blink: bool,
     /// What a Ctrl+double click on a command's output does.
     pub output_click: OutputClick,
     /// The editor that opens command output, and files at a line from
@@ -354,6 +356,7 @@ impl Default for TerminalConfig {
             bold_is_bright: true,
             cursor_shape: CursorShape::Block,
             cursor_blink: false,
+            text_blink: true,
             output_click: OutputClick::Select,
             editor: Vec::new(),
             osc52: true,

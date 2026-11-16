@@ -77,6 +77,9 @@ bold_is_bright = true
 # blinks. Programs can set their own (DECSCUSR) until they reset it.
 cursor_shape = "block"
 cursor_blink = false
+# Let text that programs ask for blinks (SGR 5 and 6) blink, while the
+# window is focused.
+text_blink = true
 # What Ctrl+double click on a command's output does: "select" it, "copy" it
 # to the clipboard as well, or "open" it in the editor (needs shell
 # integration marks).

@@ -250,7 +250,7 @@ pub struct Renderer {
     unloadable_images: HashSet<u64>,
     egl: Egl,
     pub glyphs: Glyphs,
-    layers: Layers,
+    pub(super) layers: Layers,
     pub theme: Theme,
     size: (u32, u32),
 }

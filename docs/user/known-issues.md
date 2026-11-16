@@ -79,8 +79,8 @@ nothing surprises you.
   out too; programs find synchronized output by asking (DECRQM, mode 2026).
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
-- Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027),
-  blinking text and DECCOLM. Unhandled sequences are ignored (logged at
+- Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027) and
+  DECCOLM. Unhandled sequences are ignored (logged at
   `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
   placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,

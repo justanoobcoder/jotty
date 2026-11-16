@@ -79,6 +79,15 @@ impl Renderer {
         }
     }
 
+    /// Whether the last frame showed blinking text.
+    #[must_use]
+    pub fn blinking_text(&self) -> bool {
+        match self {
+            Renderer::Gpu(r) => r.layers.blinking_text,
+            Renderer::Cpu(r) => r.layers.blinking_text,
+        }
+    }
+
     /// Draws and presents a frame (this commits the surface).
     pub fn draw(&mut self, frame: &Frame) -> Result<(), String> {
         match self {
@@ -146,10 +155,13 @@ pub struct Layers {
     overlay: Batch,
     /// The finished frame, once built.
     pub batch: Batch,
+    /// The frame shows blinking text, which needs redrawing as it blinks.
+    pub blinking_text: bool,
 }
 
 impl Layers {
     fn clear(&mut self) {
+        self.blinking_text = false;
         for batch in [
             &mut self.back,
             &mut self.front,
@@ -587,6 +599,8 @@ pub struct Frame<'frame> {
     pub hints: Option<&'frame Hints>,
     /// A blinking cursor is in its off phase.
     pub cursor_blinked_off: bool,
+    /// Blinking text (SGR 5 and 6) is in its off phase.
+    pub text_blinked_off: bool,
 }
 
 fn style_of(cell: &Cell) -> Style {
@@ -616,6 +630,7 @@ pub fn build(
         front,
         overlay,
         batch,
+        blinking_text,
     } = layers;
 
     let cursor_visible = screen.cursor_visible()
@@ -681,6 +696,17 @@ pub fn build(
             };
             let (fg, bg) = theme.cell_colors(&cell, highlight, is_cursor.then_some(cursor_color));
             let px = ox + x as f32 * cw;
+            // Blinking text that shows something; the cursor keeps its
+            // character.
+            let blinks = cell.flags.contains(Flags::BLINK)
+                && !cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION)
+                && cell.c != PLACEHOLDER
+                && (cell.c != ' '
+                    || extra.cluster != 0
+                    || cell.flags.underline() != Underline::None
+                    || cell.flags.contains(Flags::STRIKE));
+            *blinking_text |= blinks;
+            let blinked_off = blinks && frame.text_blinked_off && !is_cursor;
 
             // Whether the program chose this background, as opposed to the
             // default one showing through. This depends on how the cell was
@@ -698,6 +724,11 @@ pub fn build(
                     1.0
                 };
                 back.fill(px, py, cw * span, ch, bg, alpha);
+            }
+            // Off, blinking text leaves only its background: decorations in
+            // the background color would show over a translucent one.
+            if blinked_off {
+                continue;
             }
             let glyph = if cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION)
                 || cell.c == PLACEHOLDER
@@ -1052,6 +1083,41 @@ mod tests {
     }
 
     #[test]
+    fn blinking_text_hides_in_its_off_phase() {
+        let mut t = Terminal::new(10, 2, 0);
+        t.feed(b"a\x1b[5mb\x1b[4m \x1b[25mc\r\n\x1b[5m \x1b[m\x1b[?25l");
+        let theme = theme();
+        let mut layers = Layers::default();
+        let mut on = FakeGlyphs::default();
+        build(&frame(t.screen()), &theme, METRICS, &mut on, &mut layers);
+        let drawn: Vec<char> = on.0.iter().map(|g| g.0).collect();
+        assert_eq!(drawn, ['a', 'b', 'c']);
+        assert!(layers.blinking_text);
+        let mut f = frame(t.screen());
+        f.text_blinked_off = true;
+        let mut off = FakeGlyphs::default();
+        build(&f, &theme, METRICS, &mut off, &mut layers);
+        let drawn: Vec<char> = off.0.iter().map(|g| g.0).collect();
+        assert_eq!(drawn, ['a', 'c']);
+        // Of the three underlines, only the one that doesn't blink stays.
+        assert_eq!(on.1.len(), 3);
+        assert_eq!(off.1.len(), 1);
+        assert!(layers.blinking_text);
+
+        // A blinking blank shows nothing either way.
+        let mut t = Terminal::new(10, 1, 0);
+        t.feed(b"\x1b[5m \x1b[m\x1b[?25l");
+        build(
+            &frame(t.screen()),
+            &theme,
+            METRICS,
+            &mut FakeGlyphs::default(),
+            &mut layers,
+        );
+        assert!(!layers.blinking_text);
+    }
+
+    #[test]
     fn clusters_draw_once_in_their_first_cell() {
         let mut t = Terminal::new(10, 1, 0);
         t.feed("e\u{301}🇻🇳x".as_bytes());
@@ -1124,6 +1190,7 @@ mod tests {
             search: None,
             hints: None,
             cursor_blinked_off: false,
+            text_blinked_off: false,
         }
     }
 

@@ -43,7 +43,7 @@ pub struct Renderer {
     /// Band fingerprints of the last frame presented.
     presented: Vec<u64>,
     pub glyphs: Glyphs,
-    layers: Layers,
+    pub(super) layers: Layers,
     /// The atlas image, one coverage byte per pixel; allocated when the
     /// first glyph is drawn, and again when the atlas grows.
     atlas_pixels: Vec<u8>,
