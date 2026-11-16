@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    Cell, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS,
-    MouseMode, Notification, Row, Terminal, Underline,
+    Cell, ClipboardWrite, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLIPBOARD_BYTES,
+    MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -1752,6 +1752,173 @@ fn a_second_apc_string_cuts_the_first_short() {
     t.feed(b"\x1b_Gfirst\x1b_Gi=7,a=q,s=1,v=1,f=24;AAAA\x1b\\ok");
     assert_eq!(lines(&t), ["ok"]);
     assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
+}
+
+fn clipboard_write(text: &str, clipboard: bool, primary: bool) -> Option<ClipboardWrite> {
+    Some(ClipboardWrite {
+        clipboard: clipboard.then(|| text.to_owned()),
+        primary: primary.then(|| text.to_owned()),
+    })
+}
+
+#[test]
+fn osc_52_writes_to_each_selection_are_kept_apart() {
+    let mut t = term(10, 1);
+    // "one" to both, then "two" to the clipboard, then "three" to primary.
+    t.feed(b"\x1b]52;pc;b25l\x07\x1b]52;c;dHdv\x07\x1b]52;p;dGhyZWU=\x07");
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        Some(ClipboardWrite {
+            clipboard: Some("two".to_owned()),
+            primary: Some("three".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn osc_52_writes_the_clipboard() {
+    let mut t = term(10, 1);
+    // "xin chào", ended by BEL.
+    t.feed(b"a\x1b]52;c;eGluIGNow6Bv\x07b");
+    assert_eq!(lines(&t), ["ab"]);
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write("xin chào", true, false)
+    );
+    assert_eq!(t.screen_mut().take_clipboard_write(), None);
+    // Ended by ST, and split anywhere.
+    let mut t = term(10, 1);
+    for byte in b"a\x1b]52;c;aGk=\x1b\\b\x1b[1mc" {
+        t.feed(&[*byte]);
+    }
+    assert_eq!(lines(&t), ["abc"]);
+    assert!(cell(&t, 0, 2).flags.contains(Flags::BOLD));
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write("hi", true, false)
+    );
+}
+
+#[test]
+fn osc_52_targets_pick_the_selections() {
+    let cases: [(&[u8], bool, bool); 5] = [
+        (b"c", true, false),
+        (b"p", false, true),
+        (b"s", false, true),
+        (b"pc", true, true),
+        // Empty, or only targets Wayland lacks: the clipboard.
+        (b"", true, false),
+    ];
+    for (targets, clipboard, primary) in cases {
+        let mut t = term(10, 1);
+        t.feed(&[b"\x1b]52;", targets, b";aGk=\x07"].concat());
+        assert_eq!(
+            t.screen_mut().take_clipboard_write(),
+            clipboard_write("hi", clipboard, primary),
+            "targets {:?}",
+            String::from_utf8_lossy(targets)
+        );
+    }
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;q0;aGk=\x07");
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write("hi", true, false)
+    );
+}
+
+#[test]
+fn osc_52_queries_are_not_answered() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;?\x07ok");
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_clipboard_write(), None);
+    assert!(t.screen_mut().take_responses().is_empty());
+}
+
+#[test]
+fn bad_or_empty_osc_52_payloads_are_ignored() {
+    for input in [
+        &b"\x1b]52;c;!!!\x07"[..],
+        b"\x1b]52;c;\x07",
+        b"\x1b]52;c\x07",
+    ] {
+        let mut t = term(10, 1);
+        t.feed(input);
+        t.feed(b"ok");
+        assert_eq!(lines(&t), ["ok"]);
+        assert_eq!(t.screen_mut().take_clipboard_write(), None);
+    }
+}
+
+#[test]
+fn osc_52_takes_more_than_other_osc_strings() {
+    // Longer than the parser keeps of an OSC string.
+    let text = "x".repeat(100_000);
+    let encoded = "eHh4".repeat(100_000 / 3) + "eA==";
+    let mut t = term(10, 1);
+    t.feed(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write(&text, true, false)
+    );
+}
+
+#[test]
+fn an_overlong_osc_52_is_dropped() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;");
+    let chunk = vec![b'A'; 1 << 20];
+    for _ in 0..=MAX_CLIPBOARD_BYTES >> 20 {
+        t.feed(&chunk);
+    }
+    t.feed(b"\x07ok");
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_clipboard_write(), None);
+}
+
+#[test]
+fn other_osc_strings_still_reach_the_parser() {
+    let mut t = term(10, 1);
+    for byte in b"\x1b]5;x\x07\x1b]53;x\x07\x1b]2;title\x07ok" {
+        t.feed(&[*byte]);
+    }
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_title().as_deref(), Some("title"));
+    assert_eq!(t.screen_mut().take_clipboard_write(), None);
+}
+
+#[test]
+fn escapes_and_cancels_end_an_osc_52() {
+    // An escape sequence ends it, as it does any OSC string.
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;aGk=\x1b[1mx");
+    assert_eq!(lines(&t), ["x"]);
+    assert!(cell(&t, 0, 0).flags.contains(Flags::BOLD));
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write("hi", true, false)
+    );
+    // CAN and SUB cancel it.
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;aGk=\x18ok");
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_clipboard_write(), None);
+    // An APC string can follow at once.
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;aGk=\x1b_Gi=7,a=q,s=1,v=1,f=24;AAAA\x1b\\ok");
+    assert_eq!(lines(&t), ["ok"]);
+    assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
+}
+
+#[test]
+fn a_reset_keeps_a_pending_clipboard_write() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b]52;c;aGk=\x07\x1bc");
+    assert_eq!(
+        t.screen_mut().take_clipboard_write(),
+        clipboard_write("hi", true, false)
+    );
 }
 
 #[test]

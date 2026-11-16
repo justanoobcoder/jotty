@@ -102,7 +102,7 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{Flags, MouseMode, Notification, Terminal};
+use crate::terminal::{ClipboardWrite, Flags, MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
 use smithay_client_toolkit::seat::pointer::AxisScroll;
@@ -397,6 +397,12 @@ pub struct TermWindow {
     pty_closed: bool,
 
     focused: bool,
+    /// Whether the window has had keyboard focus yet.
+    ever_focused: bool,
+    /// A clipboard write (OSC 52) that came before the window first had
+    /// keyboard focus, done when it gets it: compositors only take a
+    /// selection with the serial of an input event the window received.
+    pending_clipboard_write: Option<ClipboardWrite>,
     pointer_pos: (f64, f64),
     scroll_accum: Accumulated,
     /// Button held down while reporting to the program, if any.
@@ -769,6 +775,8 @@ impl TermWindow {
             exit: false,
             pty_closed: false,
             focused: false,
+            ever_focused: false,
+            pending_clipboard_write: None,
             pointer_pos: (0.0, 0.0),
             scroll_accum: Accumulated::default(),
             held_buttons: Vec::new(),
@@ -1129,6 +1137,7 @@ impl TermWindow {
         let title = screen.take_title();
         let bell = screen.take_bell();
         let notifications = screen.take_notifications();
+        let clipboard_write = screen.take_clipboard_write();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {
             let written = self.pty.write_response(&responses);
@@ -1152,6 +1161,18 @@ impl TermWindow {
         }
         for notification in notifications {
             self.show_notification(shared, notification);
+        }
+        if let Some(write) = clipboard_write {
+            // Only a write from before the first focus waits for it; a
+            // later one landing on the next focus would replace whatever
+            // was copied elsewhere in the meantime.
+            if self.ever_focused {
+                self.write_clipboard(shared, write);
+            } else {
+                self.pending_clipboard_write
+                    .get_or_insert_default()
+                    .merge(write);
+            }
         }
         if dirty {
             if self.hovered_link.is_some() {
@@ -2273,18 +2294,34 @@ impl TermWindow {
         shared.copy_source = Some((source, text));
     }
 
+    /// Puts the text a program sent (OSC 52) on the clipboard or the
+    /// primary selection.
+    fn write_clipboard(&mut self, shared: &mut Shared, write: ClipboardWrite) {
+        if let Some(text) = write.clipboard {
+            self.copy_text(shared, text);
+        }
+        if let Some(text) = write.primary {
+            self.set_primary_text(shared, text);
+        }
+    }
+
     /// Offers the selection as the primary selection, which a middle click
     /// pastes (here or in other applications).
     fn set_primary(&mut self, shared: &mut Shared) {
         let Some(selection) = self.selection.filter(|s| !s.is_empty()) else {
             return;
         };
+        let text = selection.text(self.term.screen());
+        self.set_primary_text(shared, text);
+    }
+
+    /// Offers `text` as the primary selection.
+    fn set_primary_text(&mut self, shared: &mut Shared, text: String) {
         let (Some(manager), Some(device)) =
             (&shared.primary_selection_manager, &shared.primary_device)
         else {
             return;
         };
-        let text = selection.text(self.term.screen());
         if text.is_empty() {
             return;
         }
@@ -3453,7 +3490,11 @@ impl KeyboardHandler for App {
         shared.keyboard_focus = Some(window.id);
         shared.last_serial = serial;
         window.focused = true;
+        window.ever_focused = true;
         window.attention_requested = false;
+        if let Some(write) = window.pending_clipboard_write.take() {
+            window.write_clipboard(shared, write);
+        }
         if window.term.screen().modes.focus_events {
             window.send(b"\x1b[I");
         }

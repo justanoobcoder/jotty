@@ -81,8 +81,7 @@ nothing surprises you.
   out too; programs find synchronized output by asking (DECRQM, mode 2026).
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
-- Not implemented: `modifyOtherKeys`, OSC 52
-  clipboard access, grapheme cluster mode (2027),
+- Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027),
   blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
   (logged at `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
@@ -105,6 +104,15 @@ nothing surprises you.
   An image cut short by CAN or SUB is shown as far as it got, where xterm
   drops it. Cutting images into pieces counts toward the 4096 placements,
   past which the oldest pieces go.
+- **OSC 52** only writes the clipboard: queries (`?`) are never answered,
+  and an empty payload doesn't clear it. A payload over 16 MiB of base64 is
+  dropped. Only the clipboard (`c`) and the primary selection (`p`, `s`)
+  exist; targets naming neither (empty, `q`, cut buffers) mean the
+  clipboard. Compositors only take a selection with the serial of an input
+  event the window received: a write that comes before the window was
+  first focused waits for the focus (the last one for each selection, and
+  none if the window closes first); one that comes while it is unfocused
+  later is made with its last serial, which the compositor may refuse.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and
