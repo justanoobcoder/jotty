@@ -1,6 +1,7 @@
 //! The Wayland application: window, input, clipboard, input method and the
 //! event loop tying them to the terminal and the renderer.
 
+use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -2906,8 +2907,14 @@ impl TermWindow {
         match file.read(&mut buf) {
             Ok(0) => {
                 let text = match dropped {
-                    Some(Dropped { uri_list: true, .. }) => drop::uri_list_text(data),
-                    _ => String::from_utf8_lossy(data).into_owned(),
+                    Some(dropped) => {
+                        dropped.read.set(true);
+                        match dropped.uri_list {
+                            true => Cow::Owned(drop::uri_list_text(data)),
+                            false => String::from_utf8_lossy(data),
+                        }
+                    }
+                    None => String::from_utf8_lossy(data),
                 };
                 window.paste_text(&text);
                 PostAction::Remove
@@ -4572,17 +4579,26 @@ fn drop_mime(offered: &[String]) -> Option<&'static str> {
         .find(|m| offered.iter().any(|o| o == m))
 }
 
-/// A drop being read into a window. Dropping it tells the drag's source
-/// that the drop is done.
+/// A drop being read into a window. Dropping it ends the drop: finished
+/// for the drag's source once its data was read, cancelled otherwise.
 struct Dropped {
     offer: DragOffer,
     /// The data is a `text/uri-list`.
     uri_list: bool,
+    /// All of the data was read.
+    read: Cell<bool>,
 }
 
 impl Drop for Dropped {
     fn drop(&mut self) {
-        self.offer.finish();
+        // A drag that entered a window since then has had sctk destroy it.
+        if !self.offer.inner().is_alive() {
+            return;
+        }
+        if self.read.get() {
+            self.offer.finish();
+        }
+        self.offer.destroy();
     }
 }
 
@@ -4619,6 +4635,11 @@ impl DataDeviceHandler for App {
         let Some((offer, id, Some(mime))) = self.drag_offer() else {
             return;
         };
+        // Finishing a drop without an action is a protocol error. Before
+        // version 3 there are no actions, and nothing to finish.
+        if offer.inner().version() >= 3 && !offer.selected_action.contains(DndAction::Copy) {
+            return;
+        }
         let pipe = match offer.receive(mime.to_string()) {
             Ok(pipe) => pipe,
             Err(e) => return log::warn!("cannot read the drop: {e}"),
@@ -4626,6 +4647,7 @@ impl DataDeviceHandler for App {
         let dropped = Dropped {
             offer,
             uri_list: mime == URI_LIST_MIME,
+            read: Cell::new(false),
         };
         if let Some(window) = self.window_mut(id) {
             window.paste_from(pipe, Some(dropped));

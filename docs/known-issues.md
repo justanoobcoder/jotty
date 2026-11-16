@@ -253,11 +253,9 @@ nothing surprises you.
   file system, from the event loop (each once), as marking files does.
   The label alphabet can't be configured.
 - No `idle-inhibit`.
-- Dropped files are typed as paths, quoted for POSIX shells and fish. In
-  fish, a path with a backslash right before a `'` or another backslash,
-  or at its end, is read differently, as fish's single quotes take `\\`
-  and `\'` as escapes. A `file://` URI's host is ignored, and a path that
-  isn't UTF-8 has its invalid bytes replaced.
+- Dropped files are typed as paths, quoted for POSIX shells and fish. A
+  `file://` URI's host is ignored; in a path, bytes that aren't UTF-8 are
+  replaced, and control characters (a newline in a name) become `?`.
 - A dragged file is offered as a `file://` URI only, not through the
   document portal (`application/vnd.portal.filetransfer`). Sandboxed
   applications, such as Flatpaks, may not be able to read it when it lies
