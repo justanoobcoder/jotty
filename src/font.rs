@@ -375,18 +375,35 @@ impl Fonts {
                 data
             }
         };
-        // fontconfig puts the named instance of a variable font in the high
-        // 16 bits; only the face index matters here (the default instance
-        // is used).
-        let mut face = FontRef::try_from_slice_and_index(data, file.index & 0xffff)
+        // fontconfig puts the named instance of a variable font it picked
+        // (counted from 1; 0 for none) in the high 16 bits.
+        let face_index = file.index & 0xffff;
+        let mut face = FontRef::try_from_slice_and_index(data, face_index)
             .map_err(|_| FontError::Load(file.path.clone(), "invalid font"))?;
-        // Variable fonts default to an arbitrary instance (often the lightest).
-        let weight = if matches!(style, Style::Bold | Style::BoldItalic) {
-            700.0
-        } else {
-            400.0
-        };
-        face.set_variation(b"wght", weight);
+        let axes: Vec<Axis> = face
+            .variations()
+            .iter()
+            .map(|axis| Axis {
+                tag: axis.tag,
+                min: axis.min_value,
+                max: axis.max_value,
+            })
+            .collect();
+        if !axes.is_empty() {
+            let instance = match (file.index >> 16).checked_sub(1) {
+                Some(instance) => named_instance(data, face_index, instance).unwrap_or_else(|| {
+                    log::debug!(
+                        "no named instance {instance} in {}; using the default one",
+                        file.path.display()
+                    );
+                    Vec::new()
+                }),
+                None => Vec::new(),
+            };
+            for (tag, value) in variation_settings(&axes, &instance, style) {
+                face.set_variation(&tag, value);
+            }
+        }
         self.faces.push(face);
         let index = self.faces.len() - 1;
         self.loaded.insert((file, style), index);
@@ -1587,6 +1604,95 @@ fn map_new_file(file: &File, len: u64) -> io::Result<&'static [u8]> {
     Ok(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
 }
 
+/// A variation axis of a variable font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Axis {
+    tag: [u8; 4],
+    min: f32,
+    max: f32,
+}
+
+/// The axis coordinates of named instance `instance` (counted from 0) of
+/// face `index` in `data`, from its `fvar` table.
+fn named_instance(data: &[u8], index: u32, instance: u32) -> Option<Vec<([u8; 4], f32)>> {
+    let face = ttf_parser::RawFace::parse(data, index).ok()?;
+    instance_coordinates(face.table(ttf_parser::Tag::from_bytes(b"fvar"))?, instance)
+}
+
+/// The axis coordinates of named instance `instance` in an `fvar` table:
+/// a header, the axis records, then the instance records, each a subfamily
+/// name id, flags and a 16.16 fixed-point coordinate per axis.
+fn instance_coordinates(fvar: &[u8], instance: u32) -> Option<Vec<([u8; 4], f32)>> {
+    let u16_at = |at: usize| Some(u16::from_be_bytes(fvar.get(at..at + 2)?.try_into().ok()?));
+    let axes_offset = usize::from(u16_at(4)?);
+    let axis_count = usize::from(u16_at(8)?);
+    let axis_size = usize::from(u16_at(10)?);
+    let instance_count = u32::from(u16_at(12)?);
+    let instance_size = usize::from(u16_at(14)?);
+    if instance >= instance_count || axis_size < 20 || instance_size < 4 + 4 * axis_count {
+        return None;
+    }
+    let instances = axes_offset + axis_count * axis_size;
+    let record = instances + instance as usize * instance_size;
+    (0..axis_count)
+        .map(|i| {
+            let tag = fvar
+                .get(axes_offset + i * axis_size..)?
+                .get(..4)?
+                .try_into()
+                .ok()?;
+            let at = record + 4 + 4 * i;
+            let fixed = i32::from_be_bytes(fvar.get(at..at + 4)?.try_into().ok()?);
+            Some((tag, fixed as f32 / 65536.0))
+        })
+        .collect()
+}
+
+/// The variation coordinates to set for `style`: those of the named
+/// instance fontconfig picked, then the weight and slant `style` needs
+/// where the instance doesn't give them. Without an instance, a variable
+/// font starts at an arbitrary one, often the lightest.
+fn variation_settings(
+    axes: &[Axis],
+    instance: &[([u8; 4], f32)],
+    style: Style,
+) -> Vec<([u8; 4], f32)> {
+    let axis = |tag: &[u8; 4]| axes.iter().find(|a| &a.tag == tag);
+    let given = |tag: &[u8; 4]| instance.iter().find(|(t, _)| t == tag).map(|&(_, v)| v);
+    let mut settings: Vec<([u8; 4], f32)> = instance
+        .iter()
+        .filter(|(tag, _)| axis(tag).is_some())
+        .copied()
+        .collect();
+    let mut set = |tag: [u8; 4], value: f32| {
+        settings.retain(|(t, _)| *t != tag);
+        settings.push((tag, value));
+    };
+    let bold = matches!(style, Style::Bold | Style::BoldItalic);
+    let italic = matches!(style, Style::Italic | Style::BoldItalic);
+    if let Some(wght) = axis(b"wght") {
+        match given(b"wght") {
+            Some(w) if !bold || w >= 600.0 => {}
+            _ => {
+                let weight: f32 = if bold { 700.0 } else { 400.0 };
+                set(*b"wght", weight.clamp(wght.min, wght.max));
+            }
+        }
+    }
+    let slanted =
+        given(b"ital").is_some_and(|v| v > 0.0) || given(b"slnt").is_some_and(|v| v != 0.0);
+    if italic && !slanted {
+        // An italic axis, or else the most a slant axis leans (negative
+        // angles lean right).
+        if let Some(ital) = axis(b"ital") {
+            set(*b"ital", ital.max);
+        } else if let Some(slnt) = axis(b"slnt") {
+            set(*b"slnt", slnt.min);
+        }
+    }
+    settings
+}
+
 fn has_glyph(face: &FontRef, c: char) -> bool {
     face.glyph_id(c).0 != 0
 }
@@ -1609,6 +1715,96 @@ pub fn points_to_px(points: f32, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `fvar` table with `wght` (100–900) and `slnt` (-15–0) axes and
+    /// two instances: (400, 0) and (700, -15).
+    fn fvar() -> Vec<u8> {
+        let mut t: Vec<u8> = Vec::new();
+        for v in [1u16, 0, 16, 2, 2, 20, 2, 12] {
+            t.extend(v.to_be_bytes());
+        }
+        let fixed = |v: f32| ((v * 65536.0) as i32).to_be_bytes();
+        for (tag, min, def, max) in [(b"wght", 100.0, 400.0, 900.0), (b"slnt", -15.0, 0.0, 0.0)] {
+            t.extend(tag);
+            for v in [min, def, max] {
+                t.extend(fixed(v));
+            }
+            t.extend([0u8; 4]);
+        }
+        for (wght, slnt) in [(400.0, 0.0), (700.0, -15.0)] {
+            t.extend([0u8; 4]);
+            t.extend(fixed(wght));
+            t.extend(fixed(slnt));
+        }
+        t
+    }
+
+    #[test]
+    fn reads_named_instances() {
+        let fvar = fvar();
+        assert_eq!(
+            instance_coordinates(&fvar, 1),
+            Some(vec![(*b"wght", 700.0), (*b"slnt", -15.0)])
+        );
+        assert_eq!(
+            instance_coordinates(&fvar, 0),
+            Some(vec![(*b"wght", 400.0), (*b"slnt", 0.0)])
+        );
+        assert_eq!(instance_coordinates(&fvar, 2), None);
+        assert_eq!(instance_coordinates(&fvar[..40], 1), None);
+    }
+
+    const WGHT: Axis = Axis {
+        tag: *b"wght",
+        min: 100.0,
+        max: 900.0,
+    };
+    const SLNT: Axis = Axis {
+        tag: *b"slnt",
+        min: -15.0,
+        max: 0.0,
+    };
+    const ITAL: Axis = Axis {
+        tag: *b"ital",
+        min: 0.0,
+        max: 1.0,
+    };
+
+    #[test]
+    fn styles_set_weight_and_slant_the_instance_lacks() {
+        // Without an instance: the weight, and the slant for italics.
+        assert_eq!(
+            variation_settings(&[WGHT, SLNT], &[], Style::Regular),
+            [(*b"wght", 400.0)]
+        );
+        assert_eq!(
+            variation_settings(&[WGHT, SLNT], &[], Style::BoldItalic),
+            [(*b"wght", 700.0), (*b"slnt", -15.0)]
+        );
+        // An italic axis wins over slant.
+        assert_eq!(
+            variation_settings(&[SLNT, ITAL], &[], Style::Italic),
+            [(*b"ital", 1.0)]
+        );
+        // The instance fontconfig picked is kept when it fits the style.
+        let instance = [(*b"wght", 650.0), (*b"slnt", -10.0)];
+        assert_eq!(
+            variation_settings(&[WGHT, SLNT], &instance, Style::BoldItalic),
+            instance
+        );
+        // An upright instance for an italic, or a light one for a bold.
+        let regular = [(*b"wght", 400.0), (*b"slnt", 0.0)];
+        assert_eq!(
+            variation_settings(&[WGHT, SLNT], &regular, Style::BoldItalic),
+            [(*b"wght", 700.0), (*b"slnt", -15.0)]
+        );
+        // Static fonts and axes the font lacks are left alone.
+        assert_eq!(variation_settings(&[], &[], Style::BoldItalic), []);
+        assert_eq!(
+            variation_settings(&[WGHT], &[(*b"wdth", 75.0)], Style::Regular),
+            [(*b"wght", 400.0)]
+        );
+    }
 
     #[test]
     fn vs15_asks_for_the_text_form_in_a_cluster() {

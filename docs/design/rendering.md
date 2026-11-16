@@ -76,7 +76,11 @@ default and sequences (VS16, ZWJ, flags, skin tones, keycaps) are mapped to
 glyphs, and the font's ligature substitutions (GSUB lookup type 4) turn a
 sequence into one glyph. Its PNG (CBDT) or BGRA (sbix) bitmap is decoded,
 premultiplied, and scaled by area averaging to fit the cell slot. `ab_glyph` (built on `ttf-parser`) rasterizes TrueType, CFF
-and CFF2 outlines; for variable fonts, the `wght` axis is set to 400 or 700.
+and CFF2 outlines. For a variable font, the axis coordinates of the named
+instance fontconfig picked (the high 16 bits of its index, read from the
+`fvar` table, which `ttf-parser` doesn't expose) are set, as FreeType
+would; where the instance lacks the style's weight or slant, `wght` is set
+to 400 or 700 and `ital` to its maximum or else `slnt` to its minimum.
 Cell size comes from the primary face's advance width and line metrics.
 Font files are memory-mapped rather than read, so a large fallback font
 (Noto Sans CJK is over 30 MB) only takes memory for the parts in use.
