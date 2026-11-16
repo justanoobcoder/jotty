@@ -1408,6 +1408,7 @@ impl TermWindow {
                     })
                 }),
             search: search_bar.as_deref(),
+            hints: None,
             cursor_blinked_off: self.cursor_blinked_off(),
         };
         // The frame's subsurfaces are synced: what it commits shows with

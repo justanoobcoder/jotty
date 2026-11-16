@@ -18,6 +18,7 @@ use crate::color::Rgb;
 use crate::config::Config;
 use crate::file_marks::FileMarks;
 use crate::font::{self, CellMetrics, Fonts, Style};
+use crate::hints::Hints;
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
@@ -577,6 +578,8 @@ pub struct Frame<'frame> {
     pub label: Option<&'frame str>,
     /// The search bar's text, drawn over the bottom row while searching.
     pub search: Option<&'frame str>,
+    /// Hint labels, drawn over the start of their targets.
+    pub hints: Option<&'frame Hints>,
     /// A blinking cursor is in its off phase.
     pub cursor_blinked_off: bool,
 }
@@ -767,6 +770,9 @@ pub fn build(
         }
     }
 
+    if let Some(hints) = frame.hints {
+        draw_hints(overlay, hints, frame, theme, m, glyphs);
+    }
     if let Some(label) = frame.label {
         draw_label(overlay, label, frame, theme, m, glyphs);
     }
@@ -788,6 +794,39 @@ pub fn build(
     }
     for image in images {
         batch.image(image.rect, image.uv, image.uid);
+    }
+}
+
+/// Draws the labels of the hints over the first cells of their targets,
+/// without what was typed of them, in the background color on palette
+/// yellow. Labels are cut off at the end of the row.
+fn draw_hints(
+    batch: &mut Batch,
+    hints: &Hints,
+    frame: &Frame,
+    theme: &Theme,
+    m: CellMetrics,
+    glyphs: &mut impl GlyphCache,
+) {
+    let screen = frame.screen;
+    let offset = screen.display_offset() as isize;
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    for (hint, typed) in hints.visible() {
+        let start = hint.target.start;
+        let row = start.line + offset;
+        if !(0..screen.rows() as isize).contains(&row) {
+            continue;
+        }
+        let rest = &hint.label[typed..];
+        let width = rest.len().min(screen.cols().saturating_sub(start.col));
+        let px = frame.origin.0 as f32 + start.col as f32 * cw;
+        let py = frame.origin.1 as f32 + row as f32 * ch;
+        batch.rect(px, py, width as f32 * cw, ch, theme.indexed(3));
+        for (i, c) in rest.chars().take(width).enumerate() {
+            if let Some(glyph) = glyphs.glyph(c, Style::Bold, false) {
+                batch.glyph(px + i as f32 * cw, py, &glyph, theme.background);
+            }
+        }
     }
 }
 
@@ -1066,6 +1105,7 @@ mod tests {
             vi_cursor: None,
             label: None,
             search: None,
+            hints: None,
             cursor_blinked_off: false,
         }
     }
@@ -1439,6 +1479,28 @@ mod tests {
         assert_eq!(batch.quads(), 4);
         assert_eq!(quad_at(&batch, 0).1, theme().foreground.to_f32());
         assert_eq!(quad_at(&batch, 2).1, theme().background.to_f32());
+    }
+
+    #[test]
+    fn hint_labels_cover_the_start_of_their_targets() {
+        use crate::hints::{self, Patterns};
+        use crate::links::Detector;
+        let mut term = Terminal::new(20, 1, 0);
+        term.feed(b"\x1b[?25l  abc1234");
+        let detector = Detector::try_new(&[], &[]).unwrap();
+        let patterns = Patterns::try_new(&[]).unwrap();
+        let targets = hints::find(term.screen(), &detector, &patterns, |_| None, |_| false);
+        let hints = Hints::new(targets).unwrap();
+        let mut f = frame(term.screen());
+        f.hints = Some(&hints);
+        let t = theme();
+        let batch = build_batch(&f, &t, METRICS, &mut FakeGlyphs::default());
+        // Over the text: the label "a" in the background color on yellow.
+        let n = batch.quads();
+        let x = 2.0 * METRICS.width as f32;
+        assert_eq!(quad_at(&batch, n - 2).0, (x, 0.0));
+        assert_eq!(quad_at(&batch, n - 2).1, t.indexed(3).to_f32());
+        assert_eq!(quad_at(&batch, n - 1).1, t.background.to_f32());
     }
 
     #[test]
