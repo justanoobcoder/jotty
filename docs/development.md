@@ -240,11 +240,11 @@ connected.
 
 The website at <https://justanoobcoder.github.io/jotty/> is built with
 MkDocs (Material theme) from `site/`. It has no copies of the docs:
-`site/hooks.py` adds `docs/*.md` and `CHANGELOG.md` as pages, fills
-`<!-- readme: Section -->` markers with that section of the README,
-and generates the config reference from `docs/config.example.toml`. A
-comment block followed by a blank line there introduces its section;
-one right above a key describes that key.
+`site/hooks.py` adds `docs/user/`, `docs/design/`, this page and
+`CHANGELOG.md` as pages, and points links to other files at GitHub.
+
+When an option changes, update the table on its page in `docs/user/` as
+well as `docs/config.example.toml`.
 
 Preview it with live reload, at <http://127.0.0.1:8000/jotty/>:
 
@@ -261,7 +261,7 @@ exists there.
 
 ## Code layout and conventions
 
-See [architecture.md](architecture.md) for the module map. Some conventions:
+See the [architecture overview](design/overview.md) for the module map. Some conventions:
 
 - Keep Wayland and GL types out of the logic modules (`terminal`, `ime`,
   `input`, `selection`, `renderer::build`), so they stay unit-testable.

@@ -12,9 +12,9 @@ hide:
 
 <p class="jotty-tagline">An opinionated terminal emulator for Wayland</p>
 
-[Install](install.md){ .md-button .md-button--primary }
+[Install](user/installation.md){ .md-button .md-button--primary }
 [Features](features.md){ .md-button }
-[Configuration](configuration.md){ .md-button }
+[User guide](user/index.md){ .md-button }
 
 </div>
 
@@ -111,5 +111,5 @@ opacity = 0.9
 blur = true
 ```
 
-See [Install](install.md) for every way to install jotty, and the
-[config reference](config-reference.md) for every option.
+See [Installing](user/installation.md) for every way to install jotty,
+and the [user guide](user/index.md) for every option.

@@ -29,7 +29,7 @@ ttf-parser = "0.25"
 unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
-# Fork with `Perform::print_ascii`; see docs/architecture.md.
+# Fork with `Perform::print_ascii`; see docs/design/terminal.md.
 vte = { git = "https://github.com/justanoobcoder/vte", rev = "922c2e098c2dfabb38a07f2c3d4261f476b3e48a", default-features = false }
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
@@ -60,7 +60,7 @@ assets = [
     ["extra/jotty.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["README.md", "usr/share/doc/jotty/", "644"],
     ["THIRD-PARTY-LICENSES", "usr/share/doc/jotty/", "644"],
-    ["docs/*.md", "usr/share/doc/jotty/", "644"],
+    ["docs/user/*.md", "usr/share/doc/jotty/", "644"],
     ["docs/config.example.toml", "usr/share/doc/jotty/", "644"],
 ]
 
@@ -74,6 +74,6 @@ assets = [
     { source = "LICENSE", dest = "/usr/share/licenses/jotty/LICENSE", mode = "644", doc = true },
     { source = "THIRD-PARTY-LICENSES", dest = "/usr/share/licenses/jotty/THIRD-PARTY-LICENSES", mode = "644", doc = true },
     { source = "README.md", dest = "/usr/share/doc/jotty/README.md", mode = "644", doc = true },
-    { source = "docs/*.md", dest = "/usr/share/doc/jotty/", mode = "644", doc = true },
+    { source = "docs/user/*.md", dest = "/usr/share/doc/jotty/", mode = "644", doc = true },
     { source = "docs/config.example.toml", dest = "/usr/share/doc/jotty/config.example.toml", mode = "644", doc = true },
 ]

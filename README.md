@@ -20,244 +20,58 @@
 - **Input methods with surrounding text:** It implements
   `text-input-unstable-v3`, including surrounding text. Input methods such as
   fcitx5 or IBus can commit text, and delete text around the cursor.
-- **Support both CPU and GPU renderer:** By default it draws on the CPU into
-  shared memory, repainting only the rows that changed, in about 30+ MiB.
-  With `renderer = "gpu"` it draws with OpenGL ES 3 instead (one draw call
-  per frame), at the cost of the 130+ MiB a GPU driver takes.
-- **Vi mode:** Move over the screen and scrollback with vim keys, select
-  by character, line or block, yank, and search, all without the mouse.
+- **CPU or GPU renderer:** By default it draws on the CPU, repainting only
+  what changed, in about 30 MiB. With `renderer = "gpu"` it draws with
+  OpenGL ES 3 instead. See [Renderer](docs/user/appearance.md#renderer).
+- **Vi mode and search:** Move over the screen and scrollback with vim keys,
+  select, yank and search without the mouse.
+  See [Search and vi mode](docs/user/search-and-vi-mode.md).
 - **Hints:** Ctrl+Shift+E labels the links, paths, git and Nix hashes and
   IP addresses on the screen. Type a label, then copy, open or insert the
-  text at the cursor, without the mouse.
-  See [Hints](docs/usage.md#hints).
-- **Drag files out:** Ctrl+drag a file or directory named in the output,
-  as `ls` prints it, into a file manager, a browser or a chat. Mark several
-  with Ctrl+right click or drag to drag them together.
-  See [Dragging files](docs/usage.md#dragging-files).
-- **Drop files in:** Drop files onto the window to type their paths at the
-  cursor, quoted for the shell.
-- **Live config reload:** Saving the config file reloads every running
-  window, with no restart.
-- **Config TUI:** `jotty config` opens a TUI to change the jotty options with live reload.
+  text. See [Hints](docs/user/hints.md).
+- **Links and files:** Ctrl+click opens links, and images, videos and
+  documents named in the output. Ctrl+drag files out into other
+  applications, or drop files in to type their paths.
+  See [Links and files](docs/user/links-and-files.md).
+- **Shell integration:** Jump between prompts, and select, copy or open a
+  command's output. See [Shell integration](docs/user/shell-integration.md).
+- **Live config:** Saving the config file reloads every window, and
+  `jotty config` opens a TUI to try options live.
+  See [Configuration](docs/user/configuration.md).
 - **Single instance:** With `--single-instance`, new windows open in the
-  jotty already running instead of starting another process.
-  See [Single instance](docs/usage.md#single-instance).
-
-## Keybinds
-
-| Key / action           | Does                                         |
-| ---------------------- | -------------------------------------------- |
-| Ctrl+Shift+C           | Copy the selection to the clipboard           |
-| Ctrl+Shift+V, Shift+Insert | Paste the clipboard                       |
-| Middle click           | Paste the primary selection (the last selected text) |
-| Ctrl+double click      | Select a command's whole output, or copy or open it in your editor with [`terminal.output_click`](docs/configuration.md#terminal) (needs [shell integration](docs/configuration.md#shell-integration)) |
-| Shift+PageUp/PageDown  | Scroll the history by a page                  |
-| Shift+Home/End         | Jump to the top or bottom of the history      |
-| Ctrl+Shift+PageUp/PageDown | Scroll to the previous or next shell prompt (needs [shell integration](docs/configuration.md#shell-integration)) |
-| Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / default font size        |
-| Ctrl+Shift+F           | Search the scrollback                         |
-| Ctrl+Shift+Space       | Vi mode: move with hjkl/w/b/gg/G, select with v/V/Ctrl+V, yank with y, search with / ? n N |
-| Ctrl+Shift+N           | New window in the current directory           |
-| Ctrl+Shift+E           | Hints: label what's on the screen; type a label, then Ctrl+C copies, Ctrl+O opens, Ctrl+I inserts it (see [Hints](docs/usage.md#hints)) |
-| Ctrl+Shift+R           | Reload the config (saving the file also reloads it) |
-| Ctrl+click             | Open a link, URL, or image, video, audio or document file (Ctrl+hover underlines it) |
-| Ctrl+drag              | Drag a file or directory named in the output (as `ls` prints it) into another application |
-| Ctrl+right click/drag  | Mark files and directories to drag together (Ctrl+drag one of them); Escape clears the marks |
-
-These are the defaults; key bindings can be changed in the
-[`[keybinds]`](docs/configuration.md#keybinds) section.
-
-For the best input-method experience, have your shell mark where its prompt
-ends (OSC 133). See [Shell integration](docs/configuration.md#shell-integration).
-
-## Tips
-
-- **Ctrl+C that copies.** Bind `copy_or_interrupt = ["ctrl+c"]` in
-  `[keybinds]`: Ctrl+C then copies when text is selected and interrupts the
-  program when nothing is. Copying clears the selection, so a second Ctrl+C
-  interrupts. See [Ctrl+C that copies](docs/configuration.md#keybinds).
-- **Select a range without dragging.** Shift+click a character to mark it,
-  then Shift+click another: everything between them is selected, even
-  across a long stretch of history. A plain click or Escape cancels the mark.
-- **Extend by words or lines.** Keep the button down after a double or
-  triple click and drag: the selection grows by whole words or lines.
+  jotty already running. See [Single instance](docs/user/single-instance.md).
 
 ## Install
 
-### Arch-based distributions
-
-jotty is on the AUR, for Arch and Arch-based distributions (Manjaro,
-EndeavourOS, CachyOS, ...), as two packages:
-
-| Package | What it is |
-| --- | --- |
-| [`jotty-bin`](https://aur.archlinux.org/packages/jotty-bin) | The release binaries, for x86_64 and aarch64 |
-| [`jotty-git`](https://aur.archlinux.org/packages/jotty-git) | Built from the latest commit on `main` |
-
-Install one with an AUR helper:
+jotty is on the AUR (`jotty-bin`, `jotty-git`), has a Nix flake with a
+binary cache and a home-manager module, and each
+[release](https://github.com/justanoobcoder/jotty/releases) has `.deb`,
+`.rpm` and tarball packages. See the
+[installation guide](docs/user/installation.md).
 
 ```sh
-paru -S jotty-bin    # or: yay -S jotty-bin
-```
-
-Or without one:
-
-```sh
-git clone https://aur.archlinux.org/jotty-bin.git
-cd jotty-bin
-makepkg -si
-```
-
-`jotty-bin` updates with each release. `jotty-git` follows `main`: to
-rebuild it when there are new commits, upgrade with `paru -Syu --devel`
-(or `yay -Syu --devel`).
-
-### NixOS
-
-Add the flake to your `inputs`:
-
-```nix
-jotty = {
-  url = "github:justanoobcoder/jotty";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-Then put its package in your packages:
-
-```nix
-{ inputs, pkgs, ... }: {
-  environment.systemPackages = [
-    inputs.jotty.packages.${pkgs.stdenv.hostPlatform.system}.default
-  ];
-}
-```
-
-To try it without installing: `nix run github:justanoobcoder/jotty/cachix`.
-
-#### Prebuilt binaries from Cachix
-
-To skip compiling jotty, add the Cachix cache to your NixOS configuration:
-
-```nix
-nix.settings = {
-  substituters = [ "https://justanoobcoder.cachix.org" ];
-  trusted-public-keys = [ "justanoobcoder.cachix.org-1:D2/vJZSn8o8Fpsxzbjc9tHo2/D1ejBUqc4r71UvDVyk=" ];
-};
-```
-
-and follow the `cachix` branch in `flake.nix`:
-
-```nix
-jotty = {
-  url = "github:justanoobcoder/jotty/cachix"; # drop inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-The `cachix` branch points at the newest commit of `main` whose build is
-already in the cache. Without `follows`, jotty is built against its own
-pinned nixpkgs, which is what the cache holds; another nixpkgs changes the
-build and it compiles locally.
-
-The first rebuild after adding the cache still compiles jotty locally,
-because the new substituter only takes effect once that configuration is
-active. Later rebuilds download it.
-
-#### home-manager
-
-The flake's home-manager module installs jotty and writes its config from
-Nix. `settings` takes the options of
-[docs/configuration.md](docs/configuration.md), and jotty reloads them on
-every `home-manager switch`:
-
-```nix
-{ inputs, ... }: {
-  imports = [ inputs.jotty.homeManagerModules.default ];
-
-  programs.jotty = {
-    enable = true;
-    settings = {
-      font = {
-        family = "JetBrains Mono";
-        size = 12.0;
-      };
-      window.opacity = 0.9;
-      keybinds.copy_or_interrupt = [ "ctrl+c" ];
-    };
-  };
-}
-```
-
-Set `programs.jotty.package = null` to manage only the config of a jotty
-installed some other way.
-
-To try settings without a `home-manager switch` each time, run
-`jotty config`. Its changes go to `~/.local/state/jotty/overrides.toml`,
-which takes precedence over the config from Nix. Once you are happy, paste
-the output of `jotty config export --nix` into `settings` and run
-`jotty config reset`. See [overrides](docs/configuration.md#overrides-and-jotty-config).
-
-### Other distributions
-
-Each [release](https://github.com/justanoobcoder/jotty/releases) has
-packages for x86_64 and aarch64:
-
-| Distribution | Package | Install with |
-| --- | --- | --- |
-| Debian, Ubuntu, Mint, Pop!_OS | `jotty_*.deb` | `sudo apt install ./jotty_*.deb` |
-| Fedora, openSUSE, RHEL-likes | `jotty-*.rpm` | `sudo dnf install ./jotty-*.rpm` |
-| Other (glibc 2.35+) | `jotty-*-linux.tar.gz` | unpack anywhere and run `bin/jotty` |
-
-`SHA256SUMS` lists their checksums. The packages install the terminfo
-entry, a desktop entry and the icon, so app launchers list jotty.
-
-### Build from source
-
-Building needs Rust 1.88+, and the development files for wayland,
-libxkbcommon, libEGL/libglvnd and fontconfig:
-
-```sh
-cargo build --release
-./target/release/jotty
+paru -S jotty-bin                              # Arch
+nix run github:justanoobcoder/jotty/cachix     # try it with Nix
 ```
 
 ## Configuration
 
-jotty reads `$XDG_CONFIG_HOME/jotty/config.toml` (by default
-`~/.config/jotty/config.toml`), or the file given with `--config PATH`.
-Every option has a default, so the file is optional and only needs what you
-change. Saving it reloads every running window.
-
-[`docs/config.example.toml`](docs/config.example.toml) lists every option
-with its default value and a comment. Copy it to your config path and keep
-only the lines you change. The `.deb`, `.rpm` and Arch packages also
-install it as `/usr/share/doc/jotty/config.example.toml`.
-
-`jotty config` opens a TUI that lists every option with its current value
-and lets you change it live. It never touches your config file: its changes
-go to `~/.local/state/jotty/overrides.toml`, which takes precedence over it.
-
-| Command | Does |
-| --- | --- |
-| `jotty config` | Change options in the TUI |
-| `jotty config export` | Print the overrides as TOML (`--merged` merges them with the config file, `--nix` prints Nix) |
-| `jotty config reset` | Remove all overrides |
-
-See [docs/configuration.md](docs/configuration.md) for every option, and
-[overrides](docs/configuration.md#overrides-and-jotty-config) for how
-`jotty config` works.
+jotty reads `~/.config/jotty/config.toml`. Every option has a default, so
+the file only needs what you change, and saving it reloads every window.
+[`docs/config.example.toml`](docs/config.example.toml) lists every option,
+and the [configuration guide](docs/user/configuration.md) explains them.
+The [default keybinds](docs/user/keybinds.md#default-keybinds) are in the
+keybinds guide.
 
 ## Documentation
 
 The documentation is also on the website,
-<https://justanoobcoder.github.io/jotty/>, with a searchable
-[config reference](https://justanoobcoder.github.io/jotty/config-reference/).
+<https://justanoobcoder.github.io/jotty/>.
 
-- [Usage](docs/usage.md): selecting, links, dragging files, search, vi mode, hints
-- [Configuration](docs/configuration.md): options, colors, fonts, shell integration
-- [Architecture](docs/architecture.md): how the pieces fit together
+- [User guide](docs/user/index.md): installing, configuring and using jotty
+- [Known issues](docs/user/known-issues.md): limitations and missing features
+- [Design notes](docs/design/README.md): how jotty works, for people changing it
 - [Development](docs/development.md): building, testing, debugging
-- [Known issues](docs/known-issues.md): limitations and missing features
 - [Changelog](CHANGELOG.md): what changed in each release
 
 ## License

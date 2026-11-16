@@ -21,30 +21,6 @@
   box-shadow: var(--md-shadow-z2);
 }
 
-/* Config reference: filter box and option names. */
-#config-filter {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0 1rem;
-  font: inherit;
-  color: var(--md-typeset-color);
-  background: var(--md-code-bg-color);
-  border: 1px solid var(--md-default-fg-color--lightest);
-  border-radius: 4px;
-}
-#config-filter:focus {
-  outline: 2px solid var(--md-accent-fg-color);
-}
-.md-typeset table:not([class]) td:first-child {
-  white-space: nowrap;
-}
-.config-section td:nth-child(2) {
-  min-width: 8rem;
-}
-.config-hidden {
-  display: none !important;
-}
 video.jotty-shot {
   width: 100%;
 }

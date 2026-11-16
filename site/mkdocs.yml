@@ -9,23 +9,41 @@ copyright: MIT licensed
 
 docs_dir: content
 
-# hooks.py adds the pages that live elsewhere in the repository (docs/,
-# CHANGELOG.md, README sections) and generates the config reference.
+# hooks.py adds the pages that live elsewhere in the repository: docs/user/,
+# docs/design/, docs/development.md and CHANGELOG.md.
 hooks:
   - hooks.py
 
 nav:
   - Home: index.md
   - Features: features.md
-  - Install: install.md
-  - Usage: usage.md
-  - Configuration:
-      - Guide: configuration.md
-      - Reference: config-reference.md
-  - Known issues: known-issues.md
+  - User guide:
+      - user/index.md
+      - Installing: user/installation.md
+      - Configuration: user/configuration.md
+      - Appearance: user/appearance.md
+      - Terminal: user/terminal.md
+      - Keybinds: user/keybinds.md
+      - Mouse and selection: user/mouse.md
+      - Links and files: user/links-and-files.md
+      - Hints: user/hints.md
+      - Search and vi mode: user/search-and-vi-mode.md
+      - Shell integration: user/shell-integration.md
+      - Notifications: user/notifications.md
+      - Single instance: user/single-instance.md
+      - Known issues: user/known-issues.md
   - Changelog: changelog.md
-  - Development:
-      - Architecture: architecture.md
+  - Design notes:
+      - design/README.md
+      - Architecture overview: design/overview.md
+      - Terminal and PTY: design/terminal.md
+      - Input: design/input.md
+      - Rendering: design/rendering.md
+      - Windows: design/windows.md
+      - Clipboard: design/clipboard.md
+      - Config and overrides: design/config.md
+      - Escape sequences: design/escape-sequences.md
+      - Links, files and hints: design/links-and-hints.md
       - Development: development.md
 
 theme:
@@ -57,6 +75,7 @@ theme:
     - content.action.edit
     - content.code.copy
     - navigation.footer
+    - navigation.indexes
     - navigation.sections
     - navigation.top
     - search.highlight
@@ -64,8 +83,6 @@ theme:
 
 extra_css:
   - stylesheets/extra.css
-extra_javascript:
-  - javascripts/config-ref.js
 
 markdown_extensions:
   - admonition

@@ -60,7 +60,7 @@ nothing surprises you.
   querying jotty (DECRQSS). That query doesn't survive relays such as
   `devenv shell` or tmux, so diagnostics fall back to plain underlines
   there. Install the entry (see
-  [configuration](configuration.md#term-and-terminfo)).
+  [configuration](terminal.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
 - The word delimiters for double-click selection can't be configured.
 - If a command's last line has no newline and the next prompt starts on
@@ -161,7 +161,7 @@ nothing surprises you.
 ## Input method (text-input-v3)
 
 - **Surrounding text is an approximation** (see
-  [architecture](architecture.md#input-method-imers-apprs)). It is the
+  [architecture](../design/input.md#input-method-imers-apprs)). It is the
   cursor's row, starting after the OSC 133 prompt marker if there is one.
   Multi-line commands only report their current row, and in full-screen
   programs (vim, tmux) it is whatever is on the cursor row.
