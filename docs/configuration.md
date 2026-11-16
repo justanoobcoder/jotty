@@ -494,7 +494,7 @@ through multiplexers (zellij, tmux), which don't pass the marks on.
 ```toml
 [keybinds]
 copy_last_output = ["ctrl+shift+o"]
-open_last_output = ["ctrl+shift+e"]
+open_last_output = ["ctrl+shift+u"]
 ```
 
 **Ctrl+C that copies.** Bind `copy_or_interrupt` to `ctrl+c` and Ctrl+C
