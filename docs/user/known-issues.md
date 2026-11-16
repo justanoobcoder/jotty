@@ -35,8 +35,9 @@ nothing surprises you.
 - Search compares one character per cell: the one a cell's cluster composes
   into, so `é` matches however it was written, or else the cluster's first.
   Marks that don't compose are ignored.
-- **Variable fonts** only get their `wght` axis set (400, or 700 for bold).
-  Other axes keep their defaults, and italic is not synthesized.
+- **Variable fonts** use the named instance fontconfig picks, with the
+  weight and slant of the style set when it lacks them; other axes (width,
+  optical size, ...) can't be configured.
 - **No synthetic bold or italic.** If the family has no bold or italic face,
   the regular face is used.
 
