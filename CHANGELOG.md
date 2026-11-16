@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+## 2.3.0
+
 - Add hints (Ctrl+Shift+E): label links, paths, hashes and IP addresses on
     the screen to copy, open or insert them
 - Ctrl+click opens audio files and documents, and opens links on release
