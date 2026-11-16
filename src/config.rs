@@ -15,6 +15,7 @@ use crate::color::Rgb;
 use crate::hints::{self, Patterns};
 use crate::keybinds::Keybinds;
 use crate::links::Detector;
+use crate::selection::DEFAULT_WORD_DELIMITERS;
 use crate::terminal::CursorShape;
 
 /// The config file. Every key is optional; missing keys keep their defaults.
@@ -327,6 +328,9 @@ pub struct TerminalConfig {
     pub editor: Vec<String>,
     /// Let programs write the clipboard and the primary selection (OSC 52).
     pub osc52: bool,
+    /// Characters that end a word for double-click selection, besides
+    /// whitespace.
+    pub word_delimiters: String,
 }
 
 /// What a Ctrl+double click on a command's output does with it.
@@ -352,6 +356,7 @@ impl Default for TerminalConfig {
             output_click: OutputClick::Select,
             editor: Vec::new(),
             osc52: true,
+            word_delimiters: DEFAULT_WORD_DELIMITERS.into(),
         }
     }
 }

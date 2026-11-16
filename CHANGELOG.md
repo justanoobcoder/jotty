@@ -6,6 +6,8 @@ CHANGELOG
 - Support reverse video (DECSCNM)
 - Hints label hex hashes in uppercase
 - Add `hints.alphabet`, the characters hint labels are made of
+- Add `terminal.word_delimiters`, the characters that end a word for
+    double-click selection
 
 ## 2.3.0
 

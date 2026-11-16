@@ -302,6 +302,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             Bool,
             "Let programs write the clipboard and the primary selection (OSC 52).",
         ),
+        (
+            "terminal",
+            "word_delimiters",
+            Str,
+            "Characters that end a word for double-click selection, besides whitespace.",
+        ),
         ("colors", "foreground", Color, "Default text color."),
         ("colors", "background", Color, "Default background color."),
         (

@@ -4263,7 +4263,11 @@ impl TermWindow {
                 let point = self.point_at(event.position);
                 if let Some(selection) = &mut self.selection {
                     let before = *selection;
-                    selection.extend(self.term.screen(), point);
+                    selection.extend(
+                        self.term.screen(),
+                        point,
+                        &self.config.terminal.word_delimiters,
+                    );
                     if *selection != before {
                         self.request_redraw();
                     }
@@ -4304,7 +4308,11 @@ impl TermWindow {
                 let point = self.point_at(event.position);
                 if let Some(selection) = &mut self.selection {
                     let before = *selection;
-                    selection.extend(self.term.screen(), point);
+                    selection.extend(
+                        self.term.screen(),
+                        point,
+                        &self.config.terminal.word_delimiters,
+                    );
                     if *selection != before {
                         self.request_redraw();
                     }
@@ -4407,7 +4415,7 @@ impl TermWindow {
                 let screen = self.term.screen();
                 let selection = match clicks {
                     2 if output.is_some() => output,
-                    2 => Selection::word(screen, point),
+                    2 => Selection::word(screen, point, &self.config.terminal.word_delimiters),
                     3 => Some(Selection::line(screen, point)),
                     _ => None,
                 };

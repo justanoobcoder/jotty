@@ -61,7 +61,6 @@ nothing surprises you.
   there. Install the entry (see
   [configuration](terminal.md#term-and-terminfo)).
 - `TERM=jotty` is unknown on remote hosts until the entry is copied there.
-- The word delimiters for double-click selection can't be configured.
 - If a command's last line has no newline and the next prompt starts on
   it, that line isn't part of the selected output. Output marks are kept
   per row, so they are lost when the shell redraws the screen without

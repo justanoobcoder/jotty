@@ -88,6 +88,8 @@ editor = []    # e.g. ["nvim", "-R"]
 # Let programs write the clipboard and the primary selection (OSC 52).
 # Reading them is always refused.
 osc52 = true
+# Characters that end a word for double-click selection, besides whitespace.
+word_delimiters = "\"'`()[]{}<>|,;"
 
 [colors]
 foreground = "#dcdcdc"
