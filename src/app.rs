@@ -1839,7 +1839,7 @@ impl TermWindow {
                 self.open_link(link);
             }
             (HintAction::Open, None) => {
-                self.show_notice("Not a link or an existing file".into());
+                self.show_notice("Can't open this".into());
             }
             (HintAction::Copy | HintAction::Default, _) => {
                 self.end_hints();
@@ -3993,7 +3993,10 @@ impl KeyboardHandler for App {
         window.restart_blink();
         window.update_blink();
         window.attention_requested = false;
-        if let Some(write) = window.pending_clipboard_write.take() {
+        // Not if a reload turned `terminal.osc52` off while it waited.
+        if let Some(write) = window.pending_clipboard_write.take()
+            && window.config.terminal.osc52
+        {
             window.write_clipboard(shared, write);
         }
         if window.term.screen().modes.focus_events {
