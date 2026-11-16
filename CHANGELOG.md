@@ -3,48 +3,25 @@ CHANGELOG
 
 ## Unreleased
 
-- The `hints` action (Ctrl+Shift+E) labels links, paths, git and Nix
-    hashes and IPv4 and IPv6 addresses on the screen; type a label, then
-    Ctrl+C copies, Ctrl+O opens and Ctrl+I inserts the text at the cursor.
-    `hints.regex` labels more kinds of text
-- Ctrl+click opens audio files and documents (PDF, EPUB, office files),
-    with the new built-in `files.audio` and `files.document` kinds
-- File kinds added in the config under new names win over the built-in
-    kinds for an extension they share
-- Ctrl+drag a file or directory named in the output (such as `ls` output)
-    to drop it into another application; its name follows the pointer
-- Windows share fontconfig's configuration instead of each loading its
-    own, which saves about 0.7 MiB per window
-- Dropping files onto a window types their paths at the cursor, quoted
-    for the shell; dropped text is pasted
-- Ctrl+right click or drag marks files and directories, and Ctrl+drag
-    from a mark drags all of them; `colors.mark_foreground` and
-    `colors.mark_background` set their colors
-- Ctrl+click opens a link when the button is released, not when pressed
-- `window.startup_mode` opens new windows maximized or fullscreen
-- Programs can write the clipboard and the primary selection with OSC 52,
-    also over SSH and through multiplexers; reading it is refused. The
-    terminfo entry advertises it (`Ms`); `terminal.osc52 = false` turns
-    writing off
-- When a command that ran for at least `window.command_notify_after`
-    seconds (10 by default) finishes while the window isn't focused, a
-    notification says so, with the command line, the time it took and
-    whether it failed (needs shell integration marks `OSC 133 ; C` and `D`)
-- `window.hide_pointer_while_typing` hides the mouse pointer while typing
-    over the window, until it moves (off by default)
-- `terminal.cursor_shape` and `terminal.cursor_blink` set the cursor's
-    default shape and blinking; programs' blinking styles (DECSCUSR 1, 3,
-    5) blink, and DECRQSS reports them
-- `terminal.output_click` makes a Ctrl+double click on a command's output
-    also copy it to the clipboard (`"copy"`) or open it in
-    `terminal.editor` in a new window (`"open"`); `terminal.editor`
-    defaults to `$VISUAL`, then `$EDITOR`, then `less`
-- Copying to the clipboard shows a short notice in the window's top right
-    corner (`Copied 3 lines`, or `Clipboard set by program` for OSC 52);
-    `window.copy_notice = false` turns it off
-- The `copy_last_output` and `open_last_output` actions (unbound by
-    default) copy the output of the last command that finished, or open it
-    in `terminal.editor`
+- Add hints (Ctrl+Shift+E): label links, paths, hashes and IP addresses on
+    the screen to copy, open or insert them
+- Ctrl+click opens audio files and documents, and opens links on release
+- File kinds from the config win over the built-in ones for an extension
+    they share
+- Ctrl+drag files named in the output to other applications; Ctrl+right
+    click marks several to drag at once
+- Dropping files onto a window types their paths, quoted for the shell
+- Programs can write the clipboard with OSC 52 (`terminal.osc52`)
+- Notify when a long command finishes in an unfocused window
+    (`window.command_notify_after`)
+- Show a notice when something is copied (`window.copy_notice`)
+- Copy or open a command's output in `terminal.editor`, with
+    `terminal.output_click` or the `copy_last_output` and
+    `open_last_output` actions
+- Add `window.startup_mode`, `window.hide_pointer_while_typing`,
+    `terminal.cursor_shape` and `terminal.cursor_blink`; blinking cursor
+    styles blink
+- Windows share fontconfig's configuration, saving about 0.7 MiB each
 
 ## 2.2.0
 
