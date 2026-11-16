@@ -3,6 +3,10 @@ CHANGELOG
 
 ## Unreleased
 
+- The `hints` action (Ctrl+Shift+E) labels links, paths, git and Nix
+    hashes and IPv4 and IPv6 addresses on the screen; type a label, then
+    Ctrl+C copies, Ctrl+O opens and Ctrl+I inserts the text at the cursor.
+    `hints.regex` labels more kinds of text
 - Ctrl+click opens audio files and documents (PDF, EPUB, office files),
     with the new built-in `files.audio` and `files.document` kinds
 - File kinds added in the config under new names win over the built-in

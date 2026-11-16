@@ -49,6 +49,7 @@ default value. A test checks that it matches the built-in defaults.
   - [Vi mode](#vi-mode)
   - [Mouse](#mouse)
 - [`[url]`](#url)
+- [`[hints]`](#hints)
 - [`[files]`](#files)
 - [Shell integration](#shell-integration)
 - [Logging](#logging)
@@ -435,6 +436,7 @@ Actions you don't list keep their defaults.
 | `new_window` | `ctrl+shift+n` | Open another window in the current directory of the shell (or whatever runs in the terminal) |
 | `copy_last_output` | unbound | Copy the output of the last command that finished (needs [shell integration](#shell-integration)) |
 | `open_last_output` | unbound | Open the output of the last command that finished in [`terminal.editor`](#terminal), in a new window |
+| `hints` | `ctrl+shift+e` | Label links, paths, hashes and addresses on the screen, to copy, open or insert one with the keyboard (see [`[hints]`](#hints)) |
 
 A combo is modifiers and a key joined by `+`:
 
@@ -642,6 +644,51 @@ script that turns them into one. For example, to open issue numbers:
 [url]
 launcher = ["sh", "-c", 'case "$0" in JOT-*) xdg-open "https://tracker.example/$0";; *) xdg-open "$0";; esac']
 regex = ['\bJOT-\d+\b']
+```
+
+## `[hints]`
+
+The `hints` binding (Ctrl+Shift+E) puts a short label (`a`, `s`, `ma`,
+...) over the start of every target on the screen. The newest output gets
+the shortest labels. Targets are:
+
+- links, as Ctrl+click finds them (see [Mouse](#mouse)): hyperlinks, URLs,
+  files of the [`[files]`](#files) kinds and [`url.regex`](#url) matches.
+  These can be opened;
+- the text that `hints.regex` matches;
+- IPv4 addresses (with a `/24` prefix length or a `:8080` port) and IPv6
+  addresses;
+- Nix hashes, in the SRI form (`sha256-…=`) or in base 32 (52 characters);
+- paths with a `/` in them (`src/app.rs`, `~/.config`, `/nix/store/…`);
+- git commits and other hexadecimal hashes, 7 to 128 characters with both
+  letters and digits (`1af659b`, but not `deadbeef` or `1234567`);
+- names of files and directories that exist, as Ctrl+drag finds them.
+
+Where targets overlap, the first in this list wins. Type a label to
+highlight its target (it also becomes the primary selection); typing
+another label highlights that one instead. Then:
+
+| Key | Does |
+| --- | --- |
+| Ctrl+C | Copy the target and leave |
+| Ctrl+O | Open the target with its launcher, as Ctrl+click does, and leave. A target that isn't a link stays, with a notice |
+| Ctrl+I | Type the target at the cursor, as a paste, and leave |
+| Enter | Open the target, or copy it when it can't be opened |
+| Backspace | Take back the last letter typed of a label |
+| Escape, Ctrl+Shift+E | Leave without doing anything |
+
+Copying or inserting a link gives its target: the URL of a hyperlink, the
+absolute path of a file. No key reaches the program while the labels are
+up. Output keeps arriving: targets move with their text, and those whose
+text changes are dropped. Resizing the window takes the labels down.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `regex` | list of strings | `[]` | Regular expressions for more text to label. Their matches can be copied and inserted; to open them too, put them in `url.regex` instead. |
+
+```toml
+[hints]
+regex = ['\b[A-Z]+-\d+\b']   # issue keys, such as JOT-123
 ```
 
 ## `[files]`

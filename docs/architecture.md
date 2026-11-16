@@ -52,6 +52,7 @@ on the CPU.
 | `selection.rs` | Text selection in history-aware coordinates; words, lines, following output | no |
 | `text.rs` | The text of a logical line with the cell of each character | no |
 | `links.rs` | Hyperlinks (OSC 8) and URL, file path and regex detection under the pointer | no |
+| `hints.rs` | Hints: the links, paths, hashes and addresses on the screen, their labels, and picking one by typing | no |
 | `search.rs` | Finding text in the scrollback and on screen | no |
 | `vi.rs` | Vi mode: cursor motions, visual modes, yanking | no |
 | `notify.rs` | Desktop notifications: a minimal D-Bus client of the session bus for `org.freedesktop.Notifications`. It connects on a thread of its own; once connected it is non-blocking, with a bounded write queue | no |

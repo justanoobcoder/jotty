@@ -237,6 +237,16 @@ nothing surprises you.
   is in now, not where the path was printed. After a `cd`, or over SSH,
   older output may point to the wrong place (or nowhere, and then isn't a
   link).
+- **Hints** cover the first cells of their targets with the label. They
+  only label the visible screen, as it was when they came up: targets that
+  output prints later aren't labeled. Relative paths are only labeled when
+  they contain a `/` or name a file that exists in the current directory
+  of the program in the foreground. Inside a multiplexer that program is
+  the multiplexer, so a bare name such as `Cargo.toml` usually isn't
+  labeled, and files from `ls` in a pane can't be opened, only copied when
+  their path has a `/`. IPv6 addresses with a zone (`%eth0`), a prefix
+  length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
+  The label alphabet can't be configured.
 - No `idle-inhibit`. Files can be dragged out (Ctrl+drag), but nothing can
   be dropped into a window.
 - A dragged file is offered as a `file://` URI only, not through the
