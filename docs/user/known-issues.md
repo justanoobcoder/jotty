@@ -270,12 +270,14 @@ nothing surprises you.
   take for an option, is refused.
 - Ctrl with a letter of a non-Latin layout sends the letter, as in xterm,
   unless the program turns on the kitty keyboard protocol.
-- Saving the config reloads it by watching the file's directory. A directory
-  that doesn't exist at startup, or is removed later, isn't watched; send
-  `SIGUSR1` or restart then. When the
-  config is a symlink, editing the file it points to in another directory
-  isn't noticed (replacing the symlink, as home-manager does, is); press
-  Ctrl+Shift+R or send `SIGUSR1` then.
+- Saving the config reloads it by watching the file's directory, which
+  jotty creates at startup if it is missing. If it can't be created, or
+  is removed or replaced while jotty runs (a symlink to the whole
+  directory, as home-manager makes with `xdg.configFile."jotty".source`,
+  being switched), changes aren't noticed. When the config file is a
+  symlink, editing the file it points to in another directory isn't
+  noticed either (replacing the symlink, as home-manager does, is). Press
+  Ctrl+Shift+R, send `SIGUSR1` or restart jotty then.
 
 ## Rendering and performance
 

@@ -2,8 +2,9 @@
 
 The config file and `~/.local/state/jotty/overrides.toml` (under
 `$XDG_STATE_HOME`) are merged key by key, the overrides winning; lists are
-replaced as a whole. jotty creates the state directory at startup so that
-`watch.rs` can watch it. Reload triggers are a change to either file
+replaced as a whole. jotty creates the directories of both at startup so
+that `watch.rs` can watch them; a directory removed or replaced later
+isn't watched again. Reload triggers are a change to either file
 (inotify on their directories), the `reload_config` binding and SIGUSR1.
 An invalid default config file is logged and the defaults are used; an
 invalid `--config` file stops jotty from starting. A reload that fails
