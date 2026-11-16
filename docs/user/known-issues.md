@@ -219,7 +219,7 @@ nothing surprises you.
   mouse. The selection is kept while output goes elsewhere, but cleared
   when its text changes or it scrolls out of the history.
 - Vi mode has motions, visual modes, yank and search, but not vim's text
-  objects (`iw`), `f`/`t`, marks or registers. `G` goes to the bottom of the
+  objects (`iw`), marks or registers. `G` goes to the bottom of the
   screen.
 - While a program has mouse reporting on, Ctrl+click, Ctrl+drag and
   Ctrl+right click go to the program; hold Shift as well to open a link or

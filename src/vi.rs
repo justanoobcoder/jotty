@@ -55,8 +55,38 @@ pub struct ViMode {
     visual: Option<(Visual, Point)>,
     /// A count typed before a command (`5j`).
     count: Option<usize>,
-    /// The first key of a two-key command (`gg`, `yy`), with its count.
+    /// The first key of a two-key command (`gg`, `yy`, `fx`), with its
+    /// count.
     pending: Option<(char, usize)>,
+    /// The last find on the line, which `;` and `,` repeat.
+    last_find: Option<Find>,
+}
+
+/// A find on the line: `f`, `F`, `t` or `T` and the character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Find {
+    target: char,
+    /// `f` and `t`: toward the end of the line.
+    forward: bool,
+    /// `t` and `T`: up to the character, not onto it.
+    till: bool,
+}
+
+impl Find {
+    fn new(command: char, target: char) -> Find {
+        Find {
+            target,
+            forward: command.is_ascii_lowercase(),
+            till: matches!(command, 't' | 'T'),
+        }
+    }
+
+    fn reversed(self) -> Find {
+        Find {
+            forward: !self.forward,
+            ..self
+        }
+    }
 }
 
 impl ViMode {
@@ -67,6 +97,7 @@ impl ViMode {
             visual: None,
             count: None,
             pending: None,
+            last_find: None,
         }
     }
 
@@ -143,6 +174,15 @@ impl ViMode {
                 }
             }
             Key::Char('g') => self.pending = Some(('g', count)),
+            Key::Char(c @ ('f' | 'F' | 't' | 'T')) => self.pending = Some((c, count)),
+            Key::Char(c @ (';' | ',')) => {
+                if let Some(find) = self.last_find {
+                    let find = if c == ',' { find.reversed() } else { find };
+                    if let Some(col) = find_col(screen, *p, find, count, /* repeat= */ true) {
+                        p.col = col;
+                    }
+                }
+            }
             // `G` goes to the last line, `5G` to the fifth, like `5gg`.
             Key::Char('G') => {
                 *p = Point {
@@ -219,6 +259,16 @@ impl ViMode {
                 let end = selection::line_bounds(screen, Point { line: last, col: 0 }).1;
                 Outcome::Yank(Selection::span(start, end, Unit::Fixed).text(screen))
             }
+            (c @ ('f' | 'F' | 't' | 'T'), Key::Char(target)) => {
+                let find = Find::new(c, target);
+                self.last_find = Some(find);
+                if let Some(col) =
+                    find_col(screen, self.cursor, find, count, /* repeat= */ false)
+                {
+                    self.cursor.col = col;
+                }
+                Outcome::Done
+            }
             // Anything else cancels the command.
             _ => Outcome::Done,
         }
@@ -267,6 +317,46 @@ fn char_at(screen: &Screen, p: Point) -> char {
         Some(c) => c.c,
         None => ' ',
     }
+}
+
+/// The column the `count`th `find` from `from` moves to, on its line, or
+/// `None` if the line has fewer. A repeated till (`;` or `,` after `t`)
+/// skips the character next to the cursor, which it would stop before
+/// again.
+fn find_col(screen: &Screen, from: Point, find: Find, count: usize, repeat: bool) -> Option<usize> {
+    let row = screen.row_at(from.line)?;
+    // The characters of the line, by column.
+    let chars: Vec<(usize, char)> = row
+        .cells()
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| !cell.flags.contains(Flags::WIDE_SPACER))
+        .map(|(col, cell)| (col, cell.c))
+        .collect();
+    // The character under the cursor, also on the second half of a wide
+    // one.
+    let at = chars.iter().rposition(|&(col, _)| col <= from.col)?;
+    let skip = usize::from(repeat && find.till);
+    let is_target = |&(_, &(_, c)): &(usize, &(usize, char))| c == find.target;
+    let nth = count.saturating_sub(1);
+    let found = if find.forward {
+        let (i, _) = chars
+            .iter()
+            .enumerate()
+            .skip(at + 1 + skip)
+            .filter(is_target)
+            .nth(nth)?;
+        if find.till { i - 1 } else { i }
+    } else {
+        let (i, _) = chars[..at.saturating_sub(skip)]
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(is_target)
+            .nth(nth)?;
+        if find.till { i + 1 } else { i }
+    };
+    Some(chars[found].0)
 }
 
 fn first_non_blank(screen: &Screen, line: isize) -> usize {
@@ -497,6 +587,67 @@ mod tests {
         assert_eq!(vi.cursor, p(1, 0));
         press(&mut vi, &t, "99G");
         assert_eq!(vi.cursor, p(4, 0));
+    }
+
+    #[test]
+    fn find_moves_to_a_character_on_the_line() {
+        let mut t = Terminal::new(20, 2, 0);
+        t.feed(b"a.b.c.d (x)\r\n.");
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "f.");
+        assert_eq!(vi.cursor, p(0, 1));
+        press(&mut vi, &t, "2f.");
+        assert_eq!(vi.cursor, p(0, 5));
+        // Not found (or not on this line): the cursor stays.
+        press(&mut vi, &t, "fz");
+        assert_eq!(vi.cursor, p(0, 5));
+        press(&mut vi, &t, "3f.");
+        assert_eq!(vi.cursor, p(0, 5));
+        press(&mut vi, &t, "F.");
+        assert_eq!(vi.cursor, p(0, 3));
+        press(&mut vi, &t, "t)");
+        assert_eq!(vi.cursor, p(0, 9));
+        press(&mut vi, &t, "T.");
+        assert_eq!(vi.cursor, p(0, 6));
+    }
+
+    #[test]
+    fn find_repeats_with_semicolon_and_comma() {
+        let mut t = Terminal::new(20, 1, 0);
+        t.feed(b"a.b.c.d");
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "f.;");
+        assert_eq!(vi.cursor, p(0, 3));
+        press(&mut vi, &t, ",");
+        assert_eq!(vi.cursor, p(0, 1));
+        press(&mut vi, &t, "2;");
+        assert_eq!(vi.cursor, p(0, 5));
+        // `;` after `t` doesn't stay stuck before the same character.
+        press(&mut vi, &t, "0t.;");
+        assert_eq!(vi.cursor, p(0, 2));
+        press(&mut vi, &t, ",");
+        assert_eq!(vi.cursor, p(0, 2));
+        press(&mut vi, &t, "$T.;");
+        assert_eq!(vi.cursor, p(0, 4));
+    }
+
+    #[test]
+    fn find_skips_the_second_half_of_wide_characters() {
+        let mut t = Terminal::new(20, 1, 0);
+        t.feed("中x中x".as_bytes());
+        let mut vi = ViMode::new(p(0, 0));
+        press(&mut vi, &t, "f中");
+        assert_eq!(vi.cursor, p(0, 3));
+        press(&mut vi, &t, "tx");
+        assert_eq!(vi.cursor, p(0, 3));
+        press(&mut vi, &t, "Tx");
+        assert_eq!(vi.cursor, p(0, 3));
+        press(&mut vi, &t, "0tx");
+        assert_eq!(vi.cursor, p(0, 0));
+        // From the second half of a wide character, as from its first.
+        let mut vi = ViMode::new(p(0, 1));
+        press(&mut vi, &t, "fx");
+        assert_eq!(vi.cursor, p(0, 2));
     }
 
     #[test]

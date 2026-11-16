@@ -8,6 +8,7 @@ CHANGELOG
 - Add `hints.alphabet`, the characters hint labels are made of
 - Add `terminal.word_delimiters`, the characters that end a word for
     double-click selection
+- Vi mode: `f`, `F`, `t`, `T`, `;` and `,`
 
 ## 2.3.0
 
