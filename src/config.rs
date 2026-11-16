@@ -205,6 +205,9 @@ pub struct WindowConfig {
     /// Show the desktop notifications programs ask for (OSC 9, OSC 777)
     /// while the window isn't focused.
     pub notifications: bool,
+    /// Seconds a command must run for a notification when it finishes
+    /// while the window isn't focused; 0 turns these off.
+    pub command_notify_after: u32,
     /// Open windows in the jotty already running, as `--single-instance`.
     pub single_instance: bool,
     /// Initial size in cells.
@@ -226,6 +229,8 @@ pub(crate) const COLUMNS: RangeInclusive<u16> = 2..=2000;
 pub(crate) const LINES: RangeInclusive<u16> = 1..=2000;
 pub(crate) const MAX_PADDING: u32 = 1000;
 pub(crate) const MAX_SCROLLBACK: usize = 10_000_000;
+/// A day.
+pub(crate) const MAX_COMMAND_NOTIFY_AFTER: u32 = 86_400;
 
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -239,6 +244,7 @@ impl Default for WindowConfig {
             renderer: RendererKind::Cpu,
             bell_urgent: true,
             notifications: true,
+            command_notify_after: 10,
             single_instance: false,
             columns: 80,
             lines: 24,
@@ -495,6 +501,10 @@ impl Config {
         self.window.columns = self.window.columns.clamp(*COLUMNS.start(), *COLUMNS.end());
         self.window.lines = self.window.lines.clamp(*LINES.start(), *LINES.end());
         self.window.padding = self.window.padding.min(MAX_PADDING);
+        self.window.command_notify_after = self
+            .window
+            .command_notify_after
+            .min(MAX_COMMAND_NOTIFY_AFTER);
         self.terminal.scrollback = self.terminal.scrollback.min(MAX_SCROLLBACK);
         // Empty strings mean "the default", as unset keys do: an empty
         // shell would be run, and an empty TERM or app id set.

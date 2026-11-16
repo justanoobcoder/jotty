@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use super::{
-    Cell, ClipboardWrite, Color, CursorShape, DefaultColors, Extra, Flags, MAX_CLIPBOARD_BYTES,
-    MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row, Terminal, Underline,
+    Cell, ClipboardWrite, Color, CursorShape, DefaultColors, Extra, FinishedCommand, Flags,
+    MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode, Notification, Row,
+    Terminal, Underline,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -1919,6 +1920,68 @@ fn a_reset_keeps_a_pending_clipboard_write() {
         t.screen_mut().take_clipboard_write(),
         clipboard_write("hi", true, false)
     );
+}
+
+/// The command and exit code of the command that finished, checking that
+/// it took no time.
+fn finished(t: &mut Terminal) -> Option<(Option<String>, Option<i32>)> {
+    let done: FinishedCommand = t.screen_mut().take_finished_command()?;
+    assert!(
+        done.duration < Duration::from_secs(5),
+        "{:?}",
+        done.duration
+    );
+    Some((done.command, done.exit_code))
+}
+
+#[test]
+fn a_finished_command_is_reported_with_its_exit_code() {
+    let mut t = term(20, 4);
+    // As fish 4 marks it, with the command line in the C mark.
+    t.feed(b"\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07echo hi\r\n");
+    t.feed(b"\x1b]133;C;cmdline_url=echo%20h%C3%AC\x07hi\r\n\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((Some("echo hì".into()), Some(0))));
+    assert_eq!(finished(&mut t), None);
+    t.feed(b"\x1b]133;C;cmdline_url=false\x07\x1b]133;D;1\x07");
+    assert_eq!(finished(&mut t), Some((Some("false".into()), Some(1))));
+}
+
+#[test]
+fn a_finished_command_is_read_from_the_screen_without_a_command_line() {
+    let mut t = term(10, 4);
+    // As the bash snippet marks it: B after the prompt, C in PS0.
+    t.feed(b"$ \x1b]133;B\x07sleep 5\r\n\x1b]133;C\x07\x1b]133;D;130\x07");
+    assert_eq!(finished(&mut t), Some((Some("sleep 5".into()), Some(130))));
+    // A command line that wraps is one line.
+    t.feed(b"$ \x1b]133;B\x07echo abcdefg\r\n\x1b]133;C\x07\x1b]133;D\x07");
+    assert_eq!(finished(&mut t), Some((Some("echo abcdefg".into()), None)));
+    // Without B, the command is unknown.
+    let mut t = term(10, 4);
+    t.feed(b"$ sleep 5\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((None, Some(0))));
+}
+
+#[test]
+fn the_longest_command_since_the_last_read_is_kept() {
+    let mut t = term(10, 4);
+    t.feed(b"\x1b]133;C;cmdline_url=long\x07");
+    std::thread::sleep(Duration::from_millis(20));
+    t.feed(b"\x1b]133;D;0\x07\x1b]133;C;cmdline_url=short\x07\x1b]133;D;0\x07");
+    let done = t.screen_mut().take_finished_command().unwrap();
+    assert_eq!(done.command.as_deref(), Some("long"));
+    assert!(done.duration >= Duration::from_millis(20));
+}
+
+#[test]
+fn only_a_command_that_started_finishes() {
+    let mut t = term(10, 4);
+    // An empty command line: the prompt comes back without C.
+    t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), None);
+    // Each C finishes once.
+    t.feed(b"\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;D;0\x07");
+    assert!(finished(&mut t).is_some());
+    assert_eq!(finished(&mut t), None);
 }
 
 #[test]

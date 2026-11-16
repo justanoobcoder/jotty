@@ -43,6 +43,10 @@ bell_urgent = true
 # Show the desktop notifications programs ask for (OSC 9, OSC 777) while
 # the window isn't focused. Clicking one focuses the window.
 notifications = true
+# When a command that ran at least this many seconds finishes while the
+# window isn't focused, show a notification (needs `notifications` and shell
+# integration, see the docs). 0 turns it off.
+command_notify_after = 10
 # Open each new window in the jotty already running for this Wayland display
 # and config file instead of starting another process, as --single-instance
 # does. Takes effect when jotty starts.

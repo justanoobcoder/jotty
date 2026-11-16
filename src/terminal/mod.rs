@@ -9,6 +9,8 @@ pub mod grid;
 mod sixel;
 mod strings;
 
+use std::time::{Duration, Instant};
+
 use graphics::Graphics;
 pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
 use strings::{StringTable, Table};
@@ -438,6 +440,11 @@ pub struct Screen {
     display_offset: usize,
     /// Where the shell's prompt ended (OSC 133;B), as (row, column).
     prompt_end: Option<(usize, usize)>,
+    /// When the running command started (OSC 133;C), and its command line.
+    command_start: Option<(Instant, Option<String>)>,
+    /// The longest command that finished (OSC 133;D) since the last
+    /// read: a quick one after it mustn't hide it.
+    finished_command: Option<FinishedCommand>,
     /// Images of the primary and alternate screen (kitty graphics).
     graphics: [Graphics; 2],
     /// The cell size in pixels, for pixel size reports.
@@ -533,6 +540,15 @@ impl ClipboardWrite {
     }
 }
 
+/// A command the shell ran, which finished (OSC 133;C, then D).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinishedCommand {
+    /// The command line, if the shell sent it or marked where it starts.
+    pub command: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration: Duration,
+}
+
 /// Notifications kept between two reads of the pty, so a flood of them
 /// can't fill the desktop.
 const MAX_PENDING_NOTIFICATIONS: usize = 4;
@@ -612,6 +628,8 @@ impl Screen {
             dirty: true,
             display_offset: 0,
             prompt_end: None,
+            command_start: None,
+            finished_command: None,
             graphics: Default::default(),
             cell_size: (10, 20),
             keyboard: Default::default(),
@@ -880,6 +898,38 @@ impl Screen {
             return;
         }
         self.notifications.push(Notification { title, body });
+    }
+
+    /// The longest command that finished since the last call.
+    pub fn take_finished_command(&mut self) -> Option<FinishedCommand> {
+        self.finished_command.take()
+    }
+
+    /// The text between the end of the prompt (OSC 133;B) and the cursor:
+    /// the command line the shell is about to run. Wrapped rows are one
+    /// line; lines are joined with spaces.
+    fn command_line(&self) -> Option<String> {
+        let (start_row, start_col) = self.prompt_end?;
+        let (end_row, end_col) = self.cursor();
+        let rows = &self.grid().rows;
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        for (i, row) in rows.iter().enumerate().take(end_row + 1).skip(start_row) {
+            let cells = row.cells();
+            let from = if i == start_row { start_col } else { 0 };
+            let to = if i == end_row { end_col } else { cells.len() };
+            for cell in cells.get(from..to.min(cells.len())).unwrap_or_default() {
+                if !cell.flags.intersects(Flags::WIDE_SPACER | Flags::WRAP_GAP) {
+                    self.cell_text(cell, &mut line);
+                }
+            }
+            if !row.wrapped || i == end_row {
+                lines.push(std::mem::take(&mut line).trim().to_owned());
+            }
+        }
+        lines.retain(|l| !l.is_empty());
+        let command = truncate(lines.join(" "), MAX_NOTIFICATION_TEXT);
+        (!command.is_empty()).then_some(command)
     }
 
     /// The last clipboard writes asked for since the last call.
@@ -2166,11 +2216,13 @@ impl Screen {
         let scrollback = self.primary.max_history;
         let default_colors = self.default_colors.clone();
         let (width, height) = self.cell_size;
-        // Replies, notifications and clipboard writes from before the reset
-        // are still due, and the window keeps its title.
+        // Replies, notifications, clipboard writes and finished commands
+        // from before the reset are still due, and the window keeps its
+        // title.
         let responses = std::mem::take(&mut self.responses);
         let notifications = std::mem::take(&mut self.notifications);
         let clipboard_write = std::mem::take(&mut self.clipboard_write);
+        let finished_command = self.finished_command.take();
         let (title, title_changed) = (self.title.take(), self.title_changed);
         let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);
@@ -2179,6 +2231,7 @@ impl Screen {
         self.responses = responses;
         self.notifications = notifications;
         self.clipboard_write = clipboard_write;
+        self.finished_command = finished_command;
         self.title = title;
         self.title_changed = title_changed;
         self.bell = bell;
@@ -2803,14 +2856,49 @@ impl Perform for Screen {
             [b"9", body @ ..] => self.notify(None, body),
             // rxvt-unicode: OSC 777 ; notify ; title ; body.
             [b"777", b"notify", title, body @ ..] => self.notify(Some(title), body),
-            [b"133", kind, ..] => {
+            [b"133", kind, rest @ ..] => {
                 let (row, col) = self.cursor();
                 let mark = match kind.first() {
                     Some(b'A') => Mark::Prompt,
                     Some(b'B') => Mark::Input,
-                    Some(b'C') => Mark::Output { col },
+                    Some(b'C') => {
+                        // fish sends the command line, URL-encoded.
+                        let command = rest
+                            .iter()
+                            .find_map(|p| p.strip_prefix(b"cmdline_url="))
+                            .and_then(|url| std::str::from_utf8(url).ok())
+                            .and_then(|url| crate::notify::unescape(url).ok())
+                            .map(|c| {
+                                truncate(
+                                    String::from_utf8_lossy(&c).into_owned(),
+                                    MAX_NOTIFICATION_TEXT,
+                                )
+                            })
+                            .filter(|c| !c.is_empty())
+                            .or_else(|| self.command_line());
+                        self.command_start = Some((Instant::now(), command));
+                        Mark::Output { col }
+                    }
                     Some(b'D') => {
                         self.prompt_end = None;
+                        if let Some((start, command)) = self.command_start.take() {
+                            let exit_code = rest
+                                .first()
+                                .and_then(|code| std::str::from_utf8(code).ok())
+                                .and_then(|code| code.parse().ok());
+                            let duration = start.elapsed();
+                            if self
+                                .finished_command
+                                .as_ref()
+                                .is_none_or(|longest| longest.duration < duration)
+                            {
+                                self.finished_command = Some(FinishedCommand {
+                                    command,
+                                    exit_code,
+                                    duration,
+                                });
+                            }
+                        }
                         return;
                     }
                     _ => return,

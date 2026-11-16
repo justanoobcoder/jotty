@@ -102,7 +102,7 @@ use crate::pty::{Pty, WindowSize};
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
-use crate::terminal::{ClipboardWrite, Flags, MouseMode, Notification, Terminal};
+use crate::terminal::{ClipboardWrite, FinishedCommand, Flags, MouseMode, Notification, Terminal};
 use crate::vi::{self, ViMode};
 use crate::watch;
 use smithay_client_toolkit::seat::pointer::AxisScroll;
@@ -185,6 +185,17 @@ const MAX_DRAW_FAILURES: u32 = 50;
 /// How long a jotty handing over its window may take to send its request.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 const PASTE_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+
+/// A duration as a notification shows it: `12s`, `4m 05s`, `1h 03m`.
+fn format_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (0, _) => format!("{m}m {s:02}s"),
+        _ => format!("{h}h {m:02}m"),
+    }
+}
 
 /// The preferred text type among those a paste offer has.
 fn paste_mime(offered: &[String]) -> Option<String> {
@@ -1138,6 +1149,7 @@ impl TermWindow {
         let bell = screen.take_bell();
         let notifications = screen.take_notifications();
         let clipboard_write = screen.take_clipboard_write();
+        let finished_command = screen.take_finished_command();
         let dirty = screen.take_dirty();
         if !responses.is_empty() {
             let written = self.pty.write_response(&responses);
@@ -1161,6 +1173,9 @@ impl TermWindow {
         }
         for notification in notifications {
             self.show_notification(shared, notification);
+        }
+        if let Some(done) = finished_command {
+            self.command_finished(shared, done);
         }
         if let Some(write) = clipboard_write {
             // Only a write from before the first focus waits for it; a
@@ -2490,6 +2505,24 @@ impl TermWindow {
                 },
             );
         }
+    }
+
+    /// Notifies that a command finished, if it ran long enough.
+    fn command_finished(&mut self, shared: &mut Shared, done: FinishedCommand) {
+        let after = self.config.window.command_notify_after;
+        if after == 0 || done.duration < Duration::from_secs(after.into()) {
+            return;
+        }
+        let duration = format_duration(done.duration);
+        let body = match done.exit_code {
+            Some(code) if code != 0 => format!("Failed with exit code {code} after {duration}"),
+            _ => format!("Finished after {duration}"),
+        };
+        let notification = Notification {
+            title: done.command,
+            body,
+        };
+        self.show_notification(shared, notification);
     }
 
     /// Shows a desktop notification, if the window isn't focused and the
@@ -4481,6 +4514,15 @@ delegate_dispatch2!(App);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_are_shown_in_their_largest_units() {
+        let secs = Duration::from_secs;
+        assert_eq!(format_duration(Duration::from_millis(10_900)), "10s");
+        assert_eq!(format_duration(secs(245)), "4m 05s");
+        assert_eq!(format_duration(secs(3600 + 3 * 60 + 59)), "1h 03m");
+        assert_eq!(format_duration(secs(30 * 3600)), "30h 00m");
+    }
 
     #[test]
     fn a_reader_that_never_reads_times_the_write_out() {

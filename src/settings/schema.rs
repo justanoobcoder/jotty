@@ -196,6 +196,15 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
         ),
         (
             "window",
+            "command_notify_after",
+            Int {
+                min: 0,
+                max: config::MAX_COMMAND_NOTIFY_AFTER as i64,
+            },
+            "Notify when a command that ran this many seconds ends while unfocused; 0 is off.",
+        ),
+        (
+            "window",
             "single_instance",
             Bool,
             "Open windows in the jotty already running. Applies when jotty starts.",

@@ -37,6 +37,7 @@ default value. A test checks that it matches the built-in defaults.
 - [`[window]`](#window)
   - [Transparency](#transparency)
   - [Notifications](#notifications)
+    - [Long commands](#long-commands)
   - [Single instance](#single-instance)
   - [Renderer](#renderer)
 - [`[terminal]`](#terminal)
@@ -149,6 +150,7 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `renderer` | string | `"cpu"` | `"cpu"` draws in software; `"gpu"` draws with OpenGL ES. See [Renderer](#renderer). |
 | `bell_urgent` | bool | `true` | When the bell rings while the window isn't focused, ask the compositor to mark it urgent (`xdg-activation-v1`). |
 | `notifications` | bool | `true` | Show the desktop notifications programs ask for (OSC 9, OSC 777) while the window isn't focused. See [Notifications](#notifications). |
+| `command_notify_after` | integer | `10` | When a command that ran at least this many seconds finishes while the window isn't focused, show a notification. `0` turns it off. See [Long commands](#long-commands). |
 | `single_instance` | bool | `false` | Open windows in the jotty already running, like `--single-instance`. See [Single instance](#single-instance). |
 | `columns` | integer | `80` | Initial width in cells. Tiling compositors ignore it. |
 | `lines` | integer | `24` | Initial height in cells. |
@@ -199,11 +201,25 @@ is not a notification and is ignored.
 A program can show 4 notifications at once, then one every 2 seconds; more are
 dropped.
 
-For example, to be told when a long command finishes:
+For example, to be told when a command finishes, whatever it took:
 
 ```sh
 make; printf '\e]777;notify;make;finished with status %d\a' $?
 ```
+
+#### Long commands
+
+When a command that ran for at least `command_notify_after` seconds (10 by
+default) finishes while the window isn't focused, jotty shows a notification
+with the command line as the summary, and how long it took and whether it
+failed as the body. It needs `notifications = true` and a shell that marks
+where commands start and end (`OSC 133 ; C` and `OSC 133 ; D ; status`; see
+[Shell integration](#shell-integration)). fish 4 does by itself, and also
+sends the command line. With other shells, jotty reads the command line
+from the screen, after the end of the prompt (`OSC 133 ; B`).
+
+Like the other marks, these don't pass through multiplexers: inside zellij
+or tmux, jotty can't tell when a command finishes.
 
 ### Single instance
 
@@ -640,9 +656,11 @@ remove it from `document`'s extensions.
 
 Shells can mark where their prompt starts (`OSC 133 ; A`), where the prompt
 ends and the command line starts (`B`), and where the command's output
-starts (`C`). jotty uses these marks for three things: the text it reports
-to input methods, selecting a command's output with a Ctrl+double click, and
-scrolling from prompt to prompt (Ctrl+Shift+PageUp/PageDown).
+starts (`C`), and when the command finished, with its exit status
+(`D ; status`). jotty uses these marks for four things: the text it reports
+to input methods, selecting a command's output with a Ctrl+double click,
+scrolling from prompt to prompt (Ctrl+Shift+PageUp/PageDown), and
+[notifying when a long command finishes](#long-commands).
 
 Input methods ask the application for the text around the cursor, so they can
 correct or replace what was typed. A terminal doesn't really know which text
@@ -669,7 +687,7 @@ doesn't pass them on.
 **bash** (`~/.bashrc`, after `PS1` is set):
 
 ```bash
-PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+PS1='\[\e]133;D;$?\a\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
 PS0='\e]133;C\a'
 ```
 
@@ -677,7 +695,7 @@ PS0='\e]133;C\a'
 
 ```zsh
 autoload -Uz add-zsh-hook
-_jotty_prompt_start() { print -n '\e]133;A\a' }
+_jotty_prompt_start() { print -n "\e]133;D;$?\a\e]133;A\a" }
 add-zsh-hook precmd _jotty_prompt_start
 _jotty_output_start() { print -n '\e]133;C\a' }
 add-zsh-hook preexec _jotty_output_start
@@ -690,7 +708,7 @@ versions, add this to `~/.config/fish/config.fish`:
 ```fish
 functions -c fish_prompt __jotty_fish_prompt
 function fish_prompt
-    printf '\e]133;A\a'
+    printf '\e]133;D;%d\a\e]133;A\a' $status
     __jotty_fish_prompt
     printf '\e]133;B\a'
 end
