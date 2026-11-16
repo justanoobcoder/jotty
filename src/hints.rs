@@ -28,7 +28,7 @@ pub struct Patterns {
     /// Hashes in the SRI format Nix prints (`sha256-…=`), each algorithm
     /// with its length in base 64.
     sri: Regex,
-    /// Paths with a `/` in them.
+    /// Paths that start with `/`, `~/`, `./` or `../`.
     path: Regex,
     /// SHA-256 hashes in Nix's base-32.
     nix32: Regex,
@@ -54,9 +54,7 @@ impl Patterns {
             sri: Regex::new(
                 r"\b(?:md5-[A-Za-z0-9+/]{22}==|sha1-[A-Za-z0-9+/]{27}=|sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)",
             )?,
-            path: Regex::new(&format!(
-                r"(?:(?:~|\.{{1,2}})?(?:/{path_char}+)+|{path_char}+(?:/{path_char}+)+)/?"
-            ))?,
+            path: Regex::new(&format!(r"(?:~|\.{{1,2}})?(?:/{path_char}+)+/?"))?,
             nix32: Regex::new(r"\b[0-9a-df-np-sv-z]{52}\b")?,
             uuid: Regex::new(r"\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b")?,
             hex: Regex::new(r"\b[0-9a-f]{7,128}\b")?,
@@ -85,13 +83,15 @@ impl Patterns {
                 .filter(|m| !text[m.end()..].starts_with(base64))
                 .map(|m| m.range()),
         );
-        // Without a letter, it's a fraction or a date (`1/2`, `2024/11/16`);
-        // before a `=`, base 64 (a hash that isn't one of the above).
+        // A path starts a word: the `/` in `and/or`, in base 64 (`a+/b`)
+        // or in `</div>` doesn't start one. Without a letter, it's a
+        // number (`/2`).
+        let in_word = |c: char| c.is_alphanumeric() || "_.@+~-/<".contains(c);
         found.extend(
             self.path
                 .find_iter(text)
+                .filter(|m| !text[..m.start()].chars().next_back().is_some_and(in_word))
                 .filter(|m| m.as_str().chars().any(char::is_alphabetic))
-                .filter(|m| !text[m.end()..].starts_with('='))
                 .map(|m| without_final_dot(m.as_str(), m.range())),
         );
         for pattern in [&self.nix32, &self.uuid] {
@@ -446,12 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn finds_paths_with_a_slash() {
+    fn finds_paths_from_the_root_home_or_current_directory() {
         assert_eq!(
-            matched("src/app.rs:120:5 ~/.config/jotty ./run --prefix=/usr/local"),
-            ["src/app.rs", "~/.config/jotty", "./run", "/usr/local"]
+            matched("/etc/x:120:5 ~/.config/jotty ./run ../lib --prefix=/usr/local"),
+            ["/etc/x", "~/.config/jotty", "./run", "../lib", "/usr/local"]
         );
-        assert_eq!(matched("see /etc/hosts. or a/.."), ["/etc/hosts", "a/.."]);
+        assert_eq!(
+            matched("see /etc/hosts. or ../lib/.."),
+            ["/etc/hosts", "../lib/.."]
+        );
     }
 
     #[test]
@@ -467,11 +470,11 @@ mod tests {
     #[test]
     fn links_win_over_text_and_files() {
         let mut t = Terminal::new(80, 2, 0);
-        t.feed(b"https://x.org/a/b 1af659b Cargo.toml\r\nsrc/a.rs");
+        t.feed(b"https://x.org/a/b 1af659b Cargo.toml\r\n./src/a.rs");
         let found = texts(&t, |name| name == "Cargo.toml");
         assert_eq!(
             found,
-            ["https://x.org/a/b", "1af659b", "Cargo.toml", "src/a.rs"]
+            ["https://x.org/a/b", "1af659b", "Cargo.toml", "./src/a.rs"]
         );
     }
 
@@ -484,8 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn fractions_and_dates_are_not_paths() {
-        assert_eq!(matched("1/2 2024/11/16 a/b"), ["a/b"]);
+    fn only_paths_that_start_a_word_are_paths() {
+        assert_eq!(
+            matched("src/app.rs and/or 1/2 2024/11/16 /2 </div> x+/abc"),
+            Vec::<&str>::new()
+        );
     }
 
     #[test]

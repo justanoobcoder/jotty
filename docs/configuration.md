@@ -660,7 +660,9 @@ the shortest labels. Targets are:
   addresses;
 - Nix hashes, in the SRI form (`sha256-…=`, of the length its algorithm
   gives: md5, sha1, sha256 or sha512) or in base 32 (52 characters);
-- paths with a `/` in them (`src/app.rs`, `~/.config`, `/nix/store/…`);
+- paths that start with `/`, `~/`, `./` or `../` (`/nix/store/…`,
+  `~/.config`, `./build.sh`). Other relative paths, such as `src/app.rs`,
+  are only labeled as names of files that exist (below);
 - git commits and other hexadecimal hashes, 7 to 128 characters with both
   letters and digits (`1af659b`, but not `deadbeef` or `1234567`);
 - names of files and directories that exist, as Ctrl+drag finds them.
