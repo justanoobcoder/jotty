@@ -249,6 +249,10 @@ See [docs/configuration.md](docs/configuration.md) for every option, and
 
 ## Documentation
 
+The documentation is also on the website,
+<https://justanoobcoder.github.io/jotty/>, with a searchable
+[config reference](https://justanoobcoder.github.io/jotty/config-reference/).
+
 - [Configuration](docs/configuration.md): options, colors, fonts, shell integration
 - [Architecture](docs/architecture.md): how the pieces fit together
 - [Development](docs/development.md): building, testing, debugging

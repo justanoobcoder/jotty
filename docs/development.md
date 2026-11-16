@@ -234,6 +234,27 @@ connected.
 - To see what jotty receives from a program, record its output with
   `script -q /tmp/log` in another terminal, or run `cat -v` inside jotty.
 
+## Website
+
+The website at <https://justanoobcoder.github.io/jotty/> is built with
+MkDocs (Material theme) from `site/`. It has no copies of the docs:
+`site/hooks.py` adds `docs/*.md` and `CHANGELOG.md` as pages, fills
+`<!-- readme: Section -->` markers with that section of the README,
+and generates the config reference from `docs/config.example.toml`. A
+comment block followed by a blank line there introduces its section;
+one right above a key describes that key.
+
+Preview it with live reload, at <http://127.0.0.1:8000/jotty/>:
+
+```sh
+nix develop -c mkdocs serve -f site/mkdocs.yml
+```
+
+`nix build .#site` builds it with `--strict`, so a broken link or anchor
+fails the build. The `Website` workflow builds it for pull requests and
+deploys it to GitHub Pages on pushes to `main` that touch it.
+Screenshots and recordings go in `site/content/assets/screenshots/`.
+
 ## Code layout and conventions
 
 See [architecture.md](architecture.md) for the module map. Some conventions:
