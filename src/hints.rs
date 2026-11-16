@@ -57,7 +57,7 @@ impl Patterns {
             path: Regex::new(&format!(r"(?:~|\.{{1,2}})?(?:/{path_char}+)+/?"))?,
             nix32: Regex::new(r"\b[0-9a-df-np-sv-z]{52}\b")?,
             uuid: Regex::new(r"\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b")?,
-            hex: Regex::new(r"\b[0-9a-f]{7,128}\b")?,
+            hex: Regex::new(r"\b(?:[0-9a-f]{7,128}|[0-9A-F]{7,128})\b")?,
         })
     }
 
@@ -146,7 +146,7 @@ fn ipv6(text: &str, mut span: Range<usize>) -> Option<Range<usize>> {
 /// Whether `text`, all hexadecimal, looks like a hash rather than a word
 /// (`deadbeef`) or a number: it has both letters and digits.
 fn hex_hash(text: &str) -> bool {
-    text.bytes().any(|b| b.is_ascii_digit()) && text.bytes().any(|b| b.is_ascii_lowercase())
+    text.bytes().any(|b| b.is_ascii_digit()) && text.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
 /// Something on the screen a hint can pick.
@@ -428,6 +428,11 @@ mod tests {
         assert_eq!(
             matched("commit 1af659b and deadbeef 1234567 3f14d33e"),
             ["1af659b", "3f14d33e"]
+        );
+        // All uppercase too, but not mixed case, which is more likely a word.
+        assert_eq!(
+            matched("sum 3F14D33E9A and DEADBEEF 3f14D33e"),
+            ["3F14D33E9A"]
         );
         let sri = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
         assert_eq!(matched(&format!("hash = \"{sri}\";")), [sri]);

@@ -247,8 +247,8 @@ nothing surprises you.
   length or an IPv4 tail (`::ffff:1.2.3.4`) are only labeled in part.
   Targets that start above the top row or end below the bottom row (a
   long URL cut by the edge) aren't labeled. A path leaves out the line
-  number after it (`/etc/x:120`). Hex hashes are only matched in
-  lowercase. Bringing the labels up checks every name on the screen on the
+  number after it (`/etc/x:120`). Hex hashes in mixed case aren't
+  matched. Bringing the labels up checks every name on the screen on the
   file system, from the event loop (each once), as marking files does.
   The label alphabet can't be configured.
 - No `idle-inhibit`.

@@ -4,6 +4,7 @@ CHANGELOG
 ## Unreleased
 
 - Support reverse video (DECSCNM)
+- Hints label hex hashes in uppercase
 
 ## 2.3.0
 
