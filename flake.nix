@@ -20,6 +20,9 @@
           libGL
           fontconfig
         ];
+
+      # MkDocs with the theme the website uses (site/).
+      mkdocs = pkgs: pkgs.python3.withPackages (p: [ p.mkdocs-material ]);
     in
     {
       packages = forAllSystems (pkgs: {
@@ -79,6 +82,26 @@
             platforms = pkgs.lib.platforms.linux;
           };
         };
+
+        # The website, deployed to GitHub Pages by .github/workflows/pages.yml.
+        site = pkgs.stdenvNoCC.mkDerivation {
+          name = "jotty-site";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./site
+              ./docs
+              ./README.md
+              ./CHANGELOG.md
+              ./extra/jotty.svg
+            ];
+          };
+          nativeBuildInputs = [ (mkdocs pkgs) ];
+          # Material prints a banner about MkDocs 2.0 on every build.
+          NO_MKDOCS_2_WARNING = 1;
+          buildPhase = "mkdocs build --strict -f site/mkdocs.yml -d $out";
+          dontInstall = true;
+        };
       });
 
       apps = forAllSystems (pkgs: {
@@ -125,6 +148,7 @@
             cargo-about # scripts/third-party-licenses.sh
             pkg-config
             ncurses
+            (mkdocs pkgs) # mkdocs serve -f site/mkdocs.yml
           ];
           buildInputs = runtimeLibs pkgs;
           # Compile the terminfo entry next to target/{debug,release}/jotty,
@@ -135,6 +159,8 @@
           '';
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+          # Material prints a banner about MkDocs 2.0 on every run.
+          NO_MKDOCS_2_WARNING = 1;
         };
       });
 

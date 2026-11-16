@@ -1,0 +1,47 @@
+/* Home page hero. */
+.jotty-hero {
+  text-align: center;
+  margin: 1rem 0 2rem;
+}
+.jotty-hero img.jotty-logo {
+  width: 96px;
+  border-radius: 12px;
+}
+.jotty-hero h1 {
+  margin: 0.5rem 0 0.25rem;
+  font-weight: 700;
+}
+.jotty-hero p.jotty-tagline {
+  font-size: 1.1rem;
+  opacity: 0.8;
+  margin-top: 0;
+}
+.jotty-shot {
+  border-radius: 8px;
+  box-shadow: var(--md-shadow-z2);
+}
+
+/* Config reference: filter box and option names. */
+#config-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+  font: inherit;
+  color: var(--md-typeset-color);
+  background: var(--md-code-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 4px;
+}
+#config-filter:focus {
+  outline: 2px solid var(--md-accent-fg-color);
+}
+.md-typeset table:not([class]) td:first-child {
+  white-space: nowrap;
+}
+.config-section td:nth-child(2) {
+  min-width: 8rem;
+}
+.config-hidden {
+  display: none !important;
+}
