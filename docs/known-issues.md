@@ -118,7 +118,12 @@ nothing surprises you.
   read (a window still starting) shortens it. Of the commands that finish
   between two reads of the pty, only the longest can be notified. A shell
   without `OSC 133 ; B` and without fish's `cmdline_url` gives no command
-  line, and the window title stands in for it.
+  line, and the window title stands in for it. Read from the screen, the
+  command line is the rest of the prompt's row, so it includes zsh's
+  `RPROMPT` when one stays on screen (unless `TRANSIENT_RPROMPT` is set).
+  A shell run inside another (`bash` in fish, `ssh` to a host whose shell
+  sends marks) ends the outer command's timing at its own first prompt,
+  so the outer one isn't notified.
 - The **bell** only marks an unfocused window urgent; there is no sound or
   visual bell.
 - **Notifications**: kitty's `OSC 99` is not supported, only `OSC 9` and

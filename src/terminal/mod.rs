@@ -557,6 +557,17 @@ const MAX_NOTIFICATION_TEXT: usize = 1024;
 /// Characters kept of a window title (OSC 0/2).
 const MAX_TITLE_CHARS: usize = 256;
 
+/// A command line as a notification shows it: on one line, without
+/// control characters, and not too long.
+fn command_text(command: &str) -> Option<String> {
+    let command: String = command
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let command = truncate(command.trim().to_owned(), MAX_NOTIFICATION_TEXT);
+    (!command.is_empty()).then_some(command)
+}
+
 fn truncate(mut s: String, max_chars: usize) -> String {
     if let Some((i, _)) = s.char_indices().nth(max_chars) {
         s.truncate(i);
@@ -909,8 +920,18 @@ impl Screen {
     /// the command line the shell is about to run. Wrapped rows are one
     /// line; lines are joined with spaces.
     fn command_line(&self) -> Option<String> {
+        // The prompt end is a place on the normal screen.
+        if self.alt_active {
+            return None;
+        }
         let (start_row, start_col) = self.prompt_end?;
-        let (end_row, end_col) = self.cursor();
+        let end_row = self.cursor.row;
+        // A cursor waiting to wrap is past the last column.
+        let end_col = if self.cursor.pending_wrap {
+            self.cols
+        } else {
+            self.cursor.col
+        };
         let rows = &self.grid().rows;
         let mut lines = Vec::new();
         let mut line = String::new();
@@ -928,8 +949,7 @@ impl Screen {
             }
         }
         lines.retain(|l| !l.is_empty());
-        let command = truncate(lines.join(" "), MAX_NOTIFICATION_TEXT);
-        (!command.is_empty()).then_some(command)
+        command_text(&lines.join(" "))
     }
 
     /// The last clipboard writes asked for since the last call.
@@ -2217,12 +2237,13 @@ impl Screen {
         let default_colors = self.default_colors.clone();
         let (width, height) = self.cell_size;
         // Replies, notifications, clipboard writes and finished commands
-        // from before the reset are still due, and the window keeps its
-        // title.
+        // from before the reset are still due, the window keeps its title,
+        // and the command that runs goes on.
         let responses = std::mem::take(&mut self.responses);
         let notifications = std::mem::take(&mut self.notifications);
         let clipboard_write = std::mem::take(&mut self.clipboard_write);
         let finished_command = self.finished_command.take();
+        let command_start = self.command_start.take();
         let (title, title_changed) = (self.title.take(), self.title_changed);
         let bell = self.bell;
         *self = Screen::new(self.cols, self.rows, scrollback);
@@ -2232,6 +2253,7 @@ impl Screen {
         self.notifications = notifications;
         self.clipboard_write = clipboard_write;
         self.finished_command = finished_command;
+        self.command_start = command_start;
         self.title = title;
         self.title_changed = title_changed;
         self.bell = bell;
@@ -2868,13 +2890,7 @@ impl Perform for Screen {
                             .find_map(|p| p.strip_prefix(b"cmdline_url="))
                             .and_then(|url| std::str::from_utf8(url).ok())
                             .and_then(|url| crate::notify::unescape(url).ok())
-                            .map(|c| {
-                                truncate(
-                                    String::from_utf8_lossy(&c).into_owned(),
-                                    MAX_NOTIFICATION_TEXT,
-                                )
-                            })
-                            .filter(|c| !c.is_empty())
+                            .and_then(|c| command_text(&String::from_utf8_lossy(&c)))
                             .or_else(|| self.command_line());
                         self.command_start = Some((Instant::now(), command));
                         Mark::Output { col }

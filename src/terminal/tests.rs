@@ -1973,6 +1973,35 @@ fn the_longest_command_since_the_last_read_is_kept() {
 }
 
 #[test]
+fn a_reset_keeps_the_running_command() {
+    let mut t = term(10, 4);
+    t.feed(b"\x1b]133;C;cmdline_url=make\x07\x1bc\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((Some("make".into()), Some(0))));
+}
+
+#[test]
+fn the_command_line_ends_at_a_pending_wrap() {
+    let mut t = term(10, 4);
+    // The cursor waits past the last column.
+    t.feed(b"$ \x1b]133;B\x07sleep 10\x1b]133;C\x07\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((Some("sleep 10".into()), Some(0))));
+}
+
+#[test]
+fn the_command_line_is_not_read_from_the_alternate_screen() {
+    let mut t = term(10, 4);
+    t.feed(b"$ \x1b]133;B\x07vim\x1b[?1049hfoo\x1b]133;C\x07\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((None, Some(0))));
+}
+
+#[test]
+fn control_characters_in_a_command_line_become_spaces() {
+    let mut t = term(10, 4);
+    t.feed(b"\x1b]133;C;cmdline_url=a%0Ab%1B[1m\x07\x1b]133;D;0\x07");
+    assert_eq!(finished(&mut t), Some((Some("a b [1m".into()), Some(0))));
+}
+
+#[test]
 fn only_a_command_that_started_finishes() {
     let mut t = term(10, 4);
     // An empty command line: the prompt comes back without C.
