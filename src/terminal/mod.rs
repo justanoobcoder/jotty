@@ -1321,8 +1321,6 @@ impl Screen {
         &self.colors
     }
 
-    /// The configured colors, which color queries report while the program
-    /// hasn't changed them.
     /// The cursor style to draw: the program's, or the configured one.
     #[must_use]
     pub fn cursor_style(&self) -> CursorStyle {
@@ -1336,6 +1334,8 @@ impl Screen {
         self.dirty = true;
     }
 
+    /// The configured colors, which color queries report while the program
+    /// hasn't changed them.
     pub fn set_default_colors(&mut self, colors: DefaultColors) {
         self.default_cursor_color = colors.cursor;
         self.default_colors = colors;
@@ -2712,16 +2712,18 @@ impl Perform for Screen {
             ([], 'u') => self.restore_cursor(),
             ([marker @ (b'?' | b'>' | b'<' | b'=')], 'u') => self.keyboard_mode(*marker, args),
             ([b' '], 'q') => {
-                // Odd styles blink; 0 (and unknown ones) mean the default.
+                // Odd styles blink; 0 means the default. Others are
+                // ignored, as in xterm.
                 let shape = match raw(0) {
-                    1 | 2 => CursorShape::Block,
-                    3 | 4 => CursorShape::Underline,
-                    5 | 6 => CursorShape::Beam,
-                    _ => {
+                    0 => {
                         self.cursor_style = None;
                         self.dirty = true;
                         return;
                     }
+                    1 | 2 => CursorShape::Block,
+                    3 | 4 => CursorShape::Underline,
+                    5 | 6 => CursorShape::Beam,
+                    _ => return,
                 };
                 self.cursor_style = Some(CursorStyle {
                     shape,

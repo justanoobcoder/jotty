@@ -1525,10 +1525,12 @@ impl TermWindow {
     /// Shows a blinking cursor at once, as typing does, and starts over
     /// its on phase.
     fn restart_blink(&mut self) {
-        if self.cursor_blinked_off() {
+        let was_off = self.cursor_blinked_off();
+        // Before drawing, which may happen at once and reads the phase.
+        self.blink_epoch = Instant::now();
+        if was_off {
             self.request_redraw();
         }
-        self.blink_epoch = Instant::now();
     }
 
     /// Starts the blink timer when the cursor blinks; the timer stops

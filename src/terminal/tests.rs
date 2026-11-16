@@ -503,6 +503,13 @@ fn odd_cursor_styles_blink() {
 }
 
 #[test]
+fn unknown_cursor_styles_are_ignored() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b[5 q\x1b[7 q");
+    assert_eq!(t.screen().cursor_style(), style(CursorShape::Beam, true));
+}
+
+#[test]
 fn the_default_cursor_style_comes_back_with_0_and_a_reset() {
     let mut t = term(10, 1);
     let configured = style(CursorShape::Beam, true);
