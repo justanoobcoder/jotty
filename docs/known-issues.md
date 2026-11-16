@@ -148,8 +148,9 @@ nothing surprises you.
   runs `terminal.editor` in a new jotty window, so a graphical editor
   leaves that window empty until it exits. The output is plain text,
   without its colors. Its file is removed when the window closes, so an
-  editor that keeps running after its window closed (a server or daemon
-  mode) loses it; one that jotty never got to close (a crash or `kill -9`)
+  editor that exits at once and leaves the file to a process already
+  running (`code` or `subl` without `--wait`, a server or daemon mode)
+  loses it; one that jotty never got to close (a crash or `kill -9`)
   stays in `$XDG_RUNTIME_DIR` until logout.
 - Ctrl combined with Enter, Tab or Backspace can't be told apart from the
   plain key in some cases, as in classic xterm, unless the program turns on

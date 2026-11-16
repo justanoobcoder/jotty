@@ -286,11 +286,15 @@ To keep the GPU renderer but skip Mesa on an NVIDIA system, start jotty with
 | `cursor_shape` | string | `"block"` | `"block"`, `"beam"` or `"underline"`. Programs can set their own with `CSI Ps SP q` (DECSCUSR); `CSI 0 SP q` and a reset bring this one back. |
 | `cursor_blink` | bool | `false` | Blink the cursor (on and off every 500 ms) while the window is focused, unless a program sets a style; typing shows it at once. |
 | `output_click` | string | `"select"` | What a Ctrl+double click on a command's output does: `"select"` it, `"copy"` it to the clipboard as well, or `"open"` it in `editor` (see [Mouse](#mouse)). |
-| `editor` | list of strings | `[]` | The editor that opens command output, in a new window in the current directory, with a temporary file holding the output as its last argument. Empty means `$VISUAL`, then `$EDITOR` (split at spaces), then `less`. |
+| `editor` | list of strings | `[]` | The editor that opens command output, in a new window in the current directory, with a temporary file holding the output as its last argument. It must not exit before you are done (see below). Empty, or an empty program name, means `$VISUAL`, then `$EDITOR` (split at spaces), then `less`. |
 
 **The editor.** jotty runs `editor` itself in a new window, so it should be
 a program that runs in a terminal (`nvim`, `hx`, `less`); a graphical
-editor would leave that window empty. The output is written as plain text
+editor would leave that window empty. The editor must keep running until
+you are done with the file: the file is removed when its window closes,
+and that window closes when the editor exits, so an editor that hands the
+file to a process already running and exits at once (`code` or `subl`
+without `--wait`) finds it gone. The output is written as plain text
 (no colors) to a file in `$XDG_RUNTIME_DIR` that only you can read, and the
 file is removed when the window closes. `$VISUAL` and `$EDITOR` are read
 from jotty's own environment: started from a desktop launcher, jotty

@@ -11,11 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// The editor to run: `terminal.editor` when set, else `$VISUAL`, then
-/// `$EDITOR` (split at whitespace, as in `EDITOR="nvim -R"`), else `less`.
+/// The editor to run: `terminal.editor` when set (an empty program name
+/// counts as unset), else `$VISUAL`, then `$EDITOR` (split at whitespace,
+/// as in `EDITOR="nvim -R"`), else `less`.
 #[must_use]
 pub fn command(configured: &[String]) -> Vec<OsString> {
-    if !configured.is_empty() {
+    if configured
+        .first()
+        .is_some_and(|program| !program.is_empty())
+    {
         return configured.iter().map(OsString::from).collect();
     }
     from_env(env::var("VISUAL").ok(), env::var("EDITOR").ok())
@@ -102,6 +106,11 @@ mod tests {
     #[test]
     fn configured_editor_wins() {
         assert_eq!(command(&["hx".into()]), ["hx"]);
+    }
+
+    #[test]
+    fn empty_program_name_means_unset() {
+        assert_ne!(command(&[String::new(), "-R".into()])[0], "");
     }
 
     #[test]
