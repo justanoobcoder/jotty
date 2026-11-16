@@ -81,8 +81,8 @@ nothing surprises you.
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
 - Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027),
-  blinking text, DECCOLM, and DECSCNM. Unhandled sequences are ignored
-  (logged at `debug` level).
+  blinking text and DECCOLM. Unhandled sequences are ignored (logged at
+  `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
   placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,
   1024 images and 4096 placements per screen; past that the oldest are

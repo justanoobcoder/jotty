@@ -852,10 +852,10 @@ fn synchronized_output_mode() {
 #[test]
 fn mode_reports() {
     let mut t = term(10, 2);
-    t.feed(b"\x1b[?2026h\x1b[?2026$p\x1b[?25l\x1b[?25$p\x1b[?9999$p\x1b[4$p");
+    t.feed(b"\x1b[?2026h\x1b[?2026$p\x1b[?25l\x1b[?25$p\x1b[?9999$p\x1b[4$p\x1b[?5h\x1b[?5$p");
     assert_eq!(
         t.screen_mut().take_responses(),
-        b"\x1b[?2026;1$y\x1b[?25;2$y\x1b[?9999;0$y\x1b[4;2$y"
+        b"\x1b[?2026;1$y\x1b[?25;2$y\x1b[?9999;0$y\x1b[4;2$y\x1b[?5;1$y"
     );
 }
 

@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+- Support reverse video (DECSCNM)
+
 ## 2.3.0
 
 - Add hints (Ctrl+Shift+E): label links, paths, hashes and IP addresses on
