@@ -18,6 +18,8 @@ CHANGELOG
     same file as the upright style show slanted
 - Fonts without a bold or italic face get a made-up one instead of the
     regular face
+- `jotty config` saves through a symlinked `overrides.toml` instead of
+    replacing the link
 
 ## 2.3.0
 
