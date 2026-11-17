@@ -78,14 +78,64 @@ pub fn read_table(path: &Path) -> Result<Option<toml::Table>, String> {
 
 /// Writes the overrides, replacing the file in one step so a running
 /// jotty never reads half of it. No overrides remove the file.
+///
+/// A symlink (to a dotfiles repository) is written through and kept, unless
+/// its target can't be written (the Nix store): then it is replaced.
 pub fn save(path: &Path, overrides: &toml::Table) -> io::Result<()> {
+    let text = toml::to_string(overrides).map_err(io::Error::other)?;
+    let is_symlink = path.symlink_metadata().is_ok_and(|m| m.is_symlink());
+    if is_symlink && let Ok(target) = std::fs::canonicalize(path) {
+        match replace(&target, &text) {
+            Ok(()) => {
+                // Running windows watch the link's directory, not the
+                // target's: renewing the link tells them. The overrides are
+                // saved either way.
+                if let Err(e) = relink(path) {
+                    log::warn!("cannot renew the link {}: {e}", path.display());
+                }
+                return Ok(());
+            }
+            // A target that can't be written: the link is replaced.
+            Err(e) if is_read_only(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
     if overrides.is_empty() {
         return match std::fs::remove_file(path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         };
     }
-    let text = toml::to_string(overrides).map_err(io::Error::other)?;
+    replace(path, &text)
+}
+
+/// Whether `e` says the file can't be written there at all.
+fn is_read_only(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+/// Replaces the symlink at `path` with a new one to the same target.
+fn relink(path: &Path) -> io::Result<()> {
+    let link = std::fs::read_link(path)?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.link", std::process::id()));
+    // A link left over by a crashed save would make symlink() fail.
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(&link, &tmp)?;
+    let renamed = std::fs::rename(&tmp, path);
+    if renamed.is_err() {
+        // Best effort: the error that matters is the one returned.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed
+}
+
+/// Replaces the file at `path` with `text` in one step.
+fn replace(path: &Path, text: &str) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     // A name of its own per process, so two writers never share one.
@@ -245,6 +295,61 @@ mod tests {
         assert!(!path.exists());
         // Already gone is fine.
         save(&path, &toml::Table::new()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_writes_through_a_symlink() {
+        let dir = std::env::temp_dir().join(format!("jotty-settings-link-{}", std::process::id()));
+        let (state, dotfiles) = (dir.join("state"), dir.join("dotfiles"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let (path, target) = (
+            state.join("overrides.toml"),
+            dotfiles.join("overrides.toml"),
+        );
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let mut watch = crate::watch::watch_file(&path).unwrap();
+        let overrides: toml::Table = toml::from_str("[font]\nsize = 12.0").unwrap();
+        save(&path, &overrides).unwrap();
+        assert!(path.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(read_table(&target).unwrap(), Some(overrides));
+        // Running windows, which watch the link's directory, notice.
+        assert!(crate::watch::changed(&mut watch, path.file_name().unwrap()));
+        // Nothing to keep empties the target rather than removing the link.
+        save(&path, &toml::Table::new()).unwrap();
+        assert!(path.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(read_table(&path).unwrap(), Some(toml::Table::new()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_replaces_a_symlink_it_cannot_write_through() {
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            // Permissions don't stop root.
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("jotty-settings-ro-{}", std::process::id()));
+        let (state, store) = (dir.join("state"), dir.join("store"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        let (path, target) = (state.join("overrides.toml"), store.join("overrides.toml"));
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+
+        // Read-only, like the Nix store.
+        let read_only = std::fs::Permissions::from_mode(0o555);
+        std::fs::set_permissions(&store, read_only).unwrap();
+        let overrides: toml::Table = toml::from_str("[font]\nsize = 12.0").unwrap();
+        let saved = save(&path, &overrides);
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
+        saved.unwrap();
+        assert!(!path.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(read_table(&path).unwrap(), Some(overrides));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

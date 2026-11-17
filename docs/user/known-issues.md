@@ -318,8 +318,8 @@ nothing surprises you.
   the TUI.
 - `jotty config export --merged` loses the config file's comments and
   ordering.
-- Saving replaces `overrides.toml` with a new file, so a symlink there
-  becomes a regular file.
+- When `overrides.toml` is a symlink whose target can't be written (into
+  the Nix store), saving replaces the symlink with a regular file.
 - If `~/.local/state/jotty/` is deleted while jotty runs, open windows stop
   noticing changes to the overrides until they are restarted or reloaded
   (Ctrl+Shift+R, `SIGUSR1`).
