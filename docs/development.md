@@ -10,6 +10,7 @@
   - [AUR](#aur)
 - [Tests](#tests)
 - [Running jotty headless](#running-jotty-headless)
+- [Benchmarks](#benchmarks)
 - [Debugging](#debugging)
 - [Code layout and conventions](#code-layout-and-conventions)
 
@@ -221,6 +222,22 @@ The input method can be exercised the same way. sway relays
 prints the `surrounding_text` events it receives) tests the whole IME path.
 Note that sway only sends `text_input.enter` while an input method is
 connected.
+
+## Benchmarks
+
+`scripts/bench/` compares jotty with foot, kitty, ghostty, alacritty and rio,
+or one jotty build with another, on your desktop: `cat.sh` times `cat` of a
+large file, `vtebench.sh` runs vtebench's scenarios, and `startup.sh`
+measures start time and memory. Every terminal gets the same font, size and
+scrollback, and they run in turn, round after round.
+
+```sh
+nix build
+scripts/bench/cat.sh new=jotty-cpu@./result/bin/jotty old=jotty-cpu foot
+nix shell nixpkgs#vtebench -c scripts/bench/vtebench.sh jotty-cpu jotty-gpu
+```
+
+See `scripts/bench/README.md` for the options and what skews the results.
 
 ## Debugging
 
