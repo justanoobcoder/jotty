@@ -58,7 +58,7 @@ fn word_bounds(screen: &Screen, at: Point, delimiters: &str) -> Option<(Point, P
             match screen.row_at(start.line - 1) {
                 Some(row) if row.wrapped => Point {
                     line: start.line - 1,
-                    col: row.cells().len().saturating_sub(1),
+                    col: row.width().saturating_sub(1),
                 },
                 _ => break,
             }
@@ -71,7 +71,7 @@ fn word_bounds(screen: &Screen, at: Point, delimiters: &str) -> Option<(Point, P
     let mut end = at;
     loop {
         let row = screen.row_at(end.line)?;
-        let next = if end.col + 1 < row.cells().len() {
+        let next = if end.col + 1 < row.width() {
             Point {
                 line: end.line,
                 col: end.col + 1,
@@ -108,7 +108,7 @@ pub fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
     }
     let end = screen
         .row_at(last)
-        .map_or(at.col, |r| r.cells().len().saturating_sub(1));
+        .map_or(at.col, |r| r.width().saturating_sub(1));
     (
         Point {
             line: first,

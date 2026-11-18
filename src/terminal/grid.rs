@@ -186,6 +186,9 @@ pub struct Row {
     /// of output, and the row it reuses, from the far end of the history,
     /// is no longer in the cache.
     occupied: usize,
+    /// The row's width in columns. Cells past the stored ones are
+    /// `Cell::default()`.
+    width: usize,
     /// The line continues on the next row (it was soft-wrapped).
     pub wrapped: bool,
     /// The last shell-integration mark set on this row.
@@ -195,7 +198,10 @@ pub struct Row {
 impl PartialEq for Row {
     fn eq(&self, other: &Row) -> bool {
         // `occupied` only says how much a reset has to write.
-        self.cells == other.cells && self.wrapped == other.wrapped && self.mark == other.mark
+        self.cells == other.cells
+            && self.width == other.width
+            && self.wrapped == other.wrapped
+            && self.mark == other.mark
     }
 }
 
@@ -208,14 +214,23 @@ impl Row {
         Row {
             cells: vec![Cell::blank(template); cols],
             occupied: 0,
+            width: cols,
             wrapped: false,
             mark: None,
         }
     }
 
+    /// The stored cells: the first ones of the row, up to its `width`.
     #[must_use]
     pub fn cells(&self) -> &[Cell] {
         &self.cells
+    }
+
+    /// How many columns the row spans, which may be more than it stores
+    /// cells for.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
     }
 
     /// All the cells, to change any of them.
@@ -254,6 +269,7 @@ impl Row {
             self.cells.resize(cols, blank);
         }
         self.occupied = 0;
+        self.width = cols;
         self.wrapped = false;
         self.mark = None;
     }
@@ -263,6 +279,7 @@ impl Row {
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
         self.occupied = cols;
+        self.width = cols;
         if let Some(last) = self.cells.last_mut()
             && last.flags.contains(Flags::WIDE)
         {
