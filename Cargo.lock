@@ -1564,7 +1564,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vte"
 version = "0.15.0"
-source = "git+https://github.com/justanoobcoder/vte?rev=87e560a75ce30e9bf46e2adee736db932692be6e#87e560a75ce30e9bf46e2adee736db932692be6e"
+source = "git+https://github.com/justanoobcoder/vte?rev=11953ef985c5d3d803d00a8802e8c3b993baca9f#11953ef985c5d3d803d00a8802e8c3b993baca9f"
 dependencies = [
  "arrayvec",
  "memchr",
