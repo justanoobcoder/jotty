@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use super::{
     Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, Fed,
     FinishedCommand, Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode,
-    Notification, Row, Terminal, Underline,
+    Notification, Row, Terminal, Underline, never_joins,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -970,6 +970,34 @@ fn ascii_after_a_cluster_starts_a_new_cell() {
 }
 
 #[test]
+fn common_characters_after_a_cluster_start_a_new_cell() {
+    let mut t = term(10, 1);
+    // The `never_joins` fast path must not skip a base cell with a tail:
+    // `©` and `®` are pictographic, so a ZWJ between them joins them.
+    t.feed("ê\u{301}ế漢─©\u{200d}®".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "ê\u{301}");
+    assert_eq!(text_at(&t, 0, 1), "ế");
+    assert_eq!(text_at(&t, 0, 2), "漢");
+    assert_eq!(text_at(&t, 0, 4), "─");
+    assert_eq!(text_at(&t, 0, 5), "©\u{200d}®");
+}
+
+#[test]
+fn never_joins_agrees_with_grapheme_segmentation() {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let chars = (0..=char::MAX as u32)
+        .filter_map(char::from_u32)
+        .filter(|&c| never_joins(c));
+    for c in chars {
+        for pair in [['a', c], [c, 'a'], [c, c]] {
+            let text = String::from_iter(pair);
+            assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
+        }
+    }
+}
+
+#[test]
 fn a_cluster_at_the_last_column_without_autowrap_is_overwritten() {
     // The cursor stays on the last column, so a character that would join
     // the cluster there (U+0600 is a prepended mark: it joins whatever
@@ -1325,6 +1353,33 @@ fn apc_strings_are_hidden_from_the_parser() {
     assert_eq!(lines(&t), ["abc", ""]);
     assert!(cell(&t, 0, 2).flags.contains(Flags::BOLD));
     assert_eq!(t.screen_mut().take_responses(), b"\x1b_Gi=7;OK\x1b\\");
+}
+
+#[test]
+fn introducers_are_told_from_other_sequences() {
+    use super::{Introducer, StringKind, introducer};
+
+    let whole = |bytes: &[u8]| match introducer(bytes) {
+        Some(Introducer::Whole(kind)) => Some(kind),
+        _ => None,
+    };
+    let partial = |bytes: &[u8]| match introducer(bytes) {
+        Some(Introducer::Partial(start)) => Some(start),
+        _ => None,
+    };
+    assert_eq!(whole(b"\x1b_Gx"), Some(StringKind::Apc));
+    assert_eq!(whole(b"\x1b]52;c;"), Some(StringKind::Clipboard));
+    assert_eq!(partial(b"\x1b"), Some(&b"\x1b"[..]));
+    assert_eq!(partial(b"\x1b]5"), Some(&b"\x1b]5"[..]));
+    for other in [
+        &b"\x1b[1m"[..],
+        b"\x1b]0;t",
+        b"\x1b]53;",
+        b"\x1bP",
+        b"\x1b\\",
+    ] {
+        assert!(introducer(other).is_none(), "{other:?}");
+    }
 }
 
 #[test]
