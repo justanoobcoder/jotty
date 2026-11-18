@@ -1026,7 +1026,8 @@ fn characters_that_never_join_stay_apart_from_each_other() {
 
     // One of each grapheme break kind `never_joins` lets through: other,
     // extended pictographic, Hangul LV and LVT syllables, an Indic
-    // consonant (InCB=Consonant).
+    // consonant (InCB=Consonant). Format characters such as the soft
+    // hyphen count as controls, which nothing joins.
     let kinds = ['a', '©', '가', '각', 'क'];
     for kind in kinds {
         assert!(never_joins(kind), "{kind:?} should never join");
