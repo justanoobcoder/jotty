@@ -59,8 +59,9 @@ dotted, dashed; SGR `4:n`), and the id of its `Extra`: the hyperlink id,
 cluster id and underline color (SGR 58), which few cells have. Id 0 is none
 of them, so most cells never look the table up. A double-width character
 occupies a `WIDE` cell followed by a `WIDE_SPACER` cell. Every write and
-erase calls `split_wide()` so a wide character is never left
-half-overwritten.
+erase that lands on half of one calls `split_wide()` so a wide character
+is never left half-overwritten; cells nothing wrote since their row was
+made blank are skipped without a look.
 
 **Grapheme clusters.** A printed character that continues the cluster of
 the last one (by the Unicode segmentation rules) joins it instead of

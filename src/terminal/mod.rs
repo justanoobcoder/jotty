@@ -2140,9 +2140,18 @@ impl Screen {
         }
 
         let (row, col) = (self.cursor.row, self.cursor.col);
-        self.split_wide(row, col);
-        if width == 2 {
-            self.split_wide(row, col + 1);
+        // Cells nothing wrote since the row was made blank hold no wide
+        // character: on a new line of output, that is all of them.
+        let target = &self.grid().rows[row];
+        if target.written() > col
+            && target.cells()[col..col + width]
+                .iter()
+                .any(|cell| cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER))
+        {
+            self.split_wide(row, col);
+            if width == 2 {
+                self.split_wide(row, col + 1);
+            }
         }
         self.erase_sixels(row, col, col + width);
         let mut cell = self.cursor.template;
