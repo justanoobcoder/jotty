@@ -13,6 +13,7 @@ CHANGELOG
     in `terminal.editor` at that line
 - Large kitty graphics images no longer freeze every window while they
     decode
+- Faster output of colored text, links and sixel images
 - Blinking text blinks (`terminal.text_blink`)
 - Variable fonts use their named instances, so italics that live in the
     same file as the upright style show slanted

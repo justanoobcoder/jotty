@@ -45,7 +45,7 @@
           };
           cargoLock = {
             lockFile = ./Cargo.lock;
-            outputHashes."vte-0.15.0" = "sha256-SUm6c1/tFFzOuecOYiCsG4Bpbn12PhVHUx8aBZY6yII=";
+            outputHashes."vte-0.15.0" = "sha256-kYsWDiJyRaDOUs8LUDaHRv4nHRQdf4rxA6NFAxelWxE=";
           };
 
           nativeBuildInputs = [
