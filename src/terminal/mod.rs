@@ -1340,8 +1340,8 @@ impl Screen {
         if c.is_ascii() && self.is_lone_ascii(&start) {
             return false;
         }
-        // Nor do the common characters in `never_joins`, for most of the
-        // rest (accented Latin, CJK, box drawing).
+        // Nor do the characters in `never_joins`, for most non-ASCII text
+        // (accented Latin, CJK, box drawing).
         if never_joins(c) && (start.c.is_ascii() || never_joins(start.c)) && self.is_lone(&start) {
             return false;
         }
