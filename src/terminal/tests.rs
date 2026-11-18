@@ -1356,6 +1356,33 @@ fn apc_strings_are_hidden_from_the_parser() {
 }
 
 #[test]
+fn introducers_are_told_from_other_sequences() {
+    use super::{Introducer, StringKind, introducer};
+
+    let whole = |bytes: &[u8]| match introducer(bytes) {
+        Some(Introducer::Whole(kind)) => Some(kind),
+        _ => None,
+    };
+    let partial = |bytes: &[u8]| match introducer(bytes) {
+        Some(Introducer::Partial(start)) => Some(start),
+        _ => None,
+    };
+    assert_eq!(whole(b"\x1b_Gx"), Some(StringKind::Apc));
+    assert_eq!(whole(b"\x1b]52;c;"), Some(StringKind::Clipboard));
+    assert_eq!(partial(b"\x1b"), Some(&b"\x1b"[..]));
+    assert_eq!(partial(b"\x1b]5"), Some(&b"\x1b]5"[..]));
+    for other in [
+        &b"\x1b[1m"[..],
+        b"\x1b]0;t",
+        b"\x1b]53;",
+        b"\x1bP",
+        b"\x1b\\",
+    ] {
+        assert!(introducer(other).is_none(), "{other:?}");
+    }
+}
+
+#[test]
 fn escape_sequence_cuts_apc_short() {
     let mut t = term(10, 2);
     t.feed(b"\x1b_Gjunk\x1b[1mx");

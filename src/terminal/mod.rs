@@ -78,6 +78,15 @@ enum Introducer {
 
 /// The introducer `bytes` start with, if any.
 fn introducer(bytes: &[u8]) -> Option<Introducer> {
+    // Nearly every `ESC` starts another sequence: rule those out by their
+    // second byte before comparing whole introducers.
+    if let Some(&second) = bytes.get(1)
+        && !StringKind::ALL
+            .iter()
+            .any(|kind| kind.introducer()[1] == second)
+    {
+        return None;
+    }
     StringKind::ALL.into_iter().find_map(|kind| {
         let start = kind.introducer();
         let n = bytes.len().min(start.len());
