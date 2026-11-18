@@ -623,10 +623,18 @@ impl Fonts {
             return None;
         }
         let mut data = vec![0; (width * height) as usize];
+        // The pixels come in order, row by row: counting them spares
+        // working out the index from `x` and `y`, which the rasterizer
+        // divides it into, on every pixel.
+        let mut pixel = 0;
         outline.draw(|x, y, coverage| {
-            if let Some(px) = data.get_mut((y * width + x) as usize) {
-                *px = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+            debug_assert_eq!((y * width + x) as usize, pixel);
+            if let Some(px) = data.get_mut(pixel) {
+                // Rounded by adding a half: `as` saturates, and `round`
+                // is a library call without SSE4.1.
+                *px = (coverage * 255.0 + 0.5) as u8;
             }
+            pixel += 1;
         });
         // Center the visible ink: bitmaps can have faint antialiasing rows
         // on one side only.

@@ -59,8 +59,9 @@ dotted, dashed; SGR `4:n`), and the id of its `Extra`: the hyperlink id,
 cluster id and underline color (SGR 58), which few cells have. Id 0 is none
 of them, so most cells never look the table up. A double-width character
 occupies a `WIDE` cell followed by a `WIDE_SPACER` cell. Every write and
-erase calls `split_wide()` so a wide character is never left
-half-overwritten.
+erase that lands on half of one calls `split_wide()` so a wide character
+is never left half-overwritten; cells nothing wrote since their row was
+made blank are skipped without a look.
 
 **Grapheme clusters.** A printed character that continues the cluster of
 the last one (by the Unicode segmentation rules) joins it instead of
@@ -69,6 +70,9 @@ Zero-width characters (combining marks, ZWJ, variation selectors) take no
 room. Characters with a width (the emoji after a ZWJ, skin tones, the
 second flag letter) still take their `wcwidth` cells, as `CONTINUATION`
 cells that only reserve room, so the cursor stays where programs expect.
+Most characters (letters, CJK, symbols) can't join a lone one of their
+kind, nor ASCII: a table of them, worked out a block of characters at a
+time on first use, saves running the segmentation rules for them.
 
 **Reflow.** When the width changes, `Grid::reflow` joins soft-wrapped rows
 of the primary screen and its history into lines, re-wraps them to the new

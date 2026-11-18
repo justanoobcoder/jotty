@@ -1021,6 +1021,41 @@ fn never_joins_agrees_with_grapheme_segmentation() {
 }
 
 #[test]
+fn characters_that_never_join_stay_apart_from_each_other() {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    // One of each grapheme break kind `never_joins` lets through: other,
+    // extended pictographic, Hangul LV and LVT syllables, an Indic
+    // consonant (InCB=Consonant). Format characters such as the soft
+    // hyphen count as controls, which nothing joins.
+    let kinds = ['a', '©', '가', '각', 'क'];
+    for kind in kinds {
+        assert!(never_joins(kind), "{kind:?} should never join");
+    }
+    let chars = (0..=char::MAX as u32)
+        .filter_map(char::from_u32)
+        .filter(|&c| never_joins(c));
+    for c in chars {
+        for kind in kinds {
+            for pair in [[kind, c], [c, kind]] {
+                let text = String::from_iter(pair);
+                assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
+            }
+        }
+    }
+}
+
+#[test]
+fn joining_characters_are_told_apart() {
+    // Extend, ZWJ, SpacingMark, Prepend, regional indicator, Hangul L, V, T.
+    for c in [
+        '\u{301}', '\u{200d}', '\u{903}', '\u{600}', '🇻', 'ᄀ', 'ᅡ', 'ᆨ',
+    ] {
+        assert!(!never_joins(c), "{c:?} can join");
+    }
+}
+
+#[test]
 fn a_cluster_at_the_last_column_without_autowrap_is_overwritten() {
     // The cursor stays on the last column, so a character that would join
     // the cluster there (U+0600 is a prepended mark: it joins whatever

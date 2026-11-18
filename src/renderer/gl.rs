@@ -453,6 +453,7 @@ impl Renderer {
                     fonts,
                     atlas: Atlas::new(
                         ATLAS_SIZE,
+                        MAX_ATLAS_SIZE.min(max_texture_size),
                         COLOR_ATLAS_SIZE,
                         MAX_ATLAS_SIZE.min(max_texture_size),
                     ),
