@@ -81,8 +81,10 @@ enum GlyphKey {
 pub struct Atlas {
     packer: Packer,
     color_packer: Packer,
-    /// The largest side either image may grow to.
+    /// The largest side the coverage image may grow to.
     max_size: u32,
+    /// The largest side the color image may grow to.
+    color_max_size: u32,
     glyphs: HashMap<GlyphKey, Option<GlyphInfo>>,
     /// The atlas filled up and was cleared since the last `take_overflowed`.
     overflowed: bool,
@@ -96,13 +98,15 @@ pub struct Atlas {
 
 impl Atlas {
     /// Square atlas images of `size` (coverage) and `color_size` (RGBA)
-    /// pixels to start with; one that fills up doubles, up to `max_size`.
+    /// pixels to start with; one that fills up doubles, up to `max_size`
+    /// and `color_max_size`.
     #[must_use]
-    pub fn new(size: u32, color_size: u32, max_size: u32) -> Self {
+    pub fn new(size: u32, max_size: u32, color_size: u32, color_max_size: u32) -> Self {
         Atlas {
             packer: Packer::new(size),
             color_packer: Packer::new(color_size),
-            max_size: max_size.max(size).max(color_size),
+            max_size: max_size.max(size),
+            color_max_size: color_max_size.max(color_size),
             glyphs: HashMap::new(),
             overflowed: false,
             retrying: false,
@@ -158,10 +162,15 @@ impl Atlas {
             return Some(pos);
         }
         let size = self.packer(color).size();
-        if size < self.max_size {
+        let max_size = if color {
+            self.color_max_size
+        } else {
+            self.max_size
+        };
+        if size < max_size {
             // Bigger, and from scratch: the positions so far are in the
             // old image. A screen that fits now never clears it again.
-            let grown = size.saturating_mul(2).min(self.max_size);
+            let grown = size.saturating_mul(2).min(max_size);
             log::info!("growing the glyph atlas to {grown}×{grown}");
             *self.packer(color) = Packer::new(grown);
         } else if self.retrying {
@@ -270,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_full_atlas_grows_then_starts_over() {
-        let mut atlas = Atlas::new(10, 10, 20);
+        let mut atlas = Atlas::new(10, 20, 10, 20);
         assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         let generation = atlas.generation();
         // Full: the image doubles and is repacked, which needs a redraw.
@@ -285,6 +294,21 @@ mod tests {
         // The next frame can start over.
         assert!(atlas.allocate(10, 10, /* color= */ false).is_some());
         assert!(atlas.take_overflowed());
+    }
+
+    #[test]
+    fn each_image_grows_up_to_its_own_largest_size() {
+        let mut atlas = Atlas::new(10, 40, 10, 20);
+        // A glyph each frame: the images fill and grow until they can't.
+        for color in [false, true] {
+            for _ in 0..4 {
+                atlas.allocate(10, 10, color);
+                atlas.take_overflowed();
+                atlas.take_overflowed();
+            }
+        }
+        assert_eq!(atlas.size(false), 40);
+        assert_eq!(atlas.size(true), 20);
     }
 
     #[test]

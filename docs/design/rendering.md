@@ -46,8 +46,8 @@ texture.
 **2b. Drawing on the CPU** (`renderer::software`, the default) paints the
 same batch into an ARGB8888 `wl_shm` buffer: it clears to the background,
 then fills each quad, blending glyph coverage from an atlas in memory
-(1024×1024 to start with, up to 2048×2048), or color emoji from a BGRA
-atlas (512×512 to start with) allocated on first use.
+(1024×1024 to start with, up to 4096×4096), or color emoji from a BGRA
+atlas (512×512 to start with, up to 2048×2048) allocated on first use.
 Quads are axis-aligned and glyphs 1:1, so this is a plain blit with
 premultiplied-alpha blending, and the result matches the GL output pixel
 for pixel. Images are scaled by sampling the nearest pixel.

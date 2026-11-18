@@ -296,8 +296,8 @@ nothing surprises you.
   renderer.
 - The GPU renderer needs OpenGL ES 3.0 through EGL. Without it, jotty falls
   back to the CPU renderer.
-- A glyph atlas that fills up doubles (up to 4096×4096 on the GPU, within
-  the driver's texture size limit, and 2048×2048 on the CPU) and is
+- A glyph atlas that fills up doubles (up to 4096×4096, or the GPU
+  driver's texture size limit; color emoji on the CPU up to 2048×2048) and is
   repacked, then the frame is built again before it is drawn, which can
   cause a brief hitch with very large fonts or many scripts or emoji on
   screen. If the screen needs more than the largest atlas holds, the glyphs

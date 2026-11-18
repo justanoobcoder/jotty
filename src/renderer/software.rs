@@ -24,8 +24,12 @@ use crate::terminal::graphics::Image;
 const ATLAS_SIZE: u32 = 1024;
 /// The color emoji atlas to start with: room for a hundred emoji or so.
 const COLOR_ATLAS_SIZE: u32 = 512;
-/// The largest either atlas grows to: 4 MiB of coverage, 16 MiB of color.
-const MAX_ATLAS_SIZE: u32 = 2048;
+/// The largest the glyph atlas grows to: 16 MiB, taken only by a window
+/// that showed more glyphs than 2048×2048 holds (some 18,000 at 12 pt),
+/// which would otherwise rasterize them again and again.
+const MAX_ATLAS_SIZE: u32 = 4096;
+/// The largest the color atlas grows to: 16 MiB.
+const MAX_COLOR_ATLAS_SIZE: u32 = 2048;
 /// A pool this many times larger than the window needs is replaced by a
 /// smaller one; it never shrinks on its own.
 const POOL_SLACK: usize = 4;
@@ -73,7 +77,12 @@ impl Renderer {
             presented: Vec::new(),
             glyphs: Glyphs {
                 fonts,
-                atlas: Atlas::new(ATLAS_SIZE, COLOR_ATLAS_SIZE, MAX_ATLAS_SIZE),
+                atlas: Atlas::new(
+                    ATLAS_SIZE,
+                    MAX_ATLAS_SIZE,
+                    COLOR_ATLAS_SIZE,
+                    MAX_COLOR_ATLAS_SIZE,
+                ),
             },
             layers: Layers::default(),
             atlas_pixels: Vec::new(),
