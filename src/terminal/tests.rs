@@ -985,12 +985,14 @@ fn common_characters_after_a_cluster_start_a_new_cell() {
     let mut t = term(10, 1);
     // The `never_joins` fast path must not skip a base cell with a tail:
     // `©` and `®` are pictographic, so a ZWJ between them joins them.
-    t.feed("ê\u{301}ế漢─©\u{200d}®".as_bytes());
+    t.feed("ê\u{301}ế漢─©\u{200d}® ".as_bytes());
     assert_eq!(text_at(&t, 0, 0), "ê\u{301}");
     assert_eq!(text_at(&t, 0, 1), "ế");
     assert_eq!(text_at(&t, 0, 2), "漢");
     assert_eq!(text_at(&t, 0, 4), "─");
     assert_eq!(text_at(&t, 0, 5), "©\u{200d}®");
+    // The space after the cluster starts a cell of its own.
+    assert_eq!(t.screen().cursor(), (0, 8));
 }
 
 #[test]
@@ -1004,6 +1006,16 @@ fn never_joins_agrees_with_grapheme_segmentation() {
         for pair in [['a', c], [c, 'a'], [c, c]] {
             let text = String::from_iter(pair);
             assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
+        }
+    }
+    // Printable ASCII next to one of each kind of character in the blocks.
+    let ascii = (b' '..=b'~').map(char::from);
+    for a in ascii {
+        for c in ['é', 'ʰ', '\u{ad}', '©', 'ế', '─', '漢'] {
+            for pair in [[a, c], [c, a]] {
+                let text = String::from_iter(pair);
+                assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
+            }
         }
     }
 }
