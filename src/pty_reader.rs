@@ -18,9 +18,9 @@ use smithay_client_toolkit::reexports::calloop::ping::Ping;
 
 /// The most bytes one read takes.
 const READ_SIZE: usize = 1 << 16;
-/// The most output queued for the window; past it, the thread waits, and
-/// so does the program. Also how much the window takes at most before it
-/// draws.
+/// The output queued for the window past which the thread waits, and so
+/// does the program. The queue ends up at most a read larger, which is
+/// about how much the window takes at most before it draws.
 const MAX_QUEUED: usize = 1 << 20;
 /// While output streams in, the window is woken at most this often: a
 /// wake-up costs it about as much as a few kilobytes of output, and the
@@ -102,12 +102,12 @@ impl PtyReader {
     /// Takes the output queued so far. `previous` is the last output
     /// taken, done with, whose buffer the thread fills next.
     pub fn take(&mut self, mut previous: Vec<u8>) -> Output {
-        previous.clear();
-        let mut queue = self.shared.lock();
         // A buffer a burst of output grew goes once output slows down.
-        if queue.output.len() <= READ_SIZE {
+        if previous.len() <= READ_SIZE {
             previous.shrink_to(READ_SIZE);
         }
+        previous.clear();
+        let mut queue = self.shared.lock();
         let bytes = mem::replace(&mut queue.output, previous);
         let closed = queue.closed;
         drop(queue);

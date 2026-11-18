@@ -1,11 +1,11 @@
 # Architecture overview
 
 jotty is an event-driven program. One `calloop` event loop waits on the
-Wayland socket and the PTY output a thread per window reads; threads only
-do work that would stall it (reading the PTY, decoding large images,
-connecting to the session bus, waiting for launched programs). The terminal state is plain data,
-and the renderer turns it into quads once per frame, drawn with OpenGL ES or
-on the CPU.
+Wayland socket and on output from the PTYs, which a thread per window
+reads. Threads only do work that would stall the loop (reading the PTY,
+decoding large images, connecting to the session bus, waiting for launched
+programs). The terminal state is plain data, and the renderer turns it into
+quads once per frame, drawn with OpenGL ES or on the CPU.
 
 ```
              ┌────────────── calloop event loop (app.rs) ───────────────┐

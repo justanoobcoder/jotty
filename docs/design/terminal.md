@@ -103,9 +103,10 @@ whose payload is over 64 KiB, or that names a file or shared memory, is not
 finished on the spot: `Terminal::feed_until_decode` stops right after it
 and returns a `graphics::Decode`, and `TermWindow::feed` runs it on a
 thread, pausing that window's pty source and keeping the output read after
-it; the pty reader goes on until its queue is full. When the `Decoded` result comes back over a channel,
-`Terminal::finish_decode` stores and places the image, as if it had been
-decoded at once, and the waiting output is fed. What follows an image may
+it; the pty reader goes on until its queue is full. When the `Decoded`
+result comes back over a channel, `Terminal::finish_decode` stores and
+places the image, as if it had been decoded at once, and the waiting
+output is fed. What follows an image may
 depend on where it left the cursor, so nothing after it is processed
 first. A thread that dies without a result (a panic in a decoder) closes
 the channel, and the transmission fails with `Decode::failed` instead of
@@ -163,8 +164,8 @@ and `TERM_PROGRAM=jotty`. The master is non-blocking:
   output over a few hundred bytes at a time and holds little of it, so a
   program writing a lot waits whenever its reader stops; reading on the
   event loop stopped it for every frame drawn. The window takes the whole
-  queue when woken, at most 1 MiB, past which the thread waits, so a flood
-  of output can't starve input handling and drawing. Output after a pause
+  queue when woken, about 1 MiB at most, past which the thread waits, so a
+  flood of output can't starve input handling and drawing. Output after a pause
   wakes the window at once; while output streams in, it is woken at most
   once a millisecond, since a wake-up costs it about as much as parsing a
   few kilobytes. `EIO` means the child and all its descendants closed the
