@@ -527,7 +527,10 @@ impl History {
     fn pop_back(&mut self) -> Option<Row> {
         let stored = self.rows.pop_back()?;
         let row = self.view(&stored).to_row();
-        if stored.len > 0 {
+        if self.rows.is_empty() {
+            // The first page may still hold cells of rows dropped earlier.
+            self.clear();
+        } else if stored.len > 0 {
             // The newest row's cells are the last ones on its page.
             self.pages[stored.page - self.dropped_pages].truncate(stored.start as usize);
             while self.pages.back().is_some_and(Vec::is_empty) {
@@ -1071,6 +1074,21 @@ mod tests {
         scroll_out(&mut grid, Some('e'));
         scroll_out(&mut grid, Some('f'));
         assert_eq!(first_chars(&grid), "abef");
+    }
+
+    #[test]
+    fn history_emptied_by_rows_coming_back_holds_no_cells() {
+        let mut grid = wide_grid(2);
+        // "a" leaves cells on the first page before "b".
+        for c in "abc".chars() {
+            scroll_out(&mut grid, Some(c));
+        }
+        grid.resize(PAGE_CELLS / 2, 3, 0);
+        assert!(grid.history.is_empty());
+        assert_eq!(grid.history.cells_mut().count(), 0);
+        assert!(grid.history.pages.is_empty());
+        scroll_out(&mut grid, Some('d'));
+        assert_eq!(first_chars(&grid), "d");
     }
 
     #[test]
