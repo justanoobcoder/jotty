@@ -2108,6 +2108,10 @@ impl Screen {
 
     /// Writes `c` at the cursor with the current attributes and advances.
     /// Returns where it went, if it fit.
+    // Inlined: returned through memory, the position is stored in parts and
+    // read back whole, which stalls the store buffer on every character
+    // (a quarter of the time printing non-ASCII text took).
+    #[inline(always)]
     fn print_cell(&mut self, c: char, width: usize, flags: Flags) -> Option<(usize, usize)> {
         if self.cursor.pending_wrap {
             if self.modes.autowrap {
