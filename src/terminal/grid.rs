@@ -244,21 +244,25 @@ impl Row {
         &mut self.cells[col]
     }
 
-    /// Makes this a blank row of `cols` cells, keeping its allocation.
-    fn reset(&mut self, cols: usize, template: &Cell) {
-        let blank = Cell::blank(template);
+    /// Makes this a copy of the blank row `blank`, keeping its allocation.
+    ///
+    /// Copying cells is faster than setting them to a blank cell, which
+    /// writes a cell a field at a time: the bytes a color doesn't use are
+    /// undefined, so they can't be written along.
+    fn reset(&mut self, blank: &[Cell]) {
+        let cols = blank.len();
         if self.cells.len() == cols {
             // The cells after `occupied` are alike, so the last one tells
             // whether they are blank already.
-            let end = if self.cells.last() == Some(&blank) {
+            let end = if self.cells.last() == blank.last() {
                 self.occupied
             } else {
                 cols
             };
-            self.cells[..end].fill(blank);
+            self.cells[..end].copy_from_slice(&blank[..end]);
         } else {
             self.cells.clear();
-            self.cells.resize(cols, blank);
+            self.cells.extend_from_slice(blank);
         }
         self.occupied = 0;
         self.width = cols;
@@ -552,6 +556,8 @@ pub struct Grid {
     /// positions in the history can follow new output.
     pub scrolled: u64,
     cols: usize,
+    /// A blank row to copy (see `Row::reset`), for the last template.
+    blank: Vec<Cell>,
 }
 
 impl Grid {
@@ -566,7 +572,17 @@ impl Grid {
             max_history,
             scrolled: 0,
             cols,
+            blank: Vec::new(),
         }
+    }
+
+    /// A blank row of the grid's width with the colors of `template`.
+    fn blank(&mut self, template: &Cell) -> &[Cell] {
+        let blank = Cell::blank(template);
+        if self.blank.len() != self.cols || self.blank.first() != Some(&blank) {
+            self.blank = vec![blank; self.cols];
+        }
+        &self.blank
     }
 
     #[cfg(test)]
@@ -588,10 +604,10 @@ impl Grid {
     }
 
     /// A blank row, made from `spare` when there is one.
-    fn blank_row(&self, spare: Option<Row>, template: &Cell) -> Row {
+    fn blank_row(&mut self, spare: Option<Row>, template: &Cell) -> Row {
         match spare {
             Some(mut row) => {
-                row.reset(self.cols, template);
+                row.reset(self.blank(template));
                 row
             }
             None => Row::new(self.cols, template),
@@ -619,7 +635,7 @@ impl Grid {
             if keep {
                 self.push_history(&row);
             }
-            row.reset(self.cols, template);
+            row.reset(self.blank(template));
             self.rows.insert(bottom, row);
         }
         n
@@ -1094,6 +1110,23 @@ mod tests {
     }
 
     #[test]
+    fn blank_rows_take_the_colors_of_each_scroll() {
+        let red = Cell {
+            bg: Color::Indexed(1),
+            ..Cell::default()
+        };
+        let mut grid = grid_with_lines(&["a", "b"], 3);
+        grid.scroll_up(0, 1, 1, &red, /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::blank(&red); 3]);
+        grid.scroll_up(0, 1, 1, &Cell::default(), /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::default(); 3]);
+        // The grid's width changes too.
+        grid.resize(5, 2, 0);
+        grid.scroll_up(0, 1, 1, &red, /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::blank(&red); 5]);
+    }
+
+    #[test]
     fn reset_blanks_whatever_was_written() {
         let red = Cell {
             bg: Color::Indexed(1),
@@ -1104,23 +1137,23 @@ mod tests {
         // Text at the start, then the rest erased in another color.
         row.cells_in(0..2).fill(Cell { c: 'x', ..blank });
         row.cells_in(2..6).fill(Cell::blank(&red));
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // A cell changed through `cells_mut`, past what was written.
         row.cells_in(0..1)[0].c = 'a';
         row.cells_mut()[4].c = 'b';
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // Blank in another color: every cell changes.
         row.cell_mut(0).c = 'c';
-        row.reset(6, &red);
+        row.reset(&[Cell::blank(&red); 6]);
         assert_eq!(row.cells(), [Cell::blank(&red); 6]);
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // Resizing adds default cells after whatever the row held.
         let mut row = Row::new(2, &red);
         row.resize(4);
-        row.reset(4, &red);
+        row.reset(&[Cell::blank(&red); 4]);
         assert_eq!(row.cells(), [Cell::blank(&red); 4]);
     }
 
