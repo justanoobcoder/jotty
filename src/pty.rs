@@ -61,6 +61,22 @@ fn set_flag(
     Ok(())
 }
 
+/// Turns on IUTF8 for the terminal of `fd`, so that line editing erases a
+/// whole UTF-8 character instead of its last byte.
+fn set_iutf8(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    // SAFETY: an all-zero termios is a valid value for tcgetattr to fill.
+    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr writes into the termios it is given, and tcsetattr
+    // only reads it; `fd` is a valid descriptor.
+    unsafe {
+        check(libc::tcgetattr(fd, &mut termios))?;
+        termios.c_iflag |= libc::IUTF8;
+        check(libc::tcsetattr(fd, libc::TCSANOW, &termios))?;
+    }
+    Ok(())
+}
+
 /// How much queued input leaves no room for more terminal replies.
 const MAX_QUEUED_RESPONSES: usize = 1 << 20;
 
@@ -104,6 +120,7 @@ impl Pty {
             libc::F_SETFD,
             libc::FD_CLOEXEC,
         )?;
+        set_iutf8(slave.as_fd())?;
 
         let mut command = Command::new(program);
         if let Some(env) = env {
@@ -465,6 +482,14 @@ mod tests {
         pty.write(b"hello\n").unwrap();
         assert!(!pty.has_pending());
         assert!(read_to_end(&mut pty).contains("got:hello"));
+    }
+
+    #[test]
+    fn erase_removes_a_whole_multibyte_character() {
+        let mut pty = sh("read line; echo \"got:$line\"");
+        pty.write("aé\x7fb\n".as_bytes()).unwrap();
+        let out = read_to_end(&mut pty);
+        assert!(out.contains("got:ab"), "{out:?}");
     }
 
     #[test]
