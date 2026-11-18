@@ -189,6 +189,7 @@ impl Pty {
 
     /// Reads child output. Returns `WouldBlock` when nothing is available.
     /// Once the child has exited, Linux reports `EIO`.
+    #[cfg(test)]
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use std::io::Read;
         self.master.read(buf)

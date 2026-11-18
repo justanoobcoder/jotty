@@ -1,9 +1,9 @@
 # Architecture overview
 
 jotty is an event-driven program. One `calloop` event loop waits on the
-Wayland socket and the PTY; threads only do work that would stall it
-(decoding large images, connecting to the session bus, waiting for
-launched programs). The terminal state is plain data,
+Wayland socket and the PTY output a thread per window reads; threads only
+do work that would stall it (reading the PTY, decoding large images,
+connecting to the session bus, waiting for launched programs). The terminal state is plain data,
 and the renderer turns it into quads once per frame, drawn with OpenGL ES or
 on the CPU.
 
@@ -13,6 +13,9 @@ on the CPU.
   keyboard ──┤ input.rs ── bytes ──► pty.rs ──► child process (shell)   │
   text-input ┤ ime.rs   ── bytes ──┘   │                                │
   pointer ───┤ selection.rs, links.rs  │ output                         │
+             │                         ▼                                │
+             │          pty_reader.rs (its own thread): queue, wake     │
+             │                         │                                │
              │                         ▼                                │
              │                terminal/ (vte parser → Screen)           │
              │                         │ dirty                          │
@@ -34,6 +37,7 @@ on the CPU.
 | `settings/` | `jotty config`: the overrides file, the TUI (ratatui), the key schema it edits, and the TOML → Nix export | no |
 | `terminal/` | VT emulation: grid, scrollback, escape sequences, kitty and sixel graphics | no |
 | `pty.rs` | Opens the pseudo-terminal, spawns the child, does non-blocking I/O | no |
+| `pty_reader.rs` | Reads the PTY on a thread of its own and queues the output for the window, waking its event loop | no |
 | `terminfo.rs` | Picks `$TERM`: jotty's own entry when installed, else `xterm-256color` | no |
 | `input.rs` | Key → bytes encoding (xterm and the kitty keyboard protocol), mouse reports, paste encoding | xkb keysyms only |
 | `keybinds.rs` | Configurable key bindings for jotty's actions | xkb keysyms only |
@@ -68,6 +72,7 @@ The `unsafe` code is confined to:
 - `font.rs`: the fontconfig FFI calls, each a create/use/destroy sequence
   inside one function, and `mmap` of font files, which are never unmapped
   (so the `&'static` slices that faces borrow stay valid);
+- `pty_reader.rs`: `poll` on the PTY and the pipe that stops the thread;
 - `watch.rs`: `inotify_init1`/`inotify_add_watch`, and the SIGUSR1
   handler, which only writes a byte to a pipe the event loop reads;
 - `renderer/gl.rs`: EGL and GL calls. The `Renderer` must not outlive the
