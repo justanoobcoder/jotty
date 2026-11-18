@@ -2303,8 +2303,12 @@ fn assert_grid_shape(t: &Terminal, seed: u64) {
     let (cols, rows) = (screen.cols(), screen.rows());
     let grid = screen.grid();
     assert_eq!(grid.rows.len(), rows, "seed {seed}");
-    for row in grid.rows.iter().chain(&grid.history) {
+    for row in &grid.rows {
         assert_eq!(row.cells().len(), cols, "seed {seed}");
+        assert_eq!(row.width(), cols, "seed {seed}");
+    }
+    for row in &grid.history {
+        assert!(row.cells().len() <= row.width(), "seed {seed}");
     }
     let (row, col) = screen.cursor();
     assert!(row < rows && col < cols, "seed {seed}");

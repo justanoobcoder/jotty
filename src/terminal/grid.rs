@@ -181,10 +181,9 @@ pub enum Mark {
 pub struct Row {
     cells: Vec<Cell>,
     /// The cells from here on are all alike: nothing wrote them since the
-    /// row was made blank. A blank row is reset by writing only the cells
-    /// before it, which matters because scrolling resets a row per line
-    /// of output, and the row it reuses, from the far end of the history,
-    /// is no longer in the cache.
+    /// row was made blank. A blank row is reset, and copied into the
+    /// history, by touching only the cells before it, which matters because
+    /// scrolling does both once per line of output.
     occupied: usize,
     /// The row's width in columns. Cells past the stored ones are
     /// `Cell::default()`.
@@ -274,6 +273,31 @@ impl Row {
         self.mark = None;
     }
 
+    /// A copy of the row for the history, without the `Cell::default()`
+    /// cells at its end, which most rows mostly are. A soft-wrapped row is
+    /// kept whole: its trailing blanks are text that reflow joins.
+    #[must_use]
+    fn trimmed(&self) -> Row {
+        let blank = Cell::default();
+        // The cells from `occupied` on are alike, so the last one tells
+        // whether any of them are kept.
+        let end = if self.wrapped || self.cells.last().is_some_and(|c| *c != blank) {
+            self.cells.len()
+        } else {
+            self.cells[..self.occupied.min(self.cells.len())]
+                .iter()
+                .rposition(|c| *c != blank)
+                .map_or(0, |i| i + 1)
+        };
+        Row {
+            cells: self.cells[..end].to_vec(),
+            occupied: end,
+            width: self.width,
+            wrapped: self.wrapped,
+            mark: self.mark,
+        }
+    }
+
     /// Truncates or pads the row to `cols` cells, without rewrapping. A wide
     /// character cut in half is cleared.
     pub fn resize(&mut self, cols: usize) {
@@ -306,6 +330,8 @@ impl Row {
 #[derive(Debug, Clone)]
 pub struct Grid {
     pub rows: VecDeque<Row>,
+    /// Rows scrolled off the top, oldest first. They are stored trimmed
+    /// (see `Row::trimmed`), so their cells may end before their width.
     pub history: VecDeque<Row>,
     pub max_history: usize,
     /// Rows scrolled off the top so far (kept in history or not), so that
@@ -334,20 +360,17 @@ impl Grid {
         self.rows.len()
     }
 
-    /// Adds `row` to the history. Returns the row that no longer fits (the
-    /// oldest, or `row` itself without history), for reuse.
-    pub fn push_history(&mut self, row: Row) -> Option<Row> {
+    /// Adds a trimmed copy of `row` to the history, dropping the oldest row
+    /// when it is full.
+    pub fn push_history(&mut self, row: &Row) {
         self.scrolled += 1;
         if self.max_history == 0 {
-            return Some(row);
+            return;
         }
-        let dropped = if self.history.len() == self.max_history {
-            self.history.pop_front()
-        } else {
-            None
-        };
-        self.history.push_back(row);
-        dropped
+        if self.history.len() == self.max_history {
+            self.history.pop_front();
+        }
+        self.history.push_back(row.trimmed());
     }
 
     /// A blank row, made from `spare` when there is one.
@@ -375,17 +398,15 @@ impl Grid {
         let n = n.min(bottom + 1 - top);
         for _ in 0..n {
             // Every line of output scrolls the screen once it is full, so
-            // the row that leaves is reused instead of freed and allocated.
-            // At the top of the screen, as nearly always, this takes no
-            // shifting: the rows are a ring.
-            let row = self.rows.remove(top).expect("the region is on screen");
-            let spare = if keep {
-                self.push_history(row)
-            } else {
-                Some(row)
-            };
-            let blank = self.blank_row(spare, template);
-            self.rows.insert(bottom, blank);
+            // the row that leaves is reused, still in the cache, while the
+            // history gets a trimmed copy. At the top of the screen, as
+            // nearly always, this takes no shifting: the rows are a ring.
+            let mut row = self.rows.remove(top).expect("the region is on screen");
+            if keep {
+                self.push_history(&row);
+            }
+            row.reset(self.cols, template);
+            self.rows.insert(bottom, row);
         }
         n
     }
@@ -413,8 +434,7 @@ impl Grid {
         if rows < self.rows.len() {
             let excess = (keep_row + 1).saturating_sub(rows);
             for row in self.rows.drain(..excess).collect::<Vec<_>>() {
-                // Resizing is rare; the dropped row isn't worth keeping.
-                let _ = self.push_history(row);
+                self.push_history(&row);
                 moved -= 1;
             }
             self.rows.truncate(rows);
@@ -576,7 +596,7 @@ impl Grid {
             }
         }
         let drop = out.len().saturating_sub(self.max_history);
-        self.history = out.into_iter().skip(drop).collect();
+        self.history = out.into_iter().skip(drop).map(|r| r.trimmed()).collect();
         self.rows = screen.into();
         self.cols = cols;
     }
@@ -665,6 +685,71 @@ mod tests {
         assert!(grid.history.is_empty());
         grid.scroll_down(0, 3, 2, &Cell::default());
         assert_eq!(texts(&grid), ["", "", "a", "c"]);
+    }
+
+    #[test]
+    fn history_rows_leave_out_trailing_blanks() {
+        let mut grid = grid_with_lines(&["ab", ""], 6);
+        grid.scroll_up(0, 1, 2, &Cell::default(), /* keep= */ true);
+        assert_eq!(grid.history[0].cells().len(), 2);
+        assert_eq!(grid.history[0].width(), 6);
+        assert_eq!(grid.history[0].text(), "ab");
+        assert!(grid.history[1].cells().is_empty());
+        assert!(grid.rows.iter().all(|r| r.cells().len() == 6));
+    }
+
+    #[test]
+    fn history_rows_keep_colored_and_wrapped_blanks() {
+        let red = Cell {
+            bg: Color::Indexed(1),
+            ..Cell::default()
+        };
+        let mut grid = Grid::new(4, 2, 10);
+        grid.rows[0] = Row::new(4, &red);
+        grid.rows[0].cell_mut(0).c = 'a';
+        grid.rows[1].cell_mut(0).c = 'b';
+        grid.rows[1].wrapped = true;
+        grid.scroll_up(0, 1, 2, &Cell::default(), /* keep= */ true);
+        assert_eq!(
+            grid.history[0].cells(),
+            [Cell { c: 'a', ..red }, red, red, red]
+        );
+        assert_eq!(grid.history[1].cells().len(), 4);
+    }
+
+    #[test]
+    fn rows_back_from_the_history_span_the_screen() {
+        let mut grid = grid_with_lines(&["ab", "c"], 4);
+        grid.scroll_up(0, 1, 1, &Cell::default(), /* keep= */ true);
+        grid.resize(4, 3, 0);
+        assert_eq!(texts(&grid), ["ab", "c", ""]);
+        assert!(
+            grid.rows
+                .iter()
+                .all(|r| r.cells().len() == 4 && r.width() == 4)
+        );
+    }
+
+    #[test]
+    fn reflow_keeps_the_blanks_of_wrapped_history_rows() {
+        let mut grid = grid_with_lines(&["ab  ", "cd"], 4);
+        grid.rows[0].wrapped = true;
+        grid.scroll_up(0, 1, 1, &Cell::default(), /* keep= */ true);
+        grid.reflow(8, 2, &mut [(0, 0)]);
+        assert_eq!(texts(&grid), ["ab  cd", ""]);
+    }
+
+    #[test]
+    fn reflowed_history_is_trimmed() {
+        let mut grid = grid_with_lines(&["ab", "cd", ""], 4);
+        grid.scroll_up(0, 2, 2, &Cell::default(), /* keep= */ true);
+        grid.reflow(8, 1, &mut [(0, 0)]);
+        assert_eq!(grid.history.len(), 2);
+        assert!(
+            grid.history
+                .iter()
+                .all(|r| r.cells().len() == 2 && r.width() == 8)
+        );
     }
 
     #[test]

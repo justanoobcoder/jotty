@@ -539,6 +539,13 @@ mod tests {
     }
 
     #[test]
+    fn a_line_in_the_history_spans_its_width() {
+        let mut t = Terminal::new(6, 1, 10);
+        t.feed(b"ab\r\ncd");
+        assert_eq!(line_bounds(t.screen(), p(-1, 1)), (p(-1, 0), p(-1, 5)));
+    }
+
+    #[test]
     fn a_line_never_extends_past_the_screen() {
         let mut t = Terminal::new(3, 2, 0);
         t.feed(b"abcdef");
