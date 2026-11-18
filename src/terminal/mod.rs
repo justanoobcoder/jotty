@@ -2045,11 +2045,16 @@ impl Screen {
             run = rest;
             self.erase_sixels(row, col, col + chunk.len());
             let template = self.cursor.template;
-            let cells = self.grid_mut().rows[row].cells_in(col..col + chunk.len());
+            let target = &mut self.grid_mut().rows[row];
+            // Cells nothing wrote since the row was made blank hold no wide
+            // character: on a new line of output, that is all of them.
+            let written = target.written() > col;
+            let cells = target.cells_in(col..col + chunk.len());
             // Branchless, so that it vectorizes.
-            let wide = cells.iter().fold(false, |any, cell| {
-                any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
-            });
+            let wide = written
+                && cells.iter().fold(false, |any, cell| {
+                    any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
+                });
             if wide {
                 for &b in chunk {
                     self.print_char(b as char);

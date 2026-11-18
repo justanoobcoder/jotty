@@ -225,6 +225,13 @@ impl Row {
         &self.cells
     }
 
+    /// How many cells from the start may have been written since the row
+    /// was made blank. The cells after them are blank.
+    #[must_use]
+    pub fn written(&self) -> usize {
+        self.occupied
+    }
+
     /// All the cells, to change any of them.
     pub fn cells_mut(&mut self) -> &mut [Cell] {
         self.occupied = self.cells.len();
