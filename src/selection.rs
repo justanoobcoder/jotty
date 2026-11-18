@@ -16,13 +16,16 @@ fn is_word(cell: &Cell, delimiters: &str) -> bool {
         || !(cell.c.is_whitespace() || delimiters.contains(cell.c))
 }
 
-/// A fingerprint of the text of the row at `line`.
+/// A fingerprint of the text of the row at `line`. Trailing blanks are
+/// left out: the history doesn't store them.
 pub(crate) fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let row = screen.row_at(line)?;
     let mut hasher = std::hash::DefaultHasher::new();
     row.wrapped.hash(&mut hasher);
-    for cell in row.cells() {
+    let cells = row.cells();
+    let end = cells.iter().rposition(|c| c.c != ' ').map_or(0, |i| i + 1);
+    for cell in &cells[..end] {
         cell.c.hash(&mut hasher);
     }
     Some(hasher.finish())
