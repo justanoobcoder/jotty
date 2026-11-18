@@ -69,6 +69,9 @@ Zero-width characters (combining marks, ZWJ, variation selectors) take no
 room. Characters with a width (the emoji after a ZWJ, skin tones, the
 second flag letter) still take their `wcwidth` cells, as `CONTINUATION`
 cells that only reserve room, so the cursor stays where programs expect.
+Most characters (letters, CJK, symbols) can't join a lone one of their
+kind, nor ASCII: a table of them, worked out a block of characters at a
+time on first use, saves running the segmentation rules for them.
 
 **Reflow.** When the width changes, `Grid::reflow` joins soft-wrapped rows
 of the primary screen and its history into lines, re-wraps them to the new

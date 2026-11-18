@@ -652,24 +652,49 @@ const MAX_CLUSTER_CHARS: usize = 32;
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
 
-/// Whether `c` is in a block with no Extend, ZWJ, SpacingMark, Prepend,
-/// regional indicator or Hangul characters: then it neither joins the
-/// lone character before it into a grapheme cluster nor takes the next
-/// such character, or an ASCII one, into its own. Covers accented Latin
-/// (Vietnamese too), box drawing and CJK.
+/// Whether `c` neither joins the lone character before it into a grapheme
+/// cluster nor takes the next such character, or an ASCII one, into its
+/// own: it is no Extend, ZWJ, SpacingMark, Prepend, regional indicator or
+/// conjoining Hangul jamo. Most characters are like that: letters, CJK,
+/// symbols, box drawing. No rule of UAX #29 keeps two of them together
+/// (CR LF aside, which are never printed), so a lone one ends its cluster
+/// when one follows. Looked up per block of characters, worked out on
+/// first use.
 fn never_joins(c: char) -> bool {
-    matches!(
-        c,
-        // Latin-1 Supplement, Latin Extended-A and -B, IPA Extensions,
-        // Spacing Modifier Letters (combining marks start at U+0300).
-        '\u{a0}'..='\u{2ff}'
-            // Latin Extended Additional.
-            | '\u{1e00}'..='\u{1eff}'
-            // Box Drawing, Block Elements.
-            | '\u{2500}'..='\u{259f}'
-            // CJK Unified Ideographs.
-            | '\u{4e00}'..='\u{9fff}'
-    )
+    use std::sync::atomic::{AtomicU64, Ordering};
+    /// Set in a block's entry once worked out; the low 32 bits hold its
+    /// characters' answers.
+    const KNOWN: u64 = 1 << 32;
+    const BLOCK: u32 = 32;
+    // Pages of it that are never touched take no memory.
+    static BLOCKS: [AtomicU64; (char::MAX as usize + 1) / BLOCK as usize] =
+        [const { AtomicU64::new(0) }; (char::MAX as usize + 1) / BLOCK as usize];
+
+    let entry = &BLOCKS[(c as u32 / BLOCK) as usize];
+    let mut bits = entry.load(Ordering::Relaxed);
+    if bits == 0 {
+        let first = c as u32 / BLOCK * BLOCK;
+        bits = (0..BLOCK)
+            .filter(|&i| char::from_u32(first + i).is_some_and(stands_alone))
+            .fold(KNOWN, |bits, i| bits | 1 << i);
+        // Racing threads store the same answer.
+        entry.store(bits, Ordering::Relaxed);
+    }
+    bits >> (c as u32 % BLOCK) & 1 != 0
+}
+
+/// Whether grapheme segmentation puts a boundary before and after `c`
+/// next to an ASCII letter, and between two of it: what `never_joins`
+/// caches.
+fn stands_alone(c: char) -> bool {
+    fn boundary(a: char, b: char) -> bool {
+        let mut buf = [0; 8];
+        let before = a.encode_utf8(&mut buf).len();
+        let len = before + b.encode_utf8(&mut buf[before..]).len();
+        let text = std::str::from_utf8(&buf[..len]).unwrap_or_default();
+        GraphemeCursor::new(before, len, /* is_extended= */ true).is_boundary(text, 0) == Ok(true)
+    }
+    !c.is_control() && boundary('a', c) && boundary(c, 'a') && boundary(c, c)
 }
 
 /// Whether a row whose last mark is `mark` holds the end of a prompt: the
@@ -1345,8 +1370,8 @@ impl Screen {
         }
         // Nor do the characters in `never_joins` with each other or with
         // ASCII (whose only non-printable that is printed, DEL, is a
-        // control), for most non-ASCII text (accented Latin, CJK, box
-        // drawing) and the spaces and punctuation around it.
+        // control): most non-ASCII text and the spaces and punctuation
+        // around it.
         let common = |c: char| c.is_ascii() || never_joins(c);
         if common(c) && common(start.c) && self.is_lone(&start) {
             return false;
