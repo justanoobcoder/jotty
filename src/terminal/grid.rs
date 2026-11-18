@@ -225,11 +225,11 @@ impl Row {
         &self.cells
     }
 
-    /// How many columns the row spans, which may be more than it stores
-    /// cells for.
+    /// How many cells from the start may have been written since the row
+    /// was made blank. The cells after them are blank.
     #[must_use]
-    pub fn width(&self) -> usize {
-        self.width
+    pub fn written(&self) -> usize {
+        self.occupied
     }
 
     /// All the cells, to change any of them.
@@ -251,21 +251,25 @@ impl Row {
         &mut self.cells[col]
     }
 
-    /// Makes this a blank row of `cols` cells, keeping its allocation.
-    fn reset(&mut self, cols: usize, template: &Cell) {
-        let blank = Cell::blank(template);
+    /// Makes this a copy of the blank row `blank`, keeping its allocation.
+    ///
+    /// Copying cells is faster than setting them to a blank cell, which
+    /// writes a cell a field at a time: the bytes a color doesn't use are
+    /// undefined, so they can't be written along.
+    fn reset(&mut self, blank: &[Cell]) {
+        let cols = blank.len();
         if self.cells.len() == cols {
             // The cells after `occupied` are alike, so the last one tells
             // whether they are blank already.
-            let end = if self.cells.last() == Some(&blank) {
+            let end = if self.cells.last() == blank.last() {
                 self.occupied
             } else {
                 cols
             };
-            self.cells[..end].fill(blank);
+            self.cells[..end].copy_from_slice(&blank[..end]);
         } else {
             self.cells.clear();
-            self.cells.resize(cols, blank);
+            self.cells.extend_from_slice(blank);
         }
         self.occupied = 0;
         self.width = cols;
@@ -273,28 +277,33 @@ impl Row {
         self.mark = None;
     }
 
-    /// A copy of the row for the history, without the `Cell::default()`
-    /// cells at its end, which most rows mostly are. A soft-wrapped row is
-    /// kept whole: its trailing blanks are text that reflow joins.
+    /// The row, to read it like a history row.
     #[must_use]
-    fn trimmed(&self) -> Row {
+    pub fn view(&self) -> RowRef<'_> {
+        RowRef {
+            cells: &self.cells,
+            width: self.width,
+            wrapped: self.wrapped,
+            mark: self.mark,
+        }
+    }
+
+    /// How many cells the history keeps of the row: all but the
+    /// `Cell::default()` cells at its end, which most rows mostly are. A
+    /// soft-wrapped row is kept whole: its trailing blanks are text that
+    /// reflow joins.
+    #[must_use]
+    fn trimmed_len(&self) -> usize {
         let blank = Cell::default();
         // The cells from `occupied` on are alike, so the last one tells
         // whether any of them are kept.
-        let end = if self.wrapped || self.cells.last().is_some_and(|c| *c != blank) {
+        if self.wrapped || self.cells.last().is_some_and(|c| *c != blank) {
             self.cells.len()
         } else {
             self.cells[..self.occupied.min(self.cells.len())]
                 .iter()
                 .rposition(|c| *c != blank)
                 .map_or(0, |i| i + 1)
-        };
-        Row {
-            cells: self.cells[..end].to_vec(),
-            occupied: end,
-            width: self.width,
-            wrapped: self.wrapped,
-            mark: self.mark,
         }
     }
 
@@ -315,6 +324,50 @@ impl Row {
     /// The row's text without wide-character spacers and trailing blanks.
     #[cfg(test)]
     pub fn text(&self) -> String {
+        self.view().text()
+    }
+}
+
+/// A row to read, on the screen or in the history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRef<'a> {
+    cells: &'a [Cell],
+    width: usize,
+    /// The line continues on the next row (it was soft-wrapped).
+    pub wrapped: bool,
+    /// The last shell-integration mark set on this row.
+    pub mark: Option<Mark>,
+}
+
+impl<'a> RowRef<'a> {
+    /// The stored cells: the first ones of the row, up to its `width`.
+    /// Cells past them are `Cell::default()`.
+    #[must_use]
+    pub fn cells(&self) -> &'a [Cell] {
+        self.cells
+    }
+
+    /// How many columns the row spans, which may be more than it stores
+    /// cells for.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// A copy to put on the screen or reflow, with as many cells as stored.
+    fn to_row(self) -> Row {
+        Row {
+            cells: self.cells.to_vec(),
+            occupied: self.cells.len(),
+            width: self.width,
+            wrapped: self.wrapped,
+            mark: self.mark,
+        }
+    }
+
+    /// The row's text without wide-character spacers and trailing blanks.
+    #[cfg(test)]
+    pub fn text(&self) -> String {
         let mut s: String = self
             .cells
             .iter()
@@ -326,18 +379,195 @@ impl Row {
     }
 }
 
+/// Cells in a history page. A row never straddles two pages, so a page
+/// wastes less than a row's cells at its end.
+const PAGE_CELLS: usize = 8192;
+
+/// The rows scrolled off the top of the screen, oldest first.
+///
+/// Rows are stored trimmed (see `Row::trimmed_len`), so their cells may end
+/// before their width, and their cells are packed into pages shared by many
+/// rows. Every line of output that scrolls the screen pushes a row here and,
+/// once the history is full, drops the oldest one: neither allocates or
+/// frees, but for a page filling up or emptying.
+#[derive(Debug, Clone, Default)]
+pub struct History {
+    rows: VecDeque<Stored>,
+    pages: VecDeque<Vec<Cell>>,
+    /// Pages dropped from the front so far. `Stored::page` counts pages
+    /// from the first one, so that it holds as pages are dropped.
+    dropped_pages: usize,
+    /// The last page emptied, kept to be filled again.
+    spare: Option<Vec<Cell>>,
+}
+
+/// Where a history row's cells are, and what the row knows about its line.
+#[derive(Debug, Clone, Copy)]
+struct Stored {
+    /// The page, counted from the first one ever (see
+    /// `History::dropped_pages`). Rows without cells name the last page
+    /// there was when they were pushed, so that pages never go up and
+    /// down from one row to the next.
+    page: usize,
+    start: u32,
+    len: u32,
+    width: u32,
+    wrapped: bool,
+    mark: Option<Mark>,
+}
+
+impl PartialEq for History {
+    fn eq(&self, other: &History) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for History {}
+
+impl History {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The row `index` rows from the oldest one.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<RowRef<'_>> {
+        self.rows.get(index).map(|stored| self.view(stored))
+    }
+
+    /// The rows, oldest first.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = RowRef<'_>> + ExactSizeIterator {
+        self.rows.iter().map(|stored| self.view(stored))
+    }
+
+    /// Every cell of every row, to change them in place.
+    pub fn cells_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
+        // Only the first page holds cells of rows dropped already, before
+        // those of the oldest row.
+        let skip = self.rows.front().map_or(0, |stored| {
+            if stored.page == self.dropped_pages {
+                stored.start as usize
+            } else {
+                0
+            }
+        });
+        self.pages
+            .iter_mut()
+            .enumerate()
+            .flat_map(move |(i, page)| page[if i == 0 { skip } else { 0 }..].iter_mut())
+    }
+
+    fn view(&self, stored: &Stored) -> RowRef<'_> {
+        let cells = if stored.len == 0 {
+            // Its page may be gone.
+            &[]
+        } else {
+            let start = stored.start as usize;
+            &self.pages[stored.page - self.dropped_pages][start..start + stored.len as usize]
+        };
+        RowRef {
+            cells,
+            width: stored.width as usize,
+            wrapped: stored.wrapped,
+            mark: stored.mark,
+        }
+    }
+
+    /// Adds a copy of `row` without the cells `Row::trimmed_len` leaves out.
+    fn push_trimmed(&mut self, row: &Row) {
+        let cells = &row.cells[..row.trimmed_len()];
+        let fits = self
+            .pages
+            .back()
+            .is_some_and(|page| page.capacity() - page.len() >= cells.len());
+        if !fits && !cells.is_empty() {
+            let page = match self.spare.take() {
+                Some(page) if page.capacity() >= cells.len() => page,
+                _ => Vec::with_capacity(PAGE_CELLS.max(cells.len())),
+            };
+            self.pages.push_back(page);
+        }
+        let page = self.dropped_pages + self.pages.len().saturating_sub(1);
+        let start = self.pages.back().map_or(0, Vec::len);
+        if let Some(last) = self.pages.back_mut()
+            && !cells.is_empty()
+        {
+            // Within its capacity: the page never moves.
+            last.extend_from_slice(cells);
+        }
+        self.rows.push_back(Stored {
+            page,
+            start: start as u32,
+            len: cells.len() as u32,
+            width: row.width as u32,
+            wrapped: row.wrapped,
+            mark: row.mark,
+        });
+    }
+
+    /// Drops the oldest row, and the pages no row is on any more.
+    fn pop_front(&mut self) {
+        self.rows.pop_front();
+        let first = self.rows.front().map(|stored| stored.page);
+        while !self.pages.is_empty() && first.is_none_or(|page| self.dropped_pages < page) {
+            if let Some(page) = self.pages.pop_front() {
+                self.keep_spare(page);
+            }
+            self.dropped_pages += 1;
+        }
+    }
+
+    /// Takes the newest row out.
+    fn pop_back(&mut self) -> Option<Row> {
+        let stored = self.rows.pop_back()?;
+        let row = self.view(&stored).to_row();
+        if self.rows.is_empty() {
+            // The first page may still hold cells of rows dropped earlier.
+            self.clear();
+        } else if stored.len > 0 {
+            // The newest row's cells are the last ones on its page.
+            self.pages[stored.page - self.dropped_pages].truncate(stored.start as usize);
+            while self.pages.back().is_some_and(Vec::is_empty) {
+                if let Some(page) = self.pages.pop_back() {
+                    self.keep_spare(page);
+                }
+            }
+        }
+        Some(row)
+    }
+
+    pub fn clear(&mut self) {
+        self.rows.clear();
+        while let Some(page) = self.pages.pop_front() {
+            self.keep_spare(page);
+        }
+        self.dropped_pages = 0;
+    }
+
+    fn keep_spare(&mut self, mut page: Vec<Cell>) {
+        page.clear();
+        self.spare = Some(page);
+    }
+}
+
 /// One screen buffer: the visible rows plus scrollback history.
 #[derive(Debug, Clone)]
 pub struct Grid {
     pub rows: VecDeque<Row>,
-    /// Rows scrolled off the top, oldest first. They are stored trimmed
-    /// (see `Row::trimmed`), so their cells may end before their width.
-    pub history: VecDeque<Row>,
+    pub history: History,
     pub max_history: usize,
     /// Rows scrolled off the top so far (kept in history or not), so that
     /// positions in the history can follow new output.
     pub scrolled: u64,
     cols: usize,
+    /// A blank row to copy (see `Row::reset`), for the last template.
+    blank: Vec<Cell>,
 }
 
 impl Grid {
@@ -348,11 +578,21 @@ impl Grid {
             rows: (0..rows)
                 .map(|_| Row::new(cols, &Cell::default()))
                 .collect(),
-            history: VecDeque::new(),
+            history: History::default(),
             max_history,
             scrolled: 0,
             cols,
+            blank: Vec::new(),
         }
+    }
+
+    /// A blank row of the grid's width with the colors of `template`.
+    fn blank(&mut self, template: &Cell) -> &[Cell] {
+        let blank = Cell::blank(template);
+        if self.blank.len() != self.cols || self.blank.first() != Some(&blank) {
+            self.blank = vec![blank; self.cols];
+        }
+        &self.blank
     }
 
     #[cfg(test)]
@@ -370,14 +610,14 @@ impl Grid {
         if self.history.len() == self.max_history {
             self.history.pop_front();
         }
-        self.history.push_back(row.trimmed());
+        self.history.push_trimmed(row);
     }
 
     /// A blank row, made from `spare` when there is one.
-    fn blank_row(&self, spare: Option<Row>, template: &Cell) -> Row {
+    fn blank_row(&mut self, spare: Option<Row>, template: &Cell) -> Row {
         match spare {
             Some(mut row) => {
-                row.reset(self.cols, template);
+                row.reset(self.blank(template));
                 row
             }
             None => Row::new(self.cols, template),
@@ -405,7 +645,7 @@ impl Grid {
             if keep {
                 self.push_history(&row);
             }
-            row.reset(self.cols, template);
+            row.reset(self.blank(template));
             self.rows.insert(bottom, row);
         }
         n
@@ -476,11 +716,9 @@ impl Grid {
             .max()
             .map_or(0, |r| r + 1)
             .min(self.rows.len());
-        let old: Vec<Row> = self
-            .history
-            .drain(..)
-            .chain(self.rows.drain(..keep))
-            .collect();
+        let mut old: Vec<Row> = self.history.iter().map(RowRef::to_row).collect();
+        self.history.clear();
+        old.extend(self.rows.drain(..keep));
 
         // Join soft-wrapped rows into lines, remembering where each old
         // row starts: (line, offset).
@@ -596,7 +834,9 @@ impl Grid {
             }
         }
         let drop = out.len().saturating_sub(self.max_history);
-        self.history = out.into_iter().skip(drop).map(|r| r.trimmed()).collect();
+        for row in out.iter().skip(drop) {
+            self.history.push_trimmed(row);
+        }
         self.rows = screen.into();
         self.cols = cols;
     }
@@ -674,7 +914,7 @@ mod tests {
         grid.scroll_up(0, 2, 1, &Cell::default(), /* keep= */ true);
         assert_eq!(texts(&grid), ["b", "c", ""]);
         assert_eq!(grid.history.len(), 1);
-        assert_eq!(grid.history[0].text(), "a");
+        assert_eq!(grid.history.get(0).unwrap().text(), "a");
     }
 
     #[test]
@@ -691,10 +931,10 @@ mod tests {
     fn history_rows_leave_out_trailing_blanks() {
         let mut grid = grid_with_lines(&["ab", ""], 6);
         grid.scroll_up(0, 1, 2, &Cell::default(), /* keep= */ true);
-        assert_eq!(grid.history[0].cells().len(), 2);
-        assert_eq!(grid.history[0].width(), 6);
-        assert_eq!(grid.history[0].text(), "ab");
-        assert!(grid.history[1].cells().is_empty());
+        assert_eq!(grid.history.get(0).unwrap().cells().len(), 2);
+        assert_eq!(grid.history.get(0).unwrap().width(), 6);
+        assert_eq!(grid.history.get(0).unwrap().text(), "ab");
+        assert!(grid.history.get(1).unwrap().cells().is_empty());
         assert!(grid.rows.iter().all(|r| r.cells().len() == 6));
     }
 
@@ -711,10 +951,10 @@ mod tests {
         grid.rows[1].wrapped = true;
         grid.scroll_up(0, 1, 2, &Cell::default(), /* keep= */ true);
         assert_eq!(
-            grid.history[0].cells(),
+            grid.history.get(0).unwrap().cells(),
             [Cell { c: 'a', ..red }, red, red, red]
         );
-        assert_eq!(grid.history[1].cells().len(), 4);
+        assert_eq!(grid.history.get(1).unwrap().cells().len(), 4);
     }
 
     #[test]
@@ -726,7 +966,7 @@ mod tests {
         assert!(
             grid.rows
                 .iter()
-                .all(|r| r.cells().len() == 4 && r.width() == 4)
+                .all(|r| r.cells().len() == 4 && r.width == 4)
         );
     }
 
@@ -759,8 +999,110 @@ mod tests {
             grid.rows[0].cell_mut(0).c = c;
             grid.scroll_up(0, 0, 1, &Cell::default(), /* keep= */ true);
         }
-        let history: Vec<_> = grid.history.iter().map(Row::text).collect();
+        let history: Vec<_> = grid.history.iter().map(|r| r.text()).collect();
         assert_eq!(history, ["b", "c"]);
+    }
+
+    /// A grid one row tall whose rows fill half a history page each.
+    fn wide_grid(max_history: usize) -> Grid {
+        Grid::new(PAGE_CELLS / 2, 1, max_history)
+    }
+
+    /// Scrolls a row starting with `c` into the history, or a blank one.
+    fn scroll_out(grid: &mut Grid, c: Option<char>) {
+        if let Some(c) = c {
+            let cols = grid.cols;
+            grid.rows[0].cell_mut(0).c = c;
+            grid.rows[0].cell_mut(cols - 1).c = c;
+        }
+        grid.scroll_up(0, 0, 1, &Cell::default(), /* keep= */ true);
+    }
+
+    fn first_chars(grid: &Grid) -> String {
+        grid.history
+            .iter()
+            .map(|r| r.cells().first().map_or('.', |c| c.c))
+            .collect()
+    }
+
+    #[test]
+    fn history_drops_pages_its_rows_left() {
+        let mut grid = wide_grid(3);
+        for c in "abcdefgh".chars() {
+            scroll_out(&mut grid, Some(c));
+        }
+        assert_eq!(first_chars(&grid), "fgh");
+        assert!(
+            grid.history
+                .iter()
+                .all(|r| r.cells().len() == PAGE_CELLS / 2)
+        );
+        // Two rows a page: "f" shares its page with the dropped "e".
+        assert_eq!(grid.history.pages.len(), 2);
+        assert_eq!(grid.history.dropped_pages, 2);
+    }
+
+    #[test]
+    fn history_keeps_rows_without_cells() {
+        let mut grid = wide_grid(4);
+        for c in [Some('a'), None, Some('b'), Some('c'), None, Some('d'), None] {
+            scroll_out(&mut grid, c);
+        }
+        assert_eq!(first_chars(&grid), "c.d.");
+        for _ in 0..4 {
+            scroll_out(&mut grid, None);
+        }
+        assert_eq!(first_chars(&grid), "....");
+        // The rows left name the page "d" was on, the only one kept.
+        assert_eq!(grid.history.pages.len(), 1);
+        scroll_out(&mut grid, Some('e'));
+        assert_eq!(first_chars(&grid), "...e");
+    }
+
+    #[test]
+    fn rows_come_back_from_history_pages_in_order() {
+        let mut grid = wide_grid(10);
+        for c in [Some('a'), Some('b'), None, Some('c'), Some('d')] {
+            scroll_out(&mut grid, c);
+        }
+        grid.resize(PAGE_CELLS / 2, 4, 0);
+        let firsts: String = grid.rows.iter().map(|r| r.cells[0].c).collect();
+        assert_eq!(firsts, " cd ");
+        assert_eq!(first_chars(&grid), "ab");
+        // Pages emptied by rows coming back are not kept.
+        assert_eq!(grid.history.pages.len(), 1);
+        scroll_out(&mut grid, Some('e'));
+        scroll_out(&mut grid, Some('f'));
+        assert_eq!(first_chars(&grid), "abef");
+    }
+
+    #[test]
+    fn history_emptied_by_rows_coming_back_holds_no_cells() {
+        let mut grid = wide_grid(2);
+        // "a" leaves cells on the first page before "b".
+        for c in "abc".chars() {
+            scroll_out(&mut grid, Some(c));
+        }
+        grid.resize(PAGE_CELLS / 2, 3, 0);
+        assert!(grid.history.is_empty());
+        assert_eq!(grid.history.cells_mut().count(), 0);
+        assert!(grid.history.pages.is_empty());
+        scroll_out(&mut grid, Some('d'));
+        assert_eq!(first_chars(&grid), "d");
+    }
+
+    #[test]
+    fn history_cells_change_in_place() {
+        let mut grid = wide_grid(2);
+        for c in "abc".chars() {
+            scroll_out(&mut grid, Some(c));
+        }
+        for cell in grid.history.cells_mut() {
+            cell.c = cell.c.to_ascii_uppercase();
+        }
+        assert_eq!(first_chars(&grid), "BC");
+        // Only the cells of rows still there are handed out.
+        assert_eq!(grid.history.cells_mut().count(), PAGE_CELLS);
     }
 
     #[test]
@@ -793,6 +1135,23 @@ mod tests {
     }
 
     #[test]
+    fn blank_rows_take_the_colors_of_each_scroll() {
+        let red = Cell {
+            bg: Color::Indexed(1),
+            ..Cell::default()
+        };
+        let mut grid = grid_with_lines(&["a", "b"], 3);
+        grid.scroll_up(0, 1, 1, &red, /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::blank(&red); 3]);
+        grid.scroll_up(0, 1, 1, &Cell::default(), /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::default(); 3]);
+        // The grid's width changes too.
+        grid.resize(5, 2, 0);
+        grid.scroll_up(0, 1, 1, &red, /* keep= */ false);
+        assert_eq!(grid.rows[1].cells, [Cell::blank(&red); 5]);
+    }
+
+    #[test]
     fn reset_blanks_whatever_was_written() {
         let red = Cell {
             bg: Color::Indexed(1),
@@ -803,23 +1162,23 @@ mod tests {
         // Text at the start, then the rest erased in another color.
         row.cells_in(0..2).fill(Cell { c: 'x', ..blank });
         row.cells_in(2..6).fill(Cell::blank(&red));
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // A cell changed through `cells_mut`, past what was written.
         row.cells_in(0..1)[0].c = 'a';
         row.cells_mut()[4].c = 'b';
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // Blank in another color: every cell changes.
         row.cell_mut(0).c = 'c';
-        row.reset(6, &red);
+        row.reset(&[Cell::blank(&red); 6]);
         assert_eq!(row.cells(), [Cell::blank(&red); 6]);
-        row.reset(6, &blank);
+        row.reset(&[blank; 6]);
         assert_eq!(row.cells(), [blank; 6]);
         // Resizing adds default cells after whatever the row held.
         let mut row = Row::new(2, &red);
         row.resize(4);
-        row.reset(4, &red);
+        row.reset(&[Cell::blank(&red); 4]);
         assert_eq!(row.cells(), [Cell::blank(&red); 4]);
     }
 

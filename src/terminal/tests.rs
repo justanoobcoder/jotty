@@ -37,7 +37,7 @@ fn crlf_and_scrolling_into_history() {
     let mut t = term(10, 2);
     t.feed(b"one\r\ntwo\r\nthree");
     assert_eq!(lines(&t), ["two", "three"]);
-    let history: Vec<_> = t.screen().grid().history.iter().map(Row::text).collect();
+    let history: Vec<_> = t.screen().grid().history.iter().map(|r| r.text()).collect();
     assert_eq!(history, ["one"]);
 }
 
@@ -224,7 +224,7 @@ fn autowrap_disabled_overwrites_last_column() {
 fn a_wide_character_at_the_last_column_stays_whole_in_the_history() {
     let mut t = term(4, 1);
     t.feed("ab漢\r\nx".as_bytes());
-    let row = &t.screen().grid().history[0];
+    let row = t.screen().grid().history.get(0).unwrap();
     assert_eq!(row.cells().len(), 4);
     assert!(row.cells()[2].flags.contains(Flags::WIDE));
     assert!(row.cells()[3].flags.contains(Flags::WIDE_SPACER));
@@ -897,11 +897,11 @@ fn reflow_moves_rows_through_history() {
     t.feed(b"aaaaaa\r\nbb\r\ncc");
     // "aaaaaa" is in history; narrowing wraps it to two rows.
     t.screen_mut().resize(3, 2);
-    let history: Vec<_> = t.screen().grid().history.iter().map(Row::text).collect();
+    let history: Vec<_> = t.screen().grid().history.iter().map(|r| r.text()).collect();
     assert_eq!(history, ["aaa", "aaa"]);
     assert_eq!(lines(&t), ["bb", "cc"]);
     t.screen_mut().resize(6, 2);
-    let history: Vec<_> = t.screen().grid().history.iter().map(Row::text).collect();
+    let history: Vec<_> = t.screen().grid().history.iter().map(|r| r.text()).collect();
     assert_eq!(history, ["aaaaaa"]);
 }
 
@@ -2328,9 +2328,9 @@ fn assert_grid_shape(t: &Terminal, seed: u64) {
     assert_eq!(grid.rows.len(), rows, "seed {seed}");
     for row in &grid.rows {
         assert_eq!(row.cells().len(), cols, "seed {seed}");
-        assert_eq!(row.width(), cols, "seed {seed}");
+        assert_eq!(row.view().width(), cols, "seed {seed}");
     }
-    for row in &grid.history {
+    for row in grid.history.iter() {
         assert!(row.cells().len() <= row.width(), "seed {seed}");
     }
     let (row, col) = screen.cursor();

@@ -17,6 +17,7 @@ mod keybinds;
 mod links;
 mod notify;
 mod pty;
+mod pty_reader;
 mod renderer;
 mod search;
 mod selection;

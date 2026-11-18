@@ -12,7 +12,7 @@ mod strings;
 use std::time::{Duration, Instant};
 
 use graphics::Graphics;
-pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, Underline};
+pub use grid::{Cell, Color, Extra, Flags, Grid, Mark, Row, RowRef, Underline};
 use strings::{StringTable, Table};
 use unicode_segmentation::GraphemeCursor;
 use vte::{Params, Perform};
@@ -789,30 +789,32 @@ impl Screen {
     /// into account. Rows from history may be narrower or wider than the
     /// screen.
     #[must_use]
-    pub fn visible_row(&self, line: usize) -> &Row {
+    pub fn visible_row(&self, line: usize) -> RowRef<'_> {
         let grid = self.grid();
         let history = grid.history.len();
         let offset = self.display_offset.min(history);
         if line < offset {
-            &grid.history[history - offset + line]
+            grid.history
+                .get(history - offset + line)
+                .expect("the line is within the history")
         } else {
-            &grid.rows[line - offset]
+            grid.rows[line - offset].view()
         }
     }
 
     /// The row at screen line `line`: 0 is the top of the live screen,
     /// negative lines are in the history.
     #[must_use]
-    pub fn row_at(&self, line: isize) -> Option<&Row> {
+    pub fn row_at(&self, line: isize) -> Option<RowRef<'_>> {
         let grid = self.grid();
         if line < 0 {
             let back = line.unsigned_abs();
             grid.history
                 .len()
                 .checked_sub(back)
-                .map(|i| &grid.history[i])
+                .and_then(|i| grid.history.get(i))
         } else {
-            grid.rows.get(line as usize)
+            grid.rows.get(line as usize).map(Row::view)
         }
     }
 
@@ -1278,7 +1280,7 @@ impl Screen {
         let mut extras = self.extras.unused();
         let mut mark = |cell: &Cell| extras[usize::from(cell.extra)] = true;
         for grid in [&self.primary, &self.alternate] {
-            for row in grid.rows.iter().chain(&grid.history) {
+            for row in grid.rows.iter().map(Row::view).chain(grid.history.iter()) {
                 row.cells().iter().for_each(&mut mark);
             }
         }
@@ -1305,9 +1307,10 @@ impl Screen {
         });
         let remap = |cell: &mut Cell| cell.extra = extras[usize::from(cell.extra)];
         for grid in [&mut self.primary, &mut self.alternate] {
-            for row in grid.rows.iter_mut().chain(&mut grid.history) {
+            for row in &mut grid.rows {
                 row.cells_mut().iter_mut().for_each(remap);
             }
+            grid.history.cells_mut().for_each(remap);
         }
         remap(&mut self.cursor.template);
         for saved in self.saved.iter_mut().flatten() {
@@ -2042,11 +2045,16 @@ impl Screen {
             run = rest;
             self.erase_sixels(row, col, col + chunk.len());
             let template = self.cursor.template;
-            let cells = self.grid_mut().rows[row].cells_in(col..col + chunk.len());
+            let target = &mut self.grid_mut().rows[row];
+            // Cells nothing wrote since the row was made blank hold no wide
+            // character: on a new line of output, that is all of them.
+            let written = target.written() > col;
+            let cells = target.cells_in(col..col + chunk.len());
             // Branchless, so that it vectorizes.
-            let wide = cells.iter().fold(false, |any, cell| {
-                any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
-            });
+            let wide = written
+                && cells.iter().fold(false, |any, cell| {
+                    any | cell.flags.intersects(Flags::WIDE | Flags::WIDE_SPACER)
+                });
             if wide {
                 for &b in chunk {
                     self.print_char(b as char);

@@ -47,6 +47,7 @@ use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::cl
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::channel;
+use smithay_client_toolkit::reexports::calloop::ping;
 use smithay_client_toolkit::reexports::calloop::generic::{Generic, NoIoDrop};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
@@ -103,6 +104,7 @@ use crate::keybinds::{Action, Wheel};
 use crate::links::{self, Detector, Link};
 use crate::notify::{self, Bus, RateLimit};
 use crate::pty::{Pty, WindowSize};
+use crate::pty_reader::PtyReader;
 use crate::renderer::{Frame, Renderer, Theme, gl, software};
 use crate::search::{self, Direction};
 use crate::selection::{Point, Selection, Unit};
@@ -188,8 +190,6 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const BLINK: Duration = Duration::from_millis(500);
 /// How long a notice (such as "Copied 3 lines") stays up.
 const NOTICE: Duration = Duration::from_millis(1500);
-/// Read at most this much child output before drawing, to stay responsive.
-const READ_BUDGET: usize = 1 << 20;
 /// How long the child gets to exit after hanging up, for its exit status.
 const CHILD_EXIT_WAIT: Duration = Duration::from_millis(100);
 /// The most clipboard data pasted; a client that keeps sending gets dropped.
@@ -435,8 +435,13 @@ pub struct TermWindow {
     title: String,
     term: Terminal,
     pty: Pty,
-    /// The loop source reading the pty, removed when the window closes.
+    /// The loop source woken by `pty_reader`, removed when the window
+    /// closes.
     pty_source: Option<RegistrationToken>,
+    pty_reader: PtyReader,
+    /// The last output taken from `pty_reader`, whose buffer goes back to
+    /// it.
+    pty_output: Vec<u8>,
     /// While an image is decoded on another thread, the number of that job
     /// and the output read after it, which waits, and the pty source with
     /// it.
@@ -828,19 +833,16 @@ impl TermWindow {
             spawn.env.as_deref(),
         )
         .map_err(|e| format!("cannot run {program:?}: {e}"))?;
-        let reader = File::from(pty.fd().try_clone_to_owned()?);
+        let (wake, woken) = ping::make_ping()?;
+        let pty_reader = PtyReader::spawn(pty.fd().try_clone_to_owned()?, wake)
+            .map_err(|e| format!("cannot read the pty: {e}"))?;
         let pty_source = shared
             .loop_handle
-            .insert_source(
-                Generic::new(reader, Interest::READ, Mode::Level),
-                move |_, _, app| {
-                    let Some((shared, window)) = app.split(id) else {
-                        return Ok(PostAction::Remove);
-                    };
+            .insert_source(woken, move |(), &mut (), app| {
+                if let Some((shared, window)) = app.split(id) {
                     window.read_pty(shared);
-                    Ok(PostAction::Continue)
-                },
-            )
+                }
+            })
             .map_err(|e| format!("cannot watch the pty: {e}"))?;
 
         let mut term = Terminal::new(cols as usize, lines as usize, config.terminal.scrollback);
@@ -865,6 +867,8 @@ impl TermWindow {
             term,
             pty,
             pty_source: Some(pty_source),
+            pty_reader,
+            pty_output: Vec::new(),
             paused_output: None,
             decode_jobs: 0,
             pty_writer: None,
@@ -1214,37 +1218,19 @@ impl TermWindow {
         if self.paused_output.is_some() {
             return;
         }
-        let before = self.before_output();
-        let mut buf = [0u8; 1 << 16];
-        let mut total = 0;
-        while total < READ_BUDGET {
-            match self.pty.read(&mut buf) {
-                Ok(0) => {
-                    self.exit = true;
-                    self.pty_closed = true;
-                    break;
-                }
-                Ok(n) => {
-                    total += n;
-                    if self.feed(&buf[..n]) {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    // EIO: every process holding the pty has exited.
-                    log::debug!("pty closed: {e}");
-                    self.exit = true;
-                    self.pty_closed = true;
-                    break;
-                }
-            }
+        let output = self.pty_reader.take(std::mem::take(&mut self.pty_output));
+        let mut paused = false;
+        if !output.bytes.is_empty() {
+            let before = self.before_output();
+            paused = self.feed(&output.bytes);
+            self.after_output(shared, before);
         }
-        if total == 0 {
-            return;
+        self.pty_output = output.bytes;
+        // After an image, the hang-up waits with the rest of the output.
+        if output.closed && !paused {
+            self.exit = true;
+            self.pty_closed = true;
         }
-        self.after_output(shared, before);
     }
 
     /// Feeds output to the terminal, and returns whether it stopped at an
@@ -1344,13 +1330,18 @@ impl TermWindow {
         };
         let before = self.before_output();
         self.term.finish_decode(decoded);
-        if !self.feed(&rest)
-            && let Some(token) = &self.pty_source
+        let paused = self.feed(&rest);
+        self.after_output(shared, before);
+        if paused {
+            return;
+        }
+        if let Some(token) = &self.pty_source
             && let Err(e) = self.loop_handle.enable(token)
         {
             log::warn!("cannot resume reading the pty: {e}");
         }
-        self.after_output(shared, before);
+        // What came meanwhile, which may have woken no one.
+        self.read_pty(shared);
     }
 
     /// What output may move, from before it came.
@@ -3656,7 +3647,8 @@ impl App {
                 text_input.commit();
             }
         }
-        // Both hold a copy of the pty's descriptor, which must close.
+        // The writer holds a copy of the pty's descriptor, which must close,
+        // as does the pty reader, dropped with the window.
         for token in [window.pty_source.take(), window.pty_writer.take()]
             .into_iter()
             .flatten()
