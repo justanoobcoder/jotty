@@ -221,6 +221,17 @@ fn autowrap_disabled_overwrites_last_column() {
 }
 
 #[test]
+fn a_wide_character_at_the_last_column_stays_whole_in_the_history() {
+    let mut t = term(4, 1);
+    t.feed("ab漢\r\nx".as_bytes());
+    let row = &t.screen().grid().history[0];
+    assert_eq!(row.cells().len(), 4);
+    assert!(row.cells()[2].flags.contains(Flags::WIDE));
+    assert!(row.cells()[3].flags.contains(Flags::WIDE_SPACER));
+    assert_eq!(row.text(), "ab漢");
+}
+
+#[test]
 fn wide_characters_take_two_cells() {
     let mut t = term(6, 2);
     t.feed("a中b".as_bytes());
