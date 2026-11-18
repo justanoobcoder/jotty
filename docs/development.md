@@ -172,7 +172,7 @@ The tests don't need a compositor, GPU or display:
 | --- | --- |
 | `terminal/tests.rs` | Escape sequences against expected grid contents: movement, erase, insert/delete, scroll regions, SGR, alternate screen, wide characters, grapheme clusters, charsets, reports (DECRQM, color queries), hyperlinks, resize and reflow, scrollback view, OSC 133, notifications (OSC 9, OSC 777), and a garbage-input fuzz test |
 | `terminal/grid.rs` | Scrolling, history bounds, resize |
-| `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, controlling terminal, exit status |
+| `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, line editing of UTF-8 characters, controlling terminal, exit status |
 | `input.rs` | Key encoding in all modes, shortcuts, paste encoding |
 | `ime.rs` | Surrounding text from rows (including wide and multibyte characters), byte limits, delete-to-keys, event ordering |
 | `renderer/mod.rs` | Color resolution and program color overrides, cursor styles, decorations, selection and preedit drawing, clusters, through a fake glyph cache |

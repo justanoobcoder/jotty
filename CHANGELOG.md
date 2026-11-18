@@ -28,6 +28,8 @@ CHANGELOG
     decode
 - `jotty config` saves through a symlinked `overrides.toml` instead of
     replacing the link
+- Backspace erases a whole non-ASCII character, not just its last byte, in
+    programs that read a line at a time
 
 ### Performance
 
