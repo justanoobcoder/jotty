@@ -16,13 +16,16 @@ fn is_word(cell: &Cell, delimiters: &str) -> bool {
         || !(cell.c.is_whitespace() || delimiters.contains(cell.c))
 }
 
-/// A fingerprint of the text of the row at `line`.
+/// A fingerprint of the text of the row at `line`. Trailing blanks are
+/// left out: the history doesn't store them.
 pub(crate) fn row_hash(screen: &Screen, line: isize) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let row = screen.row_at(line)?;
     let mut hasher = std::hash::DefaultHasher::new();
     row.wrapped.hash(&mut hasher);
-    for cell in row.cells() {
+    let cells = row.cells();
+    let end = cells.iter().rposition(|c| c.c != ' ').map_or(0, |i| i + 1);
+    for cell in &cells[..end] {
         cell.c.hash(&mut hasher);
     }
     Some(hasher.finish())
@@ -58,7 +61,7 @@ fn word_bounds(screen: &Screen, at: Point, delimiters: &str) -> Option<(Point, P
             match screen.row_at(start.line - 1) {
                 Some(row) if row.wrapped => Point {
                     line: start.line - 1,
-                    col: row.cells().len().saturating_sub(1),
+                    col: row.width().saturating_sub(1),
                 },
                 _ => break,
             }
@@ -71,7 +74,7 @@ fn word_bounds(screen: &Screen, at: Point, delimiters: &str) -> Option<(Point, P
     let mut end = at;
     loop {
         let row = screen.row_at(end.line)?;
-        let next = if end.col + 1 < row.cells().len() {
+        let next = if end.col + 1 < row.width() {
             Point {
                 line: end.line,
                 col: end.col + 1,
@@ -108,7 +111,7 @@ pub fn line_bounds(screen: &Screen, at: Point) -> (Point, Point) {
     }
     let end = screen
         .row_at(last)
-        .map_or(at.col, |r| r.cells().len().saturating_sub(1));
+        .map_or(at.col, |r| r.width().saturating_sub(1));
     (
         Point {
             line: first,
@@ -533,6 +536,13 @@ mod tests {
         let before = s.live_rows(t.screen());
         t.feed(b"a\r\nb\r\nc\r\n");
         assert!(!s.follow_output(t.screen(), &before, 3));
+    }
+
+    #[test]
+    fn a_line_in_the_history_spans_its_width() {
+        let mut t = Terminal::new(6, 1, 10);
+        t.feed(b"ab\r\ncd");
+        assert_eq!(line_bounds(t.screen(), p(-1, 1)), (p(-1, 0), p(-1, 5)));
     }
 
     #[test]

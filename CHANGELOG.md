@@ -15,6 +15,7 @@ CHANGELOG
     decode
 - Faster output of colored text, links and sixel images
 - Faster output of accented Latin, CJK and box-drawing text
+- Scrollback takes less memory, and text scrolls faster
 - Blinking text blinks (`terminal.text_blink`)
 - Variable fonts use their named instances, so italics that live in the
     same file as the upright style show slanted

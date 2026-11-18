@@ -2444,7 +2444,7 @@ impl TermWindow {
     /// A selection of whole lines, from `first` to `last` inclusive.
     fn lines_selection(&self, (first, last): (isize, isize)) -> Option<Selection> {
         let screen = self.term.screen();
-        let end = screen.row_at(last)?.cells().len().saturating_sub(1);
+        let end = screen.row_at(last)?.width().saturating_sub(1);
         Some(Selection::span(
             Point {
                 line: first,

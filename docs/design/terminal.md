@@ -21,6 +21,9 @@ dispatching it truncated.
 - two `Grid`s, primary and alternate. Each grid has visible `Row`s, in a
   `VecDeque` so that scrolling the whole screen shifts none of them, plus a
   bounded `VecDeque` of history rows; the alternate grid keeps no history.
+  History rows are stored without the blank cells at their end (see below),
+  so a row's `width` can be larger than the cells it holds; readers treat
+  the missing cells as blank.
 - the cursor: position, a template cell carrying the current attributes, the
   pending-wrap flag (set after writing the last column), and the G0/G1
   character sets.
@@ -121,15 +124,20 @@ screen. Primary device attributes (DA1) report sixel support (`4`), and
 XTSMGRAPHICS answers the number of color registers and the largest size.
 
 When a row scrolls off the top of the full-screen region on the primary
-screen, it moves into history. If the user is looking at history at that
-moment, the view offset grows by the same amount so the view stays put.
+screen, a copy of it moves into history. If the user is looking at history
+at that moment, the view offset grows by the same amount so the view stays
+put.
 
-Once the history is full, the row that falls off its far end becomes the
-new blank row at the bottom. That row is long out of the cache, so a `Row`
-remembers how far it was written since it was last blank (`occupied`), and
-blanking it again writes only that far. Code that writes cells goes
-through `Row::cells_in` or `Row::cell_mut`, which extend that mark, or
-`Row::cells_mut`, which gives up on it.
+The copy (`Row::trimmed`) leaves out the `Cell::default()` cells at the end
+of the row, which most rows mostly are, so the history takes memory for what
+was written rather than for its full width. Blanks with a background color
+are kept, and so is all of a soft-wrapped row, whose trailing blanks are
+text that reflow joins. The row itself becomes the new blank row at the
+bottom while it is still in the cache. A `Row` remembers how far it was
+written since it was last blank (`occupied`), so copying and blanking it
+touch only that far. Code that writes cells goes through `Row::cells_in` or
+`Row::cell_mut`, which extend that mark, or `Row::cells_mut`, which gives up
+on it.
 
 ## PTY (`pty.rs`)
 
