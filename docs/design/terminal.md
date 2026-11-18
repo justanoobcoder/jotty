@@ -20,10 +20,11 @@ dispatching it truncated.
 
 - two `Grid`s, primary and alternate. Each grid has visible `Row`s, in a
   `VecDeque` so that scrolling the whole screen shifts none of them, plus a
-  bounded `VecDeque` of history rows; the alternate grid keeps no history.
-  History rows are stored without the blank cells at their end (see below),
-  so a row's `width` can be larger than the cells it holds; readers treat
-  the missing cells as blank.
+  bounded `History`; the alternate grid keeps no history. History rows are
+  stored without the blank cells at their end (see below), so a row's
+  `width` can be larger than the cells it holds; readers treat the missing
+  cells as blank. Rows on the screen and in the history are read alike
+  through `RowRef`.
 - the cursor: position, a template cell carrying the current attributes, the
   pending-wrap flag (set after writing the last column), and the G0/G1
   character sets.
@@ -128,16 +129,27 @@ screen, a copy of it moves into history. If the user is looking at history
 at that moment, the view offset grows by the same amount so the view stays
 put.
 
-The copy (`Row::trimmed`) leaves out the `Cell::default()` cells at the end
-of the row, which most rows mostly are, so the history takes memory for what
-was written rather than for its full width. Blanks with a background color
-are kept, and so is all of a soft-wrapped row, whose trailing blanks are
-text that reflow joins. The row itself becomes the new blank row at the
-bottom while it is still in the cache. A `Row` remembers how far it was
-written since it was last blank (`occupied`), so copying and blanking it
-touch only that far. Code that writes cells goes through `Row::cells_in` or
-`Row::cell_mut`, which extend that mark, or `Row::cells_mut`, which gives up
-on it.
+The copy leaves out the `Cell::default()` cells at the end of the row
+(`Row::trimmed_len`), which most rows mostly are, so the history takes
+memory for what was written rather than for its full width. Blanks with a
+background color are kept, and so is all of a soft-wrapped row, whose
+trailing blanks are text that reflow joins. The history packs the cells of
+its rows into pages of 8192 cells, which a row never straddles, and keeps
+each row's place, width, wrap flag and mark beside them. Every line of
+output pushes a row and, once the history is full, drops the oldest one,
+and neither allocates nor frees: a page is allocated only when the last one
+fills up, and freed (one is kept to reuse) once every row on it is gone.
+
+The row itself becomes the new blank row at the bottom while it is still in
+the cache. Blanking copies cells from a blank row the grid keeps for the
+current background, which is one vectorized copy: setting cells to a blank
+value would write them a field at a time, since the bytes a color doesn't
+use are undefined and can't be written along. A `Row` remembers how far it
+was written since it was last blank (`occupied`), so copying and blanking
+it touch only that far, and printing skips looking for wide characters to
+break in the cells past it. Code that writes cells goes through
+`Row::cells_in` or `Row::cell_mut`, which extend that mark, or
+`Row::cells_mut`, which gives up on it.
 
 ## PTY (`pty.rs`)
 
