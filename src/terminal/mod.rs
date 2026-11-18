@@ -643,6 +643,26 @@ const MAX_CLUSTER_CHARS: usize = 32;
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
 
+/// Whether `c` is in a block with no Extend, ZWJ, SpacingMark, Prepend,
+/// regional indicator or Hangul characters: then it neither joins the
+/// lone character before it into a grapheme cluster nor takes the next
+/// such character into its own. Covers accented Latin (Vietnamese too),
+/// box drawing and CJK.
+fn never_joins(c: char) -> bool {
+    matches!(
+        c,
+        // Latin-1 Supplement, Latin Extended-A and -B, IPA Extensions,
+        // Spacing Modifier Letters (combining marks start at U+0300).
+        '\u{a0}'..='\u{2ff}'
+            // Latin Extended Additional.
+            | '\u{1e00}'..='\u{1eff}'
+            // Box Drawing, Block Elements.
+            | '\u{2500}'..='\u{259f}'
+            // CJK Unified Ideographs.
+            | '\u{4e00}'..='\u{9fff}'
+    )
+}
+
 /// Whether a row whose last mark is `mark` holds the end of a prompt: the
 /// command line (`B`), or a `C` set after the command on the same row.
 fn ends_prompt(mark: Mark) -> bool {
@@ -1141,7 +1161,12 @@ impl Screen {
     /// Whether `cell` is an ASCII character with nothing joined to it, which
     /// no ASCII character after it can join either (see `join_cluster`).
     fn is_lone_ascii(&self, cell: &Cell) -> bool {
-        cell.c.is_ascii() && (cell.extra == 0 || self.extra(cell).cluster == 0)
+        cell.c.is_ascii() && self.is_lone(cell)
+    }
+
+    /// Whether `cell` has no characters joined to it.
+    fn is_lone(&self, cell: &Cell) -> bool {
+        cell.extra == 0 || self.extra(cell).cluster == 0
     }
 
     /// The id of `extra`, adding it if new. Doesn't make room: `None` when
@@ -1304,6 +1329,11 @@ impl Screen {
         // Extend, ZWJ, SpacingMark, Prepend, a regional indicator or Hangul.
         // This skips the segmentation below for nearly all output.
         if c.is_ascii() && self.is_lone_ascii(&start) {
+            return false;
+        }
+        // Nor do the common characters in `never_joins`, for most of the
+        // rest (accented Latin, CJK, box drawing).
+        if never_joins(c) && (start.c.is_ascii() || never_joins(start.c)) && self.is_lone(&start) {
             return false;
         }
         if !self.continues_cluster(&start, c) {

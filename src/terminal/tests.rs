@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use super::{
     Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, Fed,
     FinishedCommand, Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode,
-    Notification, Row, Terminal, Underline,
+    Notification, Row, Terminal, Underline, never_joins,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -967,6 +967,34 @@ fn ascii_after_a_cluster_starts_a_new_cell() {
     assert_eq!(text_at(&t, 0, 1), "a");
     assert_eq!(text_at(&t, 0, 2), "b");
     assert_eq!(t.screen().cursor(), (0, 3));
+}
+
+#[test]
+fn common_characters_after_a_cluster_start_a_new_cell() {
+    let mut t = term(10, 1);
+    // The `never_joins` fast path must not skip a base cell with a tail:
+    // `©` and `®` are pictographic, so a ZWJ between them joins them.
+    t.feed("ê\u{301}ế漢─©\u{200d}®".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "ê\u{301}");
+    assert_eq!(text_at(&t, 0, 1), "ế");
+    assert_eq!(text_at(&t, 0, 2), "漢");
+    assert_eq!(text_at(&t, 0, 4), "─");
+    assert_eq!(text_at(&t, 0, 5), "©\u{200d}®");
+}
+
+#[test]
+fn never_joins_agrees_with_grapheme_segmentation() {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let chars = (0..=char::MAX as u32)
+        .filter_map(char::from_u32)
+        .filter(|&c| never_joins(c));
+    for c in chars {
+        for pair in [['a', c], [c, 'a'], [c, c]] {
+            let text = String::from_iter(pair);
+            assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
+        }
+    }
 }
 
 #[test]
