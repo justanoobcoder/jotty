@@ -36,8 +36,8 @@ jobs:
       - id: notes
         name: CHANGELOG.md must have an entry for the version
         run: |
-          # The lines under `## VERSION`, up to the next heading, without
-          # the blank lines around them.
+          # The lines under `## VERSION`, with their `###` sections, up to
+          # the next version, without the blank lines around them.
           notes=$(awk -v v="## ${{ steps.version.outputs.version }}" '
             $0 == v { found = 1; next }
             found && /^## / { exit }
