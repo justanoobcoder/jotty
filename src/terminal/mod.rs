@@ -655,8 +655,8 @@ const EMOJI_PRESENTATION: char = '\u{FE0F}';
 /// Whether `c` is in a block with no Extend, ZWJ, SpacingMark, Prepend,
 /// regional indicator or Hangul characters: then it neither joins the
 /// lone character before it into a grapheme cluster nor takes the next
-/// such character, or printable ASCII, into its own. Covers accented Latin (Vietnamese too),
-/// box drawing and CJK.
+/// such character, or an ASCII one, into its own. Covers accented Latin
+/// (Vietnamese too), box drawing and CJK.
 fn never_joins(c: char) -> bool {
     matches!(
         c,
@@ -1341,7 +1341,8 @@ impl Screen {
             return false;
         }
         // Nor do the characters in `never_joins` with each other or with
-        // printable ASCII, for most non-ASCII text (accented Latin, CJK, box
+        // ASCII (whose only non-printable that is printed, DEL, is a
+        // control), for most non-ASCII text (accented Latin, CJK, box
         // drawing) and the spaces and punctuation around it.
         let common = |c: char| c.is_ascii() || never_joins(c);
         if common(c) && common(start.c) && self.is_lone(&start) {
