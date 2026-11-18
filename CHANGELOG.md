@@ -34,7 +34,8 @@ CHANGELOG
 ### Performance
 
 - Faster output of colored text, links and sixel images
-- Faster output of accented Latin, CJK and box-drawing text
+- Faster output of non-ASCII text (accented Latin, CJK, symbols, box
+    drawing), and faster drawing of characters not shown before
 - Scrollback takes less memory, and text scrolls faster
 - Large output, such as `cat` of a big file, is up to 20% faster with
     either renderer: the pty is read on a thread of its own, and lines
