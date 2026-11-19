@@ -66,9 +66,28 @@ and finds fallback faces per character (excluding color fonts), with the
 results cached. All windows use fontconfig's current configuration of the
 process; a window opened or reloaded after fonts or configuration files
 changed loads a new one in its place, so newly installed fonts are found.
-A grapheme cluster is drawn as the single character it composes to under
-NFC when there is one (`e` + U+0301 → `é`); otherwise its combining marks
-are drawn over the first character, centered.
+A grapheme cluster that isn't shaped (below) is drawn as the single
+character it composes to under NFC when there is one (`e` + U+0301 → `é`);
+otherwise its combining marks are drawn over the first character, centered.
+
+**Shaping** (`shape.rs`, harfrust). Before a row's cells are drawn,
+`renderer::build` splits it into words: runs of cells in one style, ended
+by blanks, hidden cells and image placeholders. `Fonts::shape` splits a word
+further into runs of cells drawn in one face (box drawing, icons, color
+emoji and text with a variation selector keep their own drawing and end a
+run) and shapes each left to right, with `liga`, `calt` and `dlig` turned
+off unless `font.ligatures` is set. There is no bidirectional reordering.
+Each glyph belongs to the cell its cluster starts in and is placed from
+that cell's left edge, with the advances of the glyphs before it in the
+cluster: the pen starts over at every cell, so the glyphs never drift off
+the grid. A cell whose only glyph is its character's own, unmoved, is drawn
+as before, by character; the others draw their glyphs by id
+(`GlyphKey::Shaped`), in the cell's colors, and a cell a ligature covers
+draws nothing. Words are cached by a hash of their text, cell offsets and
+style (8192 of them, then the cache starts over), so a frame mostly looks
+them up. Without ligatures, ASCII words and words of one plain character
+skip shaping entirely, and only words with clusters or letters of a joining
+script (Arabic, Syriac, N'Ko, Mongolian) are shaped.
 
 **Color emoji** (`emoji.rs`) come from the font fontconfig picks for
 `emoji` with color, loaded on first use. Characters that are emoji by

@@ -17,6 +17,10 @@ CHANGELOG
     same file as the upright style show slanted
 - Fonts without a bold or italic face get a made-up one instead of the
     regular face
+- Text shaping: Arabic letters join, Indic syllables take their combined
+    forms, and accents sit where the font puts them
+- Add `font.ligatures`, to draw the font's ligatures (`->`, `!=`); off by
+    default
 
 ### Changes
 

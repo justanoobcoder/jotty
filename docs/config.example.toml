@@ -16,6 +16,9 @@ size_step = 1.0
 # fontconfig picks a font like the main one that has the character, then
 # any installed font that has it.
 fallback = []
+# Draw the font's ligatures, such as -> or != as one symbol. Text is shaped
+# either way, so Arabic letters join and accents sit right.
+ligatures = false
 
 [window]
 title = "jotty"
