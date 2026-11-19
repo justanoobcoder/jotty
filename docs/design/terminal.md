@@ -172,8 +172,15 @@ and `TERM_PROGRAM=jotty`. The master is non-blocking:
   flood of output can't starve input handling and drawing. Output after a pause
   wakes the window at once; while output streams in, it is woken at most
   once a millisecond, since a wake-up costs it about as much as parsing a
-  few kilobytes. `EIO` means the child and all its descendants closed the
-  pty; the window then closes.
+  few kilobytes. Once the window has taken 4 KiB within a millisecond, the
+  event loop stops sleeping: it takes the queue on every turn until a
+  millisecond passes without that much (`PtyReader::streaming`). The writing
+  program gets faster for it: the kernel moves a pty's output to the reader
+  with a worker thread, and when the worker finds an idle core it catches
+  up, sleeps and has to be woken for every write; a busy window leaves it
+  fewer idle cores. Output that trickles in (a line now and then) keeps the
+  loop sleeping as before. `EIO` means the child and all its descendants
+  closed the pty; the window then closes.
 - Writing goes through a queue. If the pty is full (for example when pasting
   a large text into a program that isn't reading), the remainder waits and a
   temporary writable-fd source drains it, so the loop never blocks.

@@ -38,6 +38,8 @@ CHANGELOG
     drawing), and faster drawing of characters not shown before
 - Faster output of text with many thousands of different characters on
     the CPU renderer, whose glyph atlas now grows up to 16 MiB
+- Faster output of many short lines and large files: while output streams
+    in, the window takes it without pausing
 - Scrollback takes less memory, and text scrolls faster
 - Large output, such as `cat` of a big file, is up to 20% faster with
     either renderer: the pty is read on a thread of its own, and lines

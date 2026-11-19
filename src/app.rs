@@ -675,7 +675,8 @@ pub fn run(
     }
 
     while !app.windows.is_empty() {
-        event_loop.dispatch(None, &mut app)?;
+        let streaming = app.take_streams();
+        event_loop.dispatch(streaming.then_some(Duration::ZERO), &mut app)?;
         app.after_dispatch();
     }
     Ok(app.exit_code)
@@ -3605,6 +3606,19 @@ impl App {
         shared.next_window = shared.next_window.wrapping_add(1);
         self.windows.push(window);
         Ok(id)
+    }
+
+    /// Takes the output of the windows it streams into, and returns
+    /// whether any does, for the loop not to sleep.
+    fn take_streams(&mut self) -> bool {
+        let mut streaming = false;
+        for window in &mut self.windows {
+            if window.pty_reader.streaming() {
+                window.read_pty(&mut self.shared);
+                streaming = true;
+            }
+        }
+        streaming
     }
 
     /// Carries out what windows asked for, and closes the windows that are

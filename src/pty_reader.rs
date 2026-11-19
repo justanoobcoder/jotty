@@ -4,7 +4,8 @@
 //! the program waits whenever the little the kernel holds is full. Reading
 //! on the window's thread stops while it draws or handles input, and the
 //! program with it. Here a thread reads all the time, into a queue the
-//! window takes from whenever it can.
+//! window takes from whenever it can. While output streams in, the window
+//! takes it without waiting to be woken: see [`PtyReader::streaming`].
 
 use std::fs::File;
 use std::io::{self, PipeReader, PipeWriter, Read};
@@ -24,11 +25,13 @@ const READ_SIZE: usize = 1 << 16;
 const MAX_QUEUED: usize = 1 << 20;
 /// While output streams in, the window is woken at most this often: a
 /// wake-up costs it about as much as a few kilobytes of output, and the
-/// kernel hands output over a few hundred bytes at a time.
+/// kernel hands output over a few hundred bytes at a time. Also the
+/// interval over which [`Rate`] counts the output the window takes.
 const STREAM_WAKE_INTERVAL: Duration = Duration::from_millis(1);
 /// Output since the last wake-up that makes it a stream. Less, such as a
 /// program's query and its reply going back and forth, wakes the window
-/// at once.
+/// at once. Taken within one interval, it makes the window poll (see
+/// [`Rate`]).
 const STREAM_BYTES: usize = 4096;
 
 /// What the thread hands the window.
@@ -78,6 +81,8 @@ pub struct PtyReader {
     /// Keeps the window's loop source when the thread ends: the loop
     /// drops a ping source once every ping is gone.
     _wake: Ping,
+    /// How fast the window takes output, for [`PtyReader::streaming`].
+    rate: Rate,
 }
 
 impl PtyReader {
@@ -96,6 +101,7 @@ impl PtyReader {
             stop: Some(stop),
             thread: Some(thread),
             _wake: wake,
+            rate: Rate::new(Instant::now()),
         })
     }
 
@@ -112,7 +118,58 @@ impl PtyReader {
         let closed = queue.closed;
         drop(queue);
         self.shared.taken.notify_one();
+        if !bytes.is_empty() {
+            self.rate.taken(bytes.len(), Instant::now());
+        }
         Output { bytes, closed }
+    }
+
+    /// Whether output streams in, so that the window should take it
+    /// without sleeping until it is woken: a few kilobytes came within the
+    /// last millisecond or so. A window that stays busy makes the kernel
+    /// hand output over faster, where a reader that sleeps and is woken
+    /// over and over slows the program writing it down.
+    pub fn streaming(&self) -> bool {
+        self.rate.streaming(Instant::now())
+    }
+}
+
+/// How fast the window takes output.
+#[derive(Debug)]
+struct Rate {
+    /// When the interval being counted began.
+    since: Instant,
+    /// The bytes taken since then.
+    bytes: usize,
+    /// Until when output counts as streaming in.
+    streaming_until: Option<Instant>,
+}
+
+impl Rate {
+    fn new(now: Instant) -> Self {
+        Rate {
+            since: now,
+            bytes: 0,
+            streaming_until: None,
+        }
+    }
+
+    /// `n` bytes were taken at `now`. `STREAM_BYTES` within one
+    /// `STREAM_WAKE_INTERVAL` make a stream, which lasts until output
+    /// stops coming that fast for an interval.
+    fn taken(&mut self, n: usize, now: Instant) {
+        if now - self.since >= STREAM_WAKE_INTERVAL {
+            self.since = now;
+            self.bytes = 0;
+        }
+        self.bytes += n;
+        if self.bytes >= STREAM_BYTES {
+            self.streaming_until = Some(now + STREAM_WAKE_INTERVAL);
+        }
+    }
+
+    fn streaming(&self, now: Instant) -> bool {
+        self.streaming_until.is_some_and(|until| now < until)
     }
 }
 
@@ -429,6 +486,33 @@ mod tests {
         }
         writer.write_all(b"tail").expect("writing");
         assert_eq!(take_on_wake(&mut event_loop, &mut wakes), 4);
+    }
+
+    #[test]
+    fn a_stream_is_taken_until_output_slows_down() {
+        let start = Instant::now();
+        let at = |us: u64| start + Duration::from_micros(us);
+        let mut rate = Rate::new(start);
+        assert!(!rate.streaming(at(0)));
+        rate.taken(STREAM_BYTES / 2, at(100));
+        assert!(!rate.streaming(at(100)));
+        rate.taken(STREAM_BYTES / 2, at(200));
+        assert!(rate.streaming(at(200)));
+        // The stream ends an interval after the last take that made it.
+        assert!(rate.streaming(at(1100)));
+        assert!(!rate.streaming(at(1200)));
+    }
+
+    #[test]
+    fn trickling_output_is_not_a_stream() {
+        let start = Instant::now();
+        let mut rate = Rate::new(start);
+        // A line every half millisecond, for a second.
+        for i in 0..2000 {
+            let now = start + Duration::from_micros(500 * i);
+            rate.taken(40, now);
+            assert!(!rate.streaming(now), "streaming after {i} lines");
+        }
     }
 
     #[test]
