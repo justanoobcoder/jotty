@@ -7,53 +7,54 @@ CHANGELOG
 
 ### Features
 
-- Support reverse video (DECSCNM)
-- Add `hints.alphabet`, the characters hint labels are made of
-- Add `terminal.word_delimiters`, the characters that end a word for
-    double-click selection
-- Vi mode: `f`, `F`, `t`, `T`, `;` and `,`
-- Hints label paths with a line number (`src/main.rs:12:5`) and open them
-    in `terminal.editor` at that line
-- Blinking text blinks (`terminal.text_blink`)
-- Variable fonts use their named instances, so italics that live in the
-    same file as the upright style show slanted
-- Fonts without a bold or italic face get a made-up one instead of the
-    regular face
-- Text shaping: Arabic letters join, Indic syllables take their combined
-    forms, and accents sit where the font puts them
-- Add `font.ligatures`, to draw the font's ligatures (`->`, `!=`); off by
-    default
-- Support grapheme cluster mode (2027): emoji sequences, flags and
-    conjuncts take two cells in programs that turn it on
-
-### Changes
-
-- Hints label hex hashes in uppercase
+- Programs can switch the whole screen to reverse video, swapping the text
+    and background colors
+- Hints (Ctrl+Shift+E) also label file paths followed by a line number,
+    such as `src/main.rs:12:5`, and open them in your editor
+    (`terminal.editor`) at that line
+- Hints also label hex hashes written in uppercase, such as `1AF659B`
+- New `hints.alphabet` option: choose which letters hint labels are made
+    from, for example only the home row
+- New `terminal.word_delimiters` option: choose which characters end a
+    word when you double-click to select it
+- Vi mode: jump to a character on the line with `f`, `F`, `t` and `T`, and
+    repeat the jump with `;` and `,`
+- Text that programs ask to blink now blinks; turn it off with
+    `terminal.text_blink = false`
+- Italic text is now slanted with variable fonts that keep the italic style
+    in the same file as the regular one
+- Fonts with no bold or italic style get one made from the regular style,
+    so bold and italic text still stands out
+- Better support for complex scripts: Arabic letters join up, Indic
+    letters combine into syllables, and accents sit where the font puts them
+- New `font.ligatures` option: draw the font's ligatures, such as `->` or
+    `!=`, as one symbol (off by default)
+- Emoji made of several characters (families, skin tones), flags and Indic
+    syllables take two cells, in programs that ask for it
 
 ### Fixes
 
-- Large kitty graphics images no longer freeze every window while they
-    decode
-- `jotty config` saves through a symlinked `overrides.toml` instead of
-    replacing the link
-- Backspace erases a whole non-ASCII character, not just its last byte, in
-    programs that read a line at a time
-- An emoji made wide by VS16 no longer overwrites the character after it
-    in insert mode
+- Showing a large image (kitty graphics) no longer freezes every jotty
+    window while the image loads
+- `jotty config` keeps a symlinked `overrides.toml` (for example one from
+    a dotfiles repo) as a link when it saves, instead of replacing it with
+    a plain file
+- Backspace deletes a whole accented or non-Latin character in programs
+    that read a line at a time, such as `cat`, instead of leaving part of
+    it behind
+- Inserting a wide emoji in the middle of a line no longer overwrites the
+    character after it
 
 ### Performance
 
-- Faster output of colored text, links and sixel images
-- Faster output of non-ASCII text (accented Latin, CJK, symbols, box
-    drawing), and faster drawing of characters not shown before
-- Faster output of text with many thousands of different characters on
-    the CPU renderer, whose glyph atlas now grows up to 16 MiB
-- Faster output of many short lines and large files: while output streams
-    in, the window takes it without pausing
-- Scrollback takes less memory, and text scrolls faster
-- Large output, such as `cat` of a big file, is up to 20% faster with
-    either renderer: the pty is read on a thread of its own, and lines
-    scrolling into the scrollback no longer allocate
+- Colored text, links and sixel images show up faster
+- Accented letters, CJK, symbols and box-drawing characters show up
+    faster, and so do characters drawn for the first time
+- Text with thousands of different characters shows up faster with the
+    CPU renderer, whose glyph cache can now grow to 16 MiB
+- Large output, such as `cat` of a big file or many short lines, is up to
+    20% faster with both renderers
+- Scrollback uses less memory, and scrolling is faster
 
 ## 2.3.0
 
