@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use super::{
     Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, Fed,
     FinishedCommand, Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode,
-    Notification, Row, Terminal, Underline, never_joins,
+    Notification, Row, Terminal, Underline, alone_width, never_joins,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -148,7 +148,10 @@ fn output_split_anywhere_gives_the_same_screen() {
         "\x1b[6n",
         "\x1b]0;t\x07",
         "日本",
+        "日本語の文字",
         "é",
+        "éü€─│",
+        "\x1b[2G",
         "e\u{301}",
         "\u{200d}",
         "❄\u{fe0f}",
@@ -1017,6 +1020,16 @@ fn never_joins_agrees_with_grapheme_segmentation() {
                 assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
             }
         }
+    }
+}
+
+#[test]
+fn characters_that_never_join_know_their_printed_width() {
+    use unicode_width::UnicodeWidthChar;
+
+    for c in (0..=char::MAX as u32).filter_map(char::from_u32) {
+        let expected = never_joins(c).then(|| c.width().unwrap_or(0).min(2));
+        assert_eq!(alone_width(c), expected, "{c:?}");
     }
 }
 
