@@ -505,8 +505,8 @@ impl RowShapes {
                 let col = |px: f32| ((px - left) / cw).max(0.0) as usize;
                 let first = col(ink_left).clamp(word.start, word.end - 1);
                 let last = col(ink_right.ceil() - 1.0).clamp(first, word.end - 1);
-                for c in first..=last {
-                    let Some(color) = self.colors[c] else {
+                for (c, &color) in (first..).zip(&self.colors[first..=last]) {
+                    let Some(color) = color else {
                         continue;
                     };
                     let from = if c == word.start {
