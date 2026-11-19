@@ -306,21 +306,25 @@ nothing surprises you.
   after 50 failures in a row (10 seconds).
 - Windows of the same process share the font files, but each looks up
   its own faces and rasterizes glyphs into its own atlas.
-- **Large output** can take up to about 20% longer than in a terminal that
-  keeps a core busy while drawing. A program writing to the terminal hands
-  its output to a kernel worker. When that worker runs on a core of its
-  own, it catches up, sleeps, and has to be woken again for the next
-  output. Each wake-up costs the writing program time. A busy terminal
-  slows the worker down, so the worker keeps working instead of sleeping.
-  This happens in two ways:
+- **Large output** (`cat` of a big file) can take about 10–20% longer than
+  in a terminal that keeps two cores busy while output comes in, as rio
+  does. A program writing to the terminal hands its output to a kernel
+  worker. When that worker runs on a core of its own, it catches up,
+  sleeps, and has to be woken again for the next output. Each wake-up
+  costs the writing program time. A busy terminal slows the worker down,
+  so the worker keeps working instead of sleeping. This happens in two
+  ways:
   - on CPUs with performance and efficiency cores (Intel 12th generation
     and later), the busy terminal leaves only efficiency cores free for
     the worker;
   - on CPUs with simultaneous multithreading, the worker ends up sharing a
     physical core with the busy terminal.
 
-  jotty leaves cores idle more often, so its worker sleeps more. With the
-  kernel's unbound workqueues limited to the efficiency cores
+  While output streams in, jotty keeps its window's thread busy instead
+  of sleeping, which makes many short lines (a build log) come in about
+  as fast as in rio. But its pty reader thread still sleeps between
+  reads, so a big file is still slower. With the kernel's unbound
+  workqueues limited to the efficiency cores
   (`/sys/devices/virtual/workqueue/cpumask`), the gap is mostly gone.
   Pausing between reads of the pty doesn't help. On a machine with very
   few cores, jotty's pty reader thread competes with the writing program
