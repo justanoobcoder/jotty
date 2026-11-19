@@ -413,6 +413,9 @@ pub struct Modes {
     pub synchronized: bool,
     /// `?5` (DECSCNM): the default foreground and background are swapped.
     pub reverse_video: bool,
+    /// `?2027`: a grapheme cluster takes the cells of one character, one
+    /// or two, rather than those of each of its characters.
+    grapheme_clusters: bool,
     autowrap: bool,
     origin: bool,
     insert: bool,
@@ -430,6 +433,7 @@ impl Default for Modes {
             mouse_sgr: false,
             synchronized: false,
             reverse_video: false,
+            grapheme_clusters: false,
             show_cursor: true,
             autowrap: true,
             origin: false,
@@ -651,6 +655,8 @@ const MAX_CLUSTER_CHARS: usize = 32;
 
 /// VARIATION SELECTOR-16: display the preceding character as an emoji.
 const EMOJI_PRESENTATION: char = '\u{FE0F}';
+/// VS15, which asks for the text form of a character.
+const TEXT_PRESENTATION: char = '\u{FE0E}';
 
 /// Whether `c` neither joins the lone character before it into a grapheme
 /// cluster nor takes the next such character, or an ASCII one, into its
@@ -1364,8 +1370,10 @@ impl Screen {
     /// Zero-width characters (combining marks, ZWJ, variation selectors)
     /// only join it. Others (the emoji after a ZWJ, a skin tone, the second
     /// letter of a flag) also take up their usual width, as programs that
-    /// count with `wcwidth` expect, in continuation cells. Returns `false`
-    /// when `c` starts a new cluster.
+    /// count with `wcwidth` expect, in continuation cells. In grapheme
+    /// cluster mode (`?2027`) they make the cluster two cells wide instead,
+    /// and VS15 makes a wide character with a text form one cell wide.
+    /// Returns `false` when `c` starts a new cluster.
     fn join_cluster(&mut self, c: char, width: usize) -> bool {
         let Some((row, col)) = self.cluster_start else {
             return false;
@@ -1402,8 +1410,10 @@ impl Screen {
         // Continuation cells must stay on the cluster's row, after its
         // first cell. Without autowrap the cursor stays on the last column,
         // which may be that cell; the character then overwrites it instead.
+        // In grapheme cluster mode, the cluster's own cells take it in.
+        let grapheme = self.modes.grapheme_clusters;
         let wraps = self.cursor.pending_wrap || self.cursor.col + width > self.cols;
-        if width > 0 && (wraps || row != self.cursor.row || self.cursor.col <= col) {
+        if width > 0 && (row != self.cursor.row || !grapheme && (wraps || self.cursor.col <= col)) {
             return false;
         }
         // `text` starts with the start cell's character, so this always
@@ -1440,7 +1450,13 @@ impl Screen {
         if c == EMOJI_PRESENTATION {
             self.apply_emoji_presentation();
         }
-        if width > 0 {
+        if grapheme {
+            if width > 0 {
+                self.widen(row, col);
+            } else if c == TEXT_PRESENTATION && self.is_lone(&start) {
+                self.apply_text_presentation(row, col);
+            }
+        } else if width > 0 {
             self.print_cell(c, width, Flags::CONTINUATION);
         }
         true
@@ -2311,11 +2327,57 @@ impl Screen {
         };
         let cell = self.grid().rows[row].cells()[col];
         let pair: String = [cell.c, EMOJI_PRESENTATION].into_iter().collect();
+        if pair.width() == 2 {
+            self.widen(row, col);
+        }
+    }
+
+    /// Handles VS15 in grapheme cluster mode after a wide character that
+    /// has a text form (like `⌚`): the pair is one cell wide.
+    fn apply_text_presentation(&mut self, row: usize, col: usize) {
+        use unicode_width::UnicodeWidthStr;
+        let cell = self.grid().rows[row].cells()[col];
+        let pair: String = [cell.c, TEXT_PRESENTATION].into_iter().collect();
         if row != self.cursor.row
             || col + 1 >= self.cols
-            || cell.flags.contains(Flags::WIDE)
-            || pair.width() != 2
+            || !cell.flags.contains(Flags::WIDE)
+            || pair.width() != 1
         {
+            return;
+        }
+        let blank = Cell::blank(&self.cursor.template);
+        let cells = self.grid_mut().rows[row].cells_in(col..col + 2);
+        cells[0].flags.remove(Flags::WIDE);
+        cells[1] = blank;
+        // The cursor was right after the character, or on its spacer in the
+        // last column, waiting to wrap.
+        self.cursor.pending_wrap = false;
+        self.cursor.col = col + 1;
+        self.dirty = true;
+    }
+
+    /// Makes the one-cell character at `row`, `col`, which the cursor has
+    /// just left, two cells wide. In the last column it stays one cell
+    /// wide, unless in grapheme cluster mode with autowrap: then it moves
+    /// to the next row first, as a wide character is printed.
+    fn widen(&mut self, row: usize, col: usize) {
+        let cell = self.grid().rows[row].cells()[col];
+        if row != self.cursor.row || cell.flags.contains(Flags::WIDE) {
+            return;
+        }
+        if col + 1 >= self.cols {
+            if self.modes.grapheme_clusters && self.modes.autowrap && self.cols >= 2 {
+                self.erase_cells(row, col, self.cols);
+                self.grid_mut().rows[row]
+                    .cell_mut(col)
+                    .flags
+                    .insert(Flags::WRAP_GAP);
+                self.wrap_line();
+                if let Some((row, col)) = self.print_cell(cell.c, 2, Flags::empty()) {
+                    self.grid_mut().rows[row].cell_mut(col).extra = cell.extra;
+                    self.cluster_start = Some((row, col));
+                }
+            }
             return;
         }
         self.split_wide(row, col + 1);
@@ -2448,6 +2510,7 @@ impl Screen {
                 }
                 self.modes.synchronized = on;
             }
+            2027 => self.modes.grapheme_clusters = on,
             _ => log::debug!("unhandled private mode {mode} = {on}"),
         }
         self.dirty = true;
@@ -2471,6 +2534,7 @@ impl Screen {
             1006 => m.mouse_sgr,
             2004 => m.bracketed_paste,
             2026 => m.synchronized,
+            2027 => m.grapheme_clusters,
             _ => return None,
         })
     }
