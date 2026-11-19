@@ -668,6 +668,7 @@ fn never_joins(c: char) -> bool {
 #[inline]
 fn alone_width(c: char) -> Option<usize> {
     use std::sync::atomic::{AtomicU64, Ordering};
+
     use unicode_width::UnicodeWidthChar;
     /// Set in a block's entry once worked out; the low 32 bits hold two
     /// bits for each of its characters: the width, or `JOINS`.
