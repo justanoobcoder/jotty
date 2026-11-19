@@ -21,7 +21,8 @@ nothing surprises you.
   by empty cells (2 + 2 and 2 + 2 + 2 columns). This keeps the cursor where
   shells and editors expect it. The exception is VS16 (`❤️`), which
   widens a narrow character to two cells, as starship and most terminals
-  assume.
+  assume. Programs that turn on grapheme cluster mode (2027) get two cells
+  for each of them instead.
 - **Combining marks the letter's font lacks** come from another font and
   are drawn over the letter, centered, without the font's mark
   positioning; they may not sit exactly right.
@@ -88,8 +89,10 @@ nothing surprises you.
   out too; programs find synchronized output by asking (DECRQM, mode 2026).
 - Synchronized output (mode 2026) holds drawing for at most 150 ms, in
   case a program never ends its update.
-- Not implemented: `modifyOtherKeys`, grapheme cluster mode (2027) and
-  DECCOLM. Unhandled sequences are ignored (logged at
+- In grapheme cluster mode (2027), a cluster that becomes two cells wide
+  in the last column stays one cell wide when autowrap is off. VS15 only
+  narrows a wide character it directly follows.
+- Not implemented: `modifyOtherKeys` and DECCOLM. Unhandled sequences are ignored (logged at
   `debug` level).
 - **Kitty graphics**: animation frames (`a=f`, `a=a`, `a=c`) and relative
   placements (`P`, `Q`) are not supported. Images are kept up to 320 MiB,

@@ -21,6 +21,8 @@ CHANGELOG
     forms, and accents sit where the font puts them
 - Add `font.ligatures`, to draw the font's ligatures (`->`, `!=`); off by
     default
+- Support grapheme cluster mode (2027): emoji sequences, flags and
+    conjuncts take two cells in programs that turn it on
 
 ### Changes
 
@@ -34,6 +36,8 @@ CHANGELOG
     replacing the link
 - Backspace erases a whole non-ASCII character, not just its last byte, in
     programs that read a line at a time
+- An emoji made wide by VS16 no longer overwrites the character after it
+    in insert mode
 
 ### Performance
 

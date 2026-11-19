@@ -170,6 +170,10 @@ fn output_split_anywhere_gives_the_same_screen() {
         "\x1b[?1049l",
         "\x1b7",
         "\x1b8",
+        "\x1b[?2027h",
+        "\x1b[?2027l",
+        "\u{231a}\u{fe0e}",
+        "\u{261d}",
     ];
     // A fixed xorshift sequence, so that failures reproduce.
     let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -1240,6 +1244,120 @@ fn emoji_presentation_at_second_to_last_column_sets_pending_wrap() {
     t.feed("ab\u{2744}\u{FE0F}c".as_bytes());
     assert!(cell(&t, 0, 2).flags.contains(Flags::WIDE));
     assert_eq!(lines(&t), ["ab\u{2744}", "c"]);
+}
+
+#[test]
+fn grapheme_cluster_mode_is_reported_and_set() {
+    let mut t = term(10, 1);
+    t.feed(b"\x1b[?2027$p\x1b[?2027h\x1b[?2027$p\x1b[?2027l\x1b[?2027$p");
+    assert_eq!(
+        t.screen_mut().take_responses(),
+        b"\x1b[?2027;2$y\x1b[?2027;1$y\x1b[?2027;2$y"
+    );
+}
+
+/// Whether the cell at `col` of the first row is a wide one, its spacer
+/// after it.
+fn is_wide(t: &Terminal, col: usize) -> bool {
+    cell(t, 0, col).flags.contains(Flags::WIDE)
+        && cell(t, 0, col + 1).flags.contains(Flags::WIDE_SPACER)
+}
+
+#[test]
+fn grapheme_clusters_take_two_cells_in_grapheme_cluster_mode() {
+    let mut t = term(20, 1);
+    t.feed(b"\x1b[?2027h");
+    // A ZWJ family, a flag, a skin tone, a narrow base that a skin tone
+    // makes wide, and a conjunct: two cells each.
+    t.feed("👨\u{200d}👩\u{200d}👧🇻🇳👍🏽☝🏽क्ष!".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "👨\u{200d}👩\u{200d}👧");
+    for col in [0, 2, 4, 6, 8] {
+        assert!(is_wide(&t, col), "column {col}");
+    }
+    assert_eq!(text_at(&t, 0, 2), "🇻🇳");
+    assert_eq!(text_at(&t, 0, 4), "👍🏽");
+    assert_eq!(text_at(&t, 0, 6), "☝🏽");
+    assert_eq!(text_at(&t, 0, 8), "क्ष");
+    assert_eq!(cell(&t, 0, 10).c, '!');
+    assert_eq!(t.screen().cursor(), (0, 11));
+    let continued = (0..20).any(|col| cell(&t, 0, col).flags.contains(Flags::CONTINUATION));
+    assert!(!continued);
+}
+
+#[test]
+fn text_presentation_narrows_a_wide_character_in_grapheme_cluster_mode() {
+    let mut t = term(10, 1);
+    t.feed("\x1b[?2027h\u{231a}\u{fe0e}x".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "\u{231a}\u{fe0e}");
+    assert!(!cell(&t, 0, 0).flags.contains(Flags::WIDE));
+    assert_eq!(cell(&t, 0, 1).c, 'x');
+    // Not without the mode, nor after a narrow character.
+    let mut t = term(10, 1);
+    t.feed("\u{231a}\u{fe0e}x\x1b[?2027h\u{2744}\u{fe0e}y".as_bytes());
+    assert!(is_wide(&t, 0));
+    assert_eq!(cell(&t, 0, 2).c, 'x');
+    assert_eq!(cell(&t, 0, 4).c, 'y');
+}
+
+#[test]
+fn a_cluster_that_widens_in_the_last_column_wraps_in_grapheme_cluster_mode() {
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027habc☝🏽x".as_bytes());
+    // `lines` shows each cell's first character.
+    assert_eq!(lines(&t), ["abc", "☝x"]);
+    assert!(cell(&t, 0, 3).flags.contains(Flags::WRAP_GAP));
+    assert!(cell(&t, 1, 0).flags.contains(Flags::WIDE));
+    assert_eq!(text_at(&t, 1, 0), "☝🏽");
+    assert_eq!(t.screen().cursor(), (1, 3));
+    // Without autowrap, it stays in its cell.
+    let mut t = term(4, 1);
+    t.feed("\x1b[?2027h\x1b[?7labc☝🏽".as_bytes());
+    assert_eq!(text_at(&t, 0, 3), "☝🏽");
+    assert!(!cell(&t, 0, 3).flags.contains(Flags::WIDE));
+}
+
+#[test]
+fn a_cluster_that_widens_pushes_the_text_after_it_in_insert_mode() {
+    let mut t = term(10, 1);
+    t.feed("XYZ\r\x1b[4h\x1b[?2027h☝🏽".as_bytes());
+    assert!(is_wide(&t, 0));
+    assert_eq!((cell(&t, 0, 2).c, cell(&t, 0, 4).c), ('X', 'Z'));
+    // VS16 too, with or without the mode.
+    let mut t = term(10, 1);
+    t.feed("XYZ\r\x1b[4h\u{2744}\u{fe0f}".as_bytes());
+    assert!(is_wide(&t, 0));
+    assert_eq!((cell(&t, 0, 2).c, cell(&t, 0, 4).c), ('X', 'Z'));
+}
+
+#[test]
+fn a_wrapped_cluster_keeps_its_link_and_takes_later_characters() {
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027h\x1b]8;;file:///a\x1b\\abc\u{2744}\u{fe0f}\u{200d}🔥x".as_bytes());
+    assert_eq!(text_at(&t, 1, 0), "\u{2744}\u{fe0f}\u{200d}🔥");
+    assert!(cell(&t, 1, 0).flags.contains(Flags::WIDE));
+    assert_eq!(t.screen().link(extra(&t, 1, 0).link), Some("file:///a"));
+    assert_eq!(cell(&t, 1, 2).c, 'x');
+}
+
+#[test]
+fn text_presentation_at_the_second_to_last_column_ends_the_pending_wrap() {
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027hab\u{231a}\u{fe0e}x".as_bytes());
+    assert_eq!(lines(&t), ["ab\u{231a}x", ""]);
+    // A wide cluster there waits to wrap, as a wide character does.
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027hab👍🏽x".as_bytes());
+    assert!(cell(&t, 0, 2).flags.contains(Flags::WIDE));
+    assert_eq!(lines(&t), ["ab👍", "x"]);
+}
+
+#[test]
+fn clusters_keep_their_characters_widths_without_grapheme_cluster_mode() {
+    let mut t = term(20, 1);
+    t.feed("\x1b[?2027h\x1b[?2027l👍🏽!".as_bytes());
+    assert_eq!(text_at(&t, 0, 0), "👍🏽");
+    assert!(cell(&t, 0, 2).flags.contains(Flags::CONTINUATION));
+    assert_eq!(cell(&t, 0, 4).c, '!');
 }
 
 #[test]
