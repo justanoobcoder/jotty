@@ -200,8 +200,13 @@ fn read_loop(mut pty: File, stop: &PipeReader, shared: &Shared, wake: &Ping) {
             },
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if !wait_readable(&pty, stop, &mut waker) {
-                    return;
+                match wait_readable(&pty, stop, &mut waker) {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(e) => {
+                        log::error!("cannot wait for the pty: {e}");
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -310,7 +315,7 @@ fn queue(shared: &Shared, bytes: &[u8], waker: &mut Waker<'_>) -> Option<bool> {
 
 /// Waits until `pty` can be read, waking the window meanwhile when that
 /// is due. Returns false once `stop` closes.
-fn wait_readable(pty: &File, stop: &PipeReader, waker: &mut Waker<'_>) -> bool {
+fn wait_readable(pty: &File, stop: &PipeReader, waker: &mut Waker<'_>) -> io::Result<bool> {
     let mut fds = [
         libc::pollfd {
             fd: pty.as_fd().as_raw_fd(),
@@ -338,12 +343,11 @@ fn wait_readable(pty: &File, stop: &PipeReader, waker: &mut Waker<'_>) -> bool {
         if ready > 0 {
             // The pty hanging up shows as readable too: the next read
             // reports it.
-            return fds[1].revents == 0;
+            return Ok(fds[1].revents == 0);
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {
-            log::error!("cannot wait for the pty: {e}");
-            return false;
+            return Err(e);
         }
     }
 }
