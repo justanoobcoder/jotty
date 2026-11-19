@@ -306,6 +306,17 @@ nothing surprises you.
   after 50 failures in a row (10 seconds).
 - Windows of the same process share the font files, but each looks up
   its own faces and rasterizes glyphs into its own atlas.
+- **Large output on CPUs with performance and efficiency cores** (Intel
+  12th generation and later) can take up to about 20% longer than in a
+  terminal that keeps a core busy while drawing. A program writing to the
+  terminal hands its output to a kernel worker. When the scheduler runs
+  that worker on an idle performance core, the worker catches up, sleeps,
+  and has to be woken again for the next output. Each wake-up costs the
+  writing program time. jotty leaves performance cores idle more often,
+  so the worker lands on one more often. With the kernel's unbound
+  workqueues limited to the efficiency cores
+  (`/sys/devices/virtual/workqueue/cpumask`), the gap is mostly gone.
+  Pausing between reads of the pty doesn't help.
 
 ## `jotty config`
 
