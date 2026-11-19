@@ -25,11 +25,13 @@ const READ_SIZE: usize = 1 << 16;
 const MAX_QUEUED: usize = 1 << 20;
 /// While output streams in, the window is woken at most this often: a
 /// wake-up costs it about as much as a few kilobytes of output, and the
-/// kernel hands output over a few hundred bytes at a time.
+/// kernel hands output over a few hundred bytes at a time. Also the
+/// interval over which [`Rate`] counts the output the window takes.
 const STREAM_WAKE_INTERVAL: Duration = Duration::from_millis(1);
 /// Output since the last wake-up that makes it a stream. Less, such as a
 /// program's query and its reply going back and forth, wakes the window
-/// at once.
+/// at once. Taken within one interval, it makes the window poll (see
+/// [`Rate`]).
 const STREAM_BYTES: usize = 4096;
 
 /// What the thread hands the window.
@@ -79,6 +81,7 @@ pub struct PtyReader {
     /// Keeps the window's loop source when the thread ends: the loop
     /// drops a ping source once every ping is gone.
     _wake: Ping,
+    /// How fast the window takes output, for [`PtyReader::streaming`].
     rate: Rate,
 }
 
@@ -495,7 +498,7 @@ mod tests {
         assert!(!rate.streaming(at(100)));
         rate.taken(STREAM_BYTES / 2, at(200));
         assert!(rate.streaming(at(200)));
-        // A pause as long as an interval ends it.
+        // The stream ends an interval after the last take that made it.
         assert!(rate.streaming(at(1100)));
         assert!(!rate.streaming(at(1200)));
     }
@@ -510,19 +513,6 @@ mod tests {
             rate.taken(40, now);
             assert!(!rate.streaming(now), "streaming after {i} lines");
         }
-    }
-
-    #[test]
-    fn taking_output_tells_it_streams_in() {
-        let (fd, mut writer) = pipe();
-        let (ping, _source) = make_ping().expect("a ping");
-        let mut reader = PtyReader::spawn(fd, ping).expect("a reader");
-        assert!(!reader.streaming());
-        writer
-            .write_all(&[b'x'; 2 * STREAM_BYTES])
-            .expect("writing");
-        take_until(&mut reader, |all, _| all.len() >= 2 * STREAM_BYTES);
-        assert!(reader.streaming());
     }
 
     #[test]

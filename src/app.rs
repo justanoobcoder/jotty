@@ -3608,8 +3608,6 @@ impl App {
         Ok(id)
     }
 
-    /// Carries out what windows asked for, and closes the windows that are
-    /// done.
     /// Takes the output of the windows it streams into, and returns
     /// whether any does, for the loop not to sleep.
     fn take_streams(&mut self) -> bool {
@@ -3623,6 +3621,8 @@ impl App {
         streaming
     }
 
+    /// Carries out what windows asked for, and closes the windows that are
+    /// done.
     fn after_dispatch(&mut self) {
         for request in std::mem::take(&mut self.shared.requests) {
             match request {
