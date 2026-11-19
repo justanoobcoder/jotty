@@ -28,6 +28,14 @@ the clock, so it shows at once.
 something (`Layers::blinking_text`), and the blink timer runs only while
 the cursor or such text blinks.
 
+**Grapheme clusters.** `CSI ? 2027 h` turns on grapheme cluster mode,
+which `CSI ? 2027 $ p` (DECRQM) reports. A grapheme cluster then takes the
+cells of its first character, two once another character that takes up
+room joins it (an emoji after a ZWJ, a skin tone, the second letter of a
+flag, a consonant after a virama); VS16 makes a character with an emoji
+form two cells wide, and VS15 one with a text form one cell wide. Without
+the mode, the characters of a cluster take their `wcwidth` cells.
+
 **Notifications.** `OSC 9 ; message ST` (iTerm2) uses the window title as
 the summary; `OSC 777 ; notify ; title ; body ST` (rxvt-unicode) gives both.
 `OSC 9` followed by a number (`OSC 9 ; 4 ; …`, progress bars) is ignored.

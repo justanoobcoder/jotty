@@ -21,6 +21,8 @@ CHANGELOG
     forms, and accents sit where the font puts them
 - Add `font.ligatures`, to draw the font's ligatures (`->`, `!=`); off by
     default
+- Support grapheme cluster mode (2027): emoji sequences, flags and
+    conjuncts take two cells in programs that turn it on
 
 ### Changes
 

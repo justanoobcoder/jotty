@@ -74,6 +74,11 @@ Zero-width characters (combining marks, ZWJ, variation selectors) take no
 room. Characters with a width (the emoji after a ZWJ, skin tones, the
 second flag letter) still take their `wcwidth` cells, as `CONTINUATION`
 cells that only reserve room, so the cursor stays where programs expect.
+In grapheme cluster mode (`?2027`), which programs turn on when they count
+widths by cluster, they make the cluster's first cell wide instead (moving
+it to the next row from the last column, as a wide character would), and
+VS15 after a wide character with a text form makes it narrow; a cluster
+takes no `CONTINUATION` cells then.
 Most characters (letters, CJK, symbols) can't join a lone one of their
 kind, nor ASCII: a table of them, worked out a block of characters at a
 time on first use, saves running the segmentation rules for them. It also
