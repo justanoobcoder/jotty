@@ -4,10 +4,11 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::{fmt, io};
 
-use ab_glyph::{Font, FontRef, PxScale};
+use ab_glyph::{Font, FontRef, GlyphId, OutlinedGlyph, PxScale};
 use fontconfig_sys as fc;
 use fontconfig_sys::constants::{
     FC_CHARSET, FC_COLOR, FC_EMBOLDEN, FC_FAMILY, FC_FILE, FC_INDEX, FC_MATRIX, FC_SLANT,
@@ -15,12 +16,14 @@ use fontconfig_sys::constants::{
 };
 
 use crate::emoji::{self, EmojiFont};
+use crate::shape::{self, Shaped, ShapingFace};
 use crate::terminal::Underline;
 
 /// The four faces of a font family. The discriminants index
 /// `Fonts::styles`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Style {
+    #[default]
     Regular,
     Bold,
     Italic,
@@ -135,6 +138,18 @@ struct Synthetic {
     bold: bool,
     italic: bool,
 }
+
+/// Where a face comes from, for shaping it.
+struct FaceSource {
+    data: &'static [u8],
+    /// The face's index in its file.
+    index: u32,
+    /// Its variable font axes, as set on the face.
+    variations: Vec<([u8; 4], f32)>,
+}
+
+/// Most words kept shaped; past this, the cache of them starts over.
+const SHAPED_WORDS: usize = 8192;
 
 /// How far a made-up italic leans: a pixel right per this many pixels up,
 /// as fontconfig's matrix (about 11°).
@@ -322,6 +337,16 @@ pub struct Fonts {
     faces: Vec<FontRef<'static>>,
     /// The styles each face fakes, by face index.
     synthetic: Vec<Synthetic>,
+    /// Where each face comes from, by face index.
+    sources: Vec<FaceSource>,
+    /// Each face's shaping tables, by face index, read on first use
+    /// (`None` inside: the font can't be shaped).
+    shaping: Vec<Option<Option<ShapingFace>>>,
+    /// Words shaped so far, by a hash of their text, cells and style
+    /// (`None`: shaping changes none of their glyphs).
+    shaped: HashMap<u64, Option<Rc<Shaped>>>,
+    /// Shape with the features that make ligatures.
+    ligatures: bool,
     /// Font files mapped so far, shared by the faces and styles in them.
     files: HashMap<PathBuf, &'static [u8]>,
     /// Loaded faces by file and style (variable fonts differ per style).
@@ -343,13 +368,23 @@ pub struct Fonts {
 }
 
 impl Fonts {
-    /// Loads `family` in all four styles at `px` pixels per em.
-    pub fn try_new(family: &str, fallback: &[String], px: f32) -> Result<Fonts, FontError> {
+    /// Loads `family` in all four styles at `px` pixels per em, to draw
+    /// with ligatures or without.
+    pub fn try_new(
+        family: &str,
+        fallback: &[String],
+        px: f32,
+        ligatures: bool,
+    ) -> Result<Fonts, FontError> {
         let fontconfig = Fontconfig::current().map_err(|_| FontError::NotFound(family.into()))?;
         let mut fonts = Fonts {
             fontconfig,
             faces: Vec::new(),
             synthetic: Vec::new(),
+            sources: Vec::new(),
+            shaping: Vec::new(),
+            shaped: HashMap::new(),
+            ligatures,
             files: HashMap::new(),
             loaded: HashMap::new(),
             styles: [0; 4],
@@ -420,6 +455,7 @@ impl Fonts {
                 max: axis.max_value,
             })
             .collect();
+        let mut variations = Vec::new();
         if !axes.is_empty() {
             let instance = match (file.index >> 16).checked_sub(1) {
                 Some(instance) => named_instance(data, face_index, instance).unwrap_or_else(|| {
@@ -431,8 +467,9 @@ impl Fonts {
                 }),
                 None => Vec::new(),
             };
-            for (tag, value) in variation_settings(&axes, &instance, style) {
-                face.set_variation(&tag, value);
+            variations = variation_settings(&axes, &instance, style);
+            for (tag, value) in &variations {
+                face.set_variation(tag, *value);
             }
         }
         // What the font's own axes do needn't be faked as well.
@@ -444,6 +481,12 @@ impl Fonts {
         };
         self.faces.push(face);
         self.synthetic.push(synthetic);
+        self.sources.push(FaceSource {
+            data,
+            index: face_index,
+            variations,
+        });
+        self.shaping.push(None);
         let index = self.faces.len() - 1;
         self.loaded.insert((file, style), index);
         Ok(index)
@@ -454,6 +497,8 @@ impl Fonts {
     pub fn set_size(&mut self, px: f32) {
         use ab_glyph::ScaleFont;
         self.px = px;
+        // Shaped glyphs are placed in pixels.
+        self.shaped.clear();
         let face = &self.faces[self.styles[0]];
         let scaled = face.as_scaled(px_scale(face, px));
         let advance = ['M', '0', 'x']
@@ -618,30 +663,12 @@ impl Fonts {
         }
 
         let bounds = outline.px_bounds();
-        let (width, height) = (bounds.width() as u32, bounds.height() as u32);
-        if width == 0 || height == 0 {
-            return None;
-        }
-        let mut data = vec![0; (width * height) as usize];
-        // The pixels come in order, row by row: counting them spares
-        // working out the index from `x` and `y`, which the rasterizer
-        // divides it into, on every pixel.
-        let mut pixel = 0;
-        outline.draw(|x, y, coverage| {
-            debug_assert_eq!((y * width + x) as usize, pixel);
-            if let Some(px) = data.get_mut(pixel) {
-                // Rounded by adding a half: `as` saturates, and `round`
-                // is a library call without SSE4.1.
-                *px = (coverage * 255.0 + 0.5) as u8;
-            }
-            pixel += 1;
-        });
+        let (width, height, data) = coverage(&outline)?;
         // Center the visible ink: bitmaps can have faint antialiasing rows
         // on one side only.
         let ink = ink_rows(&data, width, 64).unwrap_or((0, height - 1));
         let ink_height = (ink.1 - ink.0 + 1) as i32;
         let centered_top = (m.height as i32 - ink_height) / 2 - ink.0 as i32;
-        let synthetic = self.synthetic[index];
         let (left, top) = if fill_slot {
             ((slot_width as i32 - width as i32) / 2, centered_top)
         } else if icon && ink_height <= m.height as i32 {
@@ -655,7 +682,7 @@ impl Fonts {
         } else {
             (bounds.min.x as i32, bounds.min.y as i32)
         };
-        let mut glyph = Glyph {
+        let glyph = Glyph {
             width,
             height,
             left,
@@ -664,20 +691,185 @@ impl Fonts {
             color: false,
         };
         // Icons keep their shape.
-        if synthetic.bold && !icon {
+        if icon {
+            return Some(glyph);
+        }
+        Some(self.fake_style(glyph, index, fill_slot || fit))
+    }
+
+    /// `glyph` of `face` made bold or slanted, where the face fakes that
+    /// style; `centered` keeps a glyph centered in its slot so.
+    fn fake_style(&self, mut glyph: Glyph, face: usize, centered: bool) -> Glyph {
+        let synthetic = self.synthetic[face];
+        if synthetic.bold {
             // As FreeType's emboldening: a 24th of the size.
             let strength = (self.px / 24.0).round().max(1.0) as u32;
             glyph = embolden(&glyph, strength);
-            // A glyph centered above stays centered.
-            if fill_slot || fit {
+            if centered {
                 glyph.left -= (strength / 2) as i32;
             }
         }
-        if synthetic.italic && !icon {
-            glyph = oblique(&glyph, m.baseline as i32, OBLIQUE_SHEAR);
+        if synthetic.italic {
+            glyph = oblique(&glyph, self.metrics.baseline as i32, OBLIQUE_SHEAR);
         }
-        Some(glyph)
+        glyph
     }
+
+    /// Rasterizes glyph `id` of `face`, as shaping chose it, with its
+    /// origin at the cell's left edge on the baseline.
+    pub fn rasterize_shaped(&self, face: usize, id: u16) -> Option<Glyph> {
+        let font = self.faces.get(face)?;
+        let origin = ab_glyph::point(0.0, self.metrics.baseline as f32);
+        let scale = px_scale(font, self.px);
+        let outline = font.outline_glyph(GlyphId(id).with_scale_and_position(scale, origin))?;
+        let bounds = outline.px_bounds();
+        let (width, height, data) = coverage(&outline)?;
+        let glyph = Glyph {
+            width,
+            height,
+            left: bounds.min.x as i32,
+            top: bounds.min.y as i32,
+            data,
+            color: false,
+        };
+        Some(self.fake_style(glyph, face, /* centered= */ false))
+    }
+
+    /// How a word is drawn: the text of its cells (a character or a
+    /// cluster each) in `text`, each starting at a byte offset of `starts`
+    /// (the first 0, in order), in `style`. `None` when shaping leaves
+    /// every cell's glyph as it is. Without ligatures, only words with
+    /// clusters or letters that join their neighbors need shaping.
+    pub fn shape(&mut self, text: &str, starts: &[usize], style: Style) -> Option<Rc<Shaped>> {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        // ASCII has no clusters and no joining letters.
+        if !self.ligatures && text.is_ascii() {
+            return None;
+        }
+        let clusters = text.chars().count() > starts.len();
+        if !clusters
+            && (starts.len() < 2 || !self.ligatures && !text.chars().any(shape::joins_neighbors))
+        {
+            return None;
+        }
+        let key = BuildHasherDefault::<DefaultHasher>::default().hash_one((text, starts, style));
+        if let Some(shaped) = self.shaped.get(&key) {
+            return shaped.clone();
+        }
+        if self.shaped.len() >= SHAPED_WORDS {
+            self.shaped.clear();
+        }
+        let shaped = self.shape_word(text, starts, style).map(Rc::new);
+        self.shaped.insert(key, shaped.clone());
+        shaped
+    }
+
+    /// [`Fonts::shape`] without the cache: shapes each run of cells drawn
+    /// in one face.
+    fn shape_word(&mut self, text: &str, starts: &[usize], style: Style) -> Option<Shaped> {
+        let end = |cell: usize| starts.get(cell + 1).copied().unwrap_or(text.len());
+        let faces: Vec<Option<usize>> = (0..starts.len())
+            .map(|cell| self.cell_face(&text[starts[cell]..end(cell)], style))
+            .collect();
+        let mut shaped = Shaped {
+            cells: vec![None; starts.len()],
+            glyphs: Vec::new(),
+        };
+        let mut first = 0;
+        while first < starts.len() {
+            let mut last = first + 1;
+            while last < starts.len() && faces[last] == faces[first] {
+                last += 1;
+            }
+            if let Some(face) = faces[first] {
+                let run = &text[starts[first]..end(last - 1)];
+                self.shape_run(face, run, &starts[first..last], first, &mut shaped);
+            }
+            first = last;
+        }
+        shaped.cells.iter().any(Option::is_some).then_some(shaped)
+    }
+
+    /// The face a cell's text is shaped in: the one its first character is
+    /// drawn in, if that has the others too. `None` for cells drawn
+    /// another way: box drawing, icons, color emoji, and text with a
+    /// variation selector, which asks for an emoji or text form.
+    fn cell_face(&mut self, text: &str, style: Style) -> Option<usize> {
+        let mut chars = text.chars();
+        let first = chars.next()?;
+        if is_drawn(first)
+            || is_icon(first)
+            || emoji::wants_color(text)
+            || text.contains(['\u{fe0e}', '\u{fe0f}'])
+        {
+            return None;
+        }
+        let face = self.face_for(first, style)?;
+        chars
+            .all(|c| is_joiner_or_selector(c) || has_glyph(&self.faces[face], c))
+            .then_some(face)
+    }
+
+    /// Shapes `run`, the text of the word's cells from `first` on, all
+    /// drawn in `face`, into `shaped`; `starts` are the byte offsets of
+    /// those cells in the word.
+    fn shape_run(
+        &mut self,
+        face: usize,
+        run: &str,
+        starts: &[usize],
+        first: usize,
+        shaped: &mut Shaped,
+    ) {
+        use ab_glyph::ScaleFont;
+        let source = &self.sources[face];
+        let shaper = self.shaping[face].get_or_insert_with(|| {
+            ShapingFace::try_new(source.data, source.index, &source.variations)
+                .inspect_err(|e| log::warn!("can't shape with face {face}: {e}"))
+                .ok()
+        });
+        let Some(shaper) = shaper.as_mut() else {
+            return;
+        };
+        let buffer = shaper.shape(run, self.ligatures);
+        let font = &self.faces[face];
+        let scale = font.as_scaled(px_scale(font, self.px)).h_scale_factor();
+        let starts: Vec<usize> = starts.iter().map(|start| start - starts[0]).collect();
+        let own_glyph = |cell: usize| {
+            let end = starts.get(cell + 1).copied().unwrap_or(run.len());
+            let mut chars = run[starts[cell]..end].chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Some(font.glyph_id(c).0),
+                _ => None,
+            }
+        };
+        let glyphs = (buffer.glyph_infos(), buffer.glyph_positions());
+        shape::place(shaped, face, first, &starts, glyphs, scale, own_glyph);
+    }
+}
+
+/// Draws `outline` as a coverage bitmap, `None` when it is empty.
+fn coverage(outline: &OutlinedGlyph) -> Option<(u32, u32, Vec<u8>)> {
+    let bounds = outline.px_bounds();
+    let (width, height) = (bounds.width() as u32, bounds.height() as u32);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut data = vec![0; (width * height) as usize];
+    // The pixels come in order, row by row: counting them spares working
+    // out the index from `x` and `y`, which the rasterizer divides it
+    // into, on every pixel.
+    let mut pixel = 0;
+    outline.draw(|x, y, coverage| {
+        debug_assert_eq!((y * width + x) as usize, pixel);
+        if let Some(px) = data.get_mut(pixel) {
+            // Rounded by adding a half: `as` saturates, and `round` is a
+            // library call without SSE4.1.
+            *px = (coverage * 255.0 + 0.5) as u8;
+        }
+        pixel += 1;
+    });
+    Some((width, height, data))
 }
 
 /// `glyph` with strokes `strength` pixels thicker, toward the right: each
@@ -1141,6 +1333,18 @@ fn draw_arc(canvas: &mut Canvas, stroke: u32, dx: f32, dy: f32) {
 
 /// Draws box-drawing and block characters to fill the cell exactly, so
 /// lines join across cells regardless of the font's metrics.
+/// Whether [`box_glyph`] may draw `c`, rather than a font.
+fn is_drawn(c: char) -> bool {
+    matches!(c,
+        '\u{2500}'..='\u{259f}'
+        | '\u{25d6}' | '\u{25d7}'
+        | '\u{25e2}'..='\u{25e5}'
+        | '\u{2800}'..='\u{28ff}'
+        | '\u{2bca}' | '\u{2bcb}'
+        | '\u{1cc00}'..='\u{1cebf}'
+        | '\u{1fb00}'..='\u{1fbff}')
+}
+
 fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
     let (w, h) = (m.width, m.height);
     let s = m.stroke;
@@ -1840,6 +2044,8 @@ pub fn points_to_px(points: f32, scale: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
 
     fn bitmap(width: u32, rows: &[&[u8]], left: i32, top: i32) -> Glyph {
@@ -1977,7 +2183,7 @@ mod tests {
 
     #[test]
     fn vs15_asks_for_the_text_form_in_a_cluster() {
-        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0, /* ligatures= */ false) else {
             return;
         };
         let glyph =
@@ -1987,7 +2193,7 @@ mod tests {
 
     #[test]
     fn marks_are_not_combined_with_a_color_glyph() {
-        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0, /* ligatures= */ false) else {
             return;
         };
         // A color bitmap has four bytes per pixel, which must stay intact.
@@ -2400,8 +2606,8 @@ mod tests {
     #[test]
     fn windows_share_the_fontconfig_configuration() {
         let (Ok(a), Ok(b)) = (
-            Fonts::try_new("monospace", &[], 16.0),
-            Fonts::try_new("monospace", &[], 20.0),
+            Fonts::try_new("monospace", &[], 16.0, /* ligatures= */ false),
+            Fonts::try_new("monospace", &[], 20.0, /* ligatures= */ false),
         ) else {
             eprintln!("no system fonts, skipping");
             return;
@@ -2413,7 +2619,7 @@ mod tests {
     /// such as the Nix build sandbox.
     #[test]
     fn loads_system_monospace() {
-        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0) else {
+        let Ok(mut fonts) = Fonts::try_new("monospace", &[], 16.0, /* ligatures= */ false) else {
             eprintln!("no system fonts, skipping");
             return;
         };
@@ -2493,5 +2699,131 @@ mod tests {
 
         fonts.set_size(32.0);
         assert!(fonts.metrics.height > m.height);
+    }
+
+    /// `family` with `fallback`, if fontconfig picks a file whose name
+    /// contains `file` for the characters of `sample`: the tests that need
+    /// a particular font skip without it.
+    fn fonts_with(
+        family: &str,
+        fallback: &[&str],
+        ligatures: bool,
+        sample: &str,
+        file: &str,
+    ) -> Option<Fonts> {
+        let fallback: Vec<String> = fallback.iter().map(|f| f.to_string()).collect();
+        let mut fonts = Fonts::try_new(family, &fallback, 16.0, ligatures).ok()?;
+        let found = sample.chars().all(|c| {
+            let face = fonts.face_for(c, Style::Regular);
+            fonts
+                .loaded
+                .iter()
+                .any(|((f, _), &i)| Some(i) == face && f.path.to_string_lossy().contains(file))
+        });
+        if !found {
+            eprintln!("no {file} font, skipping");
+        }
+        found.then_some(fonts)
+    }
+
+    /// The glyphs drawn from each cell of a shaped word.
+    fn shaped_cells(shaped: &Shaped) -> Vec<Option<Vec<u16>>> {
+        let ids =
+            |range: &Range<usize>| shaped.glyphs[range.clone()].iter().map(|g| g.id).collect();
+        shaped
+            .cells
+            .iter()
+            .map(|cell| cell.as_ref().map(ids))
+            .collect()
+    }
+
+    #[test]
+    fn ligatures_are_shaped_only_when_on() {
+        const FAMILY: &str = "JetBrainsMono Nerd Font";
+        let Some(mut on) = fonts_with(FAMILY, &[], true, "a->", "JetBrainsMonoNerdFont-") else {
+            return;
+        };
+        let shaped = on
+            .shape("a->b", &[0, 1, 2, 3], Style::Regular)
+            .expect("JetBrains Mono joins -> into an arrow");
+        let cells = shaped_cells(&shaped);
+        assert_eq!((&cells[0], &cells[3]), (&None, &None));
+        assert!(cells[1].is_some() && cells[2].is_some(), "{cells:?}");
+        let arrow = shaped
+            .glyphs
+            .iter()
+            .filter_map(|g| on.rasterize_shaped(g.face, g.id));
+        assert!(arrow.count() > 0);
+        // Without them, ASCII isn't even shaped.
+        let mut off = fonts_with(FAMILY, &[], false, "a->", "JetBrainsMonoNerdFont-").unwrap();
+        assert!(off.shape("a->b", &[0, 1, 2, 3], Style::Regular).is_none());
+        // Nor are words of one cell.
+        assert!(on.shape("-", &[0], Style::Regular).is_none());
+    }
+
+    #[test]
+    fn arabic_letters_join_without_ligatures() {
+        const ARABIC: &str = "\u{633}\u{644}\u{627}\u{645}";
+        let Some(mut fonts) = fonts_with(
+            "monospace",
+            &["Noto Sans Arabic"],
+            false,
+            ARABIC,
+            "NotoSansArabic",
+        ) else {
+            return;
+        };
+        let shaped = fonts
+            .shape(ARABIC, &[0, 2, 4, 6], Style::Regular)
+            .expect("Arabic letters take their joining forms");
+        let cells = shaped_cells(&shaped);
+        // Lam and alef make the required lam-alef ligature, ligatures or
+        // not: it covers the alef's cell.
+        assert_eq!(cells[2], Some(Vec::new()), "{cells:?}");
+        assert!(cells.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn marks_are_composed_or_placed_over_their_letter() {
+        let Some(mut fonts) = fonts_with(
+            "JetBrainsMono Nerd Font",
+            &[],
+            false,
+            "eq\u{301}",
+            "JetBrainsMonoNerdFont-",
+        ) else {
+            return;
+        };
+        // é has a glyph of its own.
+        let shaped = fonts.shape("e\u{301}", &[0], Style::Regular).unwrap();
+        let precomposed = fonts.faces[fonts.styles[0]].glyph_id('é').0;
+        assert_eq!(shaped_cells(&shaped), [Some(vec![precomposed])]);
+        // q́ doesn't: the accent goes over the q.
+        let shaped = fonts.shape("xq\u{301}", &[0, 1], Style::Regular).unwrap();
+        assert_eq!(shaped.cells[0], None);
+        let glyphs = &shaped.glyphs[shaped.cells[1].clone().unwrap()];
+        assert_eq!(glyphs.len(), 2);
+        let accent = fonts
+            .rasterize_shaped(glyphs[1].face, glyphs[1].id)
+            .unwrap();
+        let ink = glyphs[1].x + accent.left..glyphs[1].x + accent.left + accent.width as i32;
+        let cell = 0..fonts.metrics.width as i32 + 1;
+        assert!(
+            cell.contains(&ink.start) && cell.contains(&ink.end),
+            "the accent's ink {ink:?} is over the q's cell {cell:?}"
+        );
+    }
+
+    #[test]
+    fn box_drawing_is_never_left_to_a_font() {
+        let m = CellMetrics::new(10.0, 16.0, -4.0, 0.0);
+        let drawn = ('\u{2000}'..='\u{2fff}').chain('\u{1cc00}'..='\u{1fbff}');
+        for c in drawn.filter(|&c| box_glyph(c, m).is_some()) {
+            assert!(
+                is_drawn(c),
+                "U+{:04X} is drawn, but is_drawn says no",
+                c as u32
+            );
+        }
     }
 }

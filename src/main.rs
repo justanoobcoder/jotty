@@ -22,6 +22,7 @@ mod renderer;
 mod search;
 mod selection;
 mod settings;
+mod shape;
 mod terminal;
 mod terminfo;
 mod text;

@@ -719,6 +719,7 @@ impl TermWindow {
                 &config.font.family,
                 &config.font.fallback,
                 font::points_to_px(config.font.size, 1.0),
+                /* ligatures= */ false,
             )
         };
         let fonts = load_fonts()?;
@@ -3933,7 +3934,7 @@ impl App {
                 .iter()
                 .map(|w| {
                     let px = font::points_to_px(w.font_points, w.scale as f32);
-                    Fonts::try_new(&new.font.family, &new.font.fallback, px)
+                    Fonts::try_new(&new.font.family, &new.font.fallback, px, false)
                 })
                 .collect();
             match loaded {
