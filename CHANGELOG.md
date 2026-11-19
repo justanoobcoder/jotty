@@ -7,53 +7,32 @@ CHANGELOG
 
 ### Features
 
-- Programs can switch the whole screen to reverse video, swapping the text
-    and background colors
-- Hints (Ctrl+Shift+E) also label file paths followed by a line number,
-    such as `src/main.rs:12:5`, and open them in your editor
-    (`terminal.editor`) at that line
+- Programs can switch the whole screen to reverse video, swapping the text and background colors
+- Hints (Ctrl+Shift+E) also label file paths followed by a line number, such as `src/main.rs:12:5`, and open them in your editor (`terminal.editor`) at that line
 - Hints also label hex hashes written in uppercase, such as `1AF659B`
-- New `hints.alphabet` option: choose which letters hint labels are made
-    from, for example only the home row
-- New `terminal.word_delimiters` option: choose which characters end a
-    word when you double-click to select it
-- Vi mode: jump to a character on the line with `f`, `F`, `t` and `T`, and
-    repeat the jump with `;` and `,`
-- Text that programs ask to blink now blinks; turn it off with
-    `terminal.text_blink = false`
-- Italic text is now slanted with variable fonts that keep the italic style
-    in the same file as the regular one
-- Fonts with no bold or italic style get one made from the regular style,
-    so bold and italic text still stands out
-- Better support for complex scripts: Arabic letters join up, Indic
-    letters combine into syllables, and accents sit where the font puts them
-- New `font.ligatures` option: draw the font's ligatures, such as `->` or
-    `!=`, as one symbol (off by default)
-- Emoji made of several characters (families, skin tones), flags and Indic
-    syllables take two cells, in programs that ask for it
+- New `hints.alphabet` option: choose which letters hint labels are made from, for example only the home row
+- New `terminal.word_delimiters` option: choose which characters end a word when you double-click to select it
+- Vi mode: jump to a character on the line with `f`, `F`, `t` and `T`, and repeat the jump with `;` and `,`
+- Text that programs ask to blink now blinks; turn it off with `terminal.text_blink = false`
+- Italic text is now slanted with variable fonts that keep the italic style in the same file as the regular one
+- Fonts with no bold or italic style get one made from the regular style, so bold and italic text still stands out
+- Better support for complex scripts: Arabic letters join up, Indic letters combine into syllables, and accents sit where the font puts them
+- New `font.ligatures` option: draw the font's ligatures, such as `->` or `!=`, as one symbol (off by default)
+- Emoji made of several characters (families, skin tones), flags and Indic syllables take two cells, in programs that ask for it
 
 ### Fixes
 
-- Showing a large image (kitty graphics) no longer freezes every jotty
-    window while the image loads
-- `jotty config` keeps a symlinked `overrides.toml` (for example one from
-    a dotfiles repo) as a link when it saves, instead of replacing it with
-    a plain file
-- Backspace deletes a whole accented or non-Latin character in programs
-    that read a line at a time, such as `cat`, instead of leaving part of
-    it behind
-- Inserting a wide emoji in the middle of a line no longer overwrites the
-    character after it
+- Showing a large image (kitty graphics) no longer freezes every jotty window while the image loads
+- `jotty config` keeps a symlinked `overrides.toml` (for example one from a dotfiles repo) as a link when it saves, instead of replacing it with a plain file
+- Backspace deletes a whole accented or non-Latin character in programs that read a line at a time, such as `cat`, instead of leaving part of it behind
+- Inserting a wide emoji in the middle of a line no longer overwrites the character after it
 
 ### Performance
 
 - Colored text, links and sixel images show up faster
-- Accented letters, CJK, symbols and box-drawing characters show up
-    faster, and so do characters drawn for the first time
-- Text with thousands of different characters shows up faster with the
-    CPU renderer, whose glyph cache can now grow to 16 MiB
-- Large output, such as `cat` of a big file or many short lines, is up to
-    20% faster with both renderers
+- Accented letters, CJK, symbols and box-drawing characters show up faster, and so do characters drawn for the first time
+- Text with thousands of different characters shows up faster with the CPU renderer, whose glyph cache can now grow to 16 MiB
+- Large output, such as `cat` of a big file or many short lines, is up to 20% faster with both renderers
 - Scrollback uses less memory, and scrolling is faster
 
 ## 2.3.0
