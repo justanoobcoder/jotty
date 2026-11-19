@@ -3,6 +3,8 @@ CHANGELOG
 
 ## Unreleased
 
+## 2.4.0
+
 ### Features
 
 - Support reverse video (DECSCNM)
