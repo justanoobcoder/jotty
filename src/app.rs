@@ -719,7 +719,7 @@ impl TermWindow {
                 &config.font.family,
                 &config.font.fallback,
                 font::points_to_px(config.font.size, 1.0),
-                /* ligatures= */ false,
+                config.font.ligatures,
             )
         };
         let fonts = load_fonts()?;
@@ -3928,13 +3928,14 @@ impl App {
         // Every window's fonts first: a family that can't be loaded leaves
         // all of them as they are.
         let mut fonts: Vec<Option<Fonts>> = Vec::new();
-        if (&old.font.family, &old.font.fallback) != (&new.font.family, &new.font.fallback) {
+        let (o, n) = (&old.font, &new.font);
+        if (&o.family, &o.fallback, o.ligatures) != (&n.family, &n.fallback, n.ligatures) {
             let loaded: Result<Vec<Fonts>, _> = self
                 .windows
                 .iter()
                 .map(|w| {
                     let px = font::points_to_px(w.font_points, w.scale as f32);
-                    Fonts::try_new(&new.font.family, &new.font.fallback, px, false)
+                    Fonts::try_new(&new.font.family, &new.font.fallback, px, new.font.ligatures)
                 })
                 .collect();
             match loaded {
@@ -3944,6 +3945,7 @@ impl App {
                     // So that saving the file again tries again.
                     new.font.family = old.font.family.clone();
                     new.font.fallback = old.font.fallback.clone();
+                    new.font.ligatures = old.font.ligatures;
                 }
             }
         }

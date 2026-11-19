@@ -192,6 +192,8 @@ pub struct FontConfig {
     pub size_step: f32,
     /// Families tried, in order, for characters the primary font lacks.
     pub fallback: Vec<String>,
+    /// Draw the font's ligatures (`->`, `!=` as one symbol).
+    pub ligatures: bool,
 }
 
 impl Default for FontConfig {
@@ -201,6 +203,7 @@ impl Default for FontConfig {
             size: 11.0,
             size_step: 1.0,
             fallback: Vec::new(),
+            ligatures: false,
         }
     }
 }
