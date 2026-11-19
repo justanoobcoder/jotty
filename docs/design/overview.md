@@ -53,6 +53,7 @@ quads once per frame, drawn with OpenGL ES or on the CPU.
 | `instance.rs` | Single instance: the socket path, the lock that lets one jotty bind it, and the request a later jotty sends (directory, environment, command) | no |
 | `font.rs` | Font matching (fontconfig), rasterization (ab_glyph), clusters, box drawing | no |
 | `emoji.rs` | Color emoji: bitmap glyphs, emoji-font ligatures, scaling | no |
+| `shape.rs` | Text shaping (harfrust): ligatures, joining scripts, mark positioning, and placing the glyphs in cells | no |
 | `renderer/mod.rs` | Builds the vertex batch for a frame: colors, cursor, preedit, selection; the `Renderer` enum over both backends | no |
 | `renderer/atlas.rs` | Glyph atlas: shelf packing and the on-demand glyph cache | no |
 | `renderer/gl.rs` | EGL context, shaders, atlas texture, draw and swap | yes |

@@ -11,6 +11,8 @@ pub mod label;
 pub mod software;
 
 use std::borrow::Cow;
+use std::ops::Range;
+use std::rc::Rc;
 
 use atlas::Atlas;
 
@@ -21,6 +23,7 @@ use crate::font::{self, CellMetrics, Fonts, Style};
 use crate::hints::Hints;
 use crate::ime::Preedit;
 use crate::selection::{Point, Selection};
+use crate::shape::{Shaped, ShapedGlyph};
 use crate::terminal::graphics::{self, PLACEHOLDER, PlaceholderCell};
 use crate::terminal::{Cell, Color, CursorShape, DefaultColors, Flags, Screen, Underline};
 
@@ -378,6 +381,149 @@ pub trait GlyphCache {
     /// The glyph for a grapheme cluster (a character with combining marks,
     /// or an emoji sequence).
     fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo>;
+
+    /// How a word is drawn after shaping; see [`Fonts::shape`].
+    fn shape(&mut self, text: &str, starts: &[usize], style: Style) -> Option<Rc<Shaped>>;
+
+    /// A glyph that shaping chose, placed from the origin at the cell's
+    /// left edge on the baseline.
+    fn shaped(&mut self, glyph: &ShapedGlyph) -> Option<GlyphInfo>;
+}
+
+/// The glyphs a shaped cell draws.
+#[derive(Debug, Clone)]
+struct Drawn {
+    /// A range of `RowShapes::glyphs`.
+    glyphs: Range<usize>,
+    /// The columns of the cell's word.
+    word: Range<usize>,
+}
+
+/// The glyphs shaping puts in the cells of a row.
+#[derive(Debug, Default)]
+struct RowShapes {
+    /// By column: `None` when the cell is drawn as it is without shaping.
+    cols: Vec<Option<Drawn>>,
+    glyphs: Vec<ShapedGlyph>,
+    /// By column, the color of the cell's text, as it is drawn; `None`
+    /// where it shows none (blinking text in its off phase).
+    colors: Vec<Option<Rgb>>,
+    /// The word being collected: its text, the byte offset each of its
+    /// cells starts at, their columns, the column after it, and its style.
+    text: String,
+    starts: Vec<usize>,
+    word_cols: Vec<usize>,
+    word_end: usize,
+    style: Style,
+}
+
+impl RowShapes {
+    /// Shapes the words of a row: runs of cells in one style, which blanks
+    /// and cells that show nothing (hidden text, image placeholders) end.
+    fn shape(
+        &mut self,
+        screen: &Screen,
+        cells: &[Cell],
+        cols: usize,
+        glyphs: &mut impl GlyphCache,
+    ) {
+        self.cols.clear();
+        self.cols.resize(cols, None);
+        self.glyphs.clear();
+        self.colors.clear();
+        self.colors.resize(cols, None);
+        for (x, cell) in cells.iter().enumerate().take(cols) {
+            // Part of the cell before them.
+            if cell
+                .flags
+                .intersects(Flags::WIDE_SPACER | Flags::CONTINUATION)
+            {
+                continue;
+            }
+            let blank = cell.c == ' ' && screen.cluster(cell).is_empty();
+            if blank || cell.flags.contains(Flags::HIDDEN) || cell.c == PLACEHOLDER {
+                self.end_word(glyphs);
+                continue;
+            }
+            let style = style_of(cell);
+            if style != self.style {
+                self.end_word(glyphs);
+                self.style = style;
+            }
+            self.starts.push(self.text.len());
+            self.word_cols.push(x);
+            self.word_end = x + if cell.flags.contains(Flags::WIDE) {
+                2
+            } else {
+                1
+            };
+            screen.cell_text(cell, &mut self.text);
+        }
+        self.end_word(glyphs);
+    }
+
+    fn end_word(&mut self, glyphs: &mut impl GlyphCache) {
+        if !self.starts.is_empty()
+            && let Some(shaped) = glyphs.shape(&self.text, &self.starts, self.style)
+        {
+            let base = self.glyphs.len();
+            self.glyphs.extend_from_slice(&shaped.glyphs);
+            let word = self.word_cols[0]..self.word_end.min(self.cols.len());
+            for (cell, range) in shaped.cells.iter().enumerate() {
+                if let Some(range) = range {
+                    self.cols[self.word_cols[cell]] = Some(Drawn {
+                        glyphs: base + range.start..base + range.end,
+                        word: word.clone(),
+                    });
+                }
+            }
+        }
+        self.text.clear();
+        self.starts.clear();
+        self.word_cols.clear();
+    }
+
+    /// Draws the shaped glyphs of the row whose top is at `y`, with the
+    /// grid's left edge at `left`. Each piece of a glyph over a cell of its
+    /// word takes that cell's text color, so a ligature partly under the
+    /// cursor or the selection, or between two colors, shows each cell's
+    /// colors. What sticks out of the word goes with its first or last cell.
+    fn draw(&self, batch: &mut Batch, glyphs: &mut impl GlyphCache, left: f32, y: f32, cw: f32) {
+        for (x, drawn) in self.cols.iter().enumerate() {
+            let Some(drawn) = drawn else {
+                continue;
+            };
+            let word = &drawn.word;
+            for shaped in &self.glyphs[drawn.glyphs.clone()] {
+                let Some(glyph) = glyphs.shaped(shaped) else {
+                    continue;
+                };
+                let gx = left + x as f32 * cw + shaped.x as f32;
+                let gy = y + shaped.y as f32;
+                let ink_left = gx + glyph.left as f32;
+                let ink_right = ink_left + glyph.width as f32;
+                let col = |px: f32| ((px - left) / cw).max(0.0) as usize;
+                let first = col(ink_left).clamp(word.start, word.end - 1);
+                let last = col(ink_right.ceil() - 1.0).clamp(first, word.end - 1);
+                for c in first..=last {
+                    let Some(color) = self.colors[c] else {
+                        continue;
+                    };
+                    let from = if c == word.start {
+                        f32::NEG_INFINITY
+                    } else {
+                        left + c as f32 * cw
+                    };
+                    let to = if c + 1 == word.end {
+                        f32::INFINITY
+                    } else {
+                        left + (c + 1) as f32 * cw
+                    };
+                    batch.glyph_part(gx, gy, &glyph, color, from..to);
+                }
+            }
+        }
+    }
 }
 
 /// Floats per vertex: position (2), texture coordinate (2), color (4), mode (1).
@@ -432,6 +578,27 @@ impl Batch {
         self.quad(
             [x + glyph.left as f32, y + glyph.top as f32, w, h],
             glyph.uv,
+            color,
+            1.0,
+            mode,
+        );
+    }
+
+    /// The part of a glyph drawn as by [`Batch::glyph`] that lies between
+    /// `columns`, in pixels.
+    fn glyph_part(&mut self, x: f32, y: f32, glyph: &GlyphInfo, color: Rgb, columns: Range<f32>) {
+        let (w, h) = (glyph.width as f32, glyph.height as f32);
+        let x0 = x + glyph.left as f32;
+        let (from, to) = (x0.max(columns.start), (x0 + w).min(columns.end));
+        if from >= to {
+            return;
+        }
+        let [u0, v0, u1, v1] = glyph.uv;
+        let u = |px: f32| u0 + (px - x0) / w * (u1 - u0);
+        let mode = if glyph.color { 2.0 } else { 1.0 };
+        self.quad(
+            [from, y + glyph.top as f32, to - from, h],
+            [u(from), v0, u(to), v1],
             color,
             1.0,
             mode,
@@ -649,10 +816,12 @@ pub fn build(
 
     // Reused: this runs for every clustered cell of every frame.
     let mut cluster_text = String::new();
+    let mut shapes = RowShapes::default();
     for y in 0..screen.rows() {
         let row = screen.visible_row(y);
         let line = y as isize - offset;
         let py = oy + y as f32 * ch;
+        shapes.shape(screen, row.cells(), screen.cols(), glyphs);
         // The placeholder cell to the left, which the next one continues.
         let mut placeholder: Option<PlaceholderCell> = None;
         for x in 0..screen.cols() {
@@ -707,6 +876,11 @@ pub fn build(
                     || cell.flags.contains(Flags::STRIKE));
             *blinking_text |= blinks;
             let blinked_off = blinks && frame.text_blinked_off && !is_cursor;
+            let text_color = (!blinked_off).then_some(fg);
+            shapes.colors[x] = text_color;
+            if span > 1.0 && x + 1 < shapes.colors.len() {
+                shapes.colors[x + 1] = text_color;
+            }
 
             // Whether the program chose this background, as opposed to the
             // default one showing through. This depends on how the cell was
@@ -733,6 +907,9 @@ pub fn build(
             let glyph = if cell.flags.intersects(Flags::HIDDEN | Flags::CONTINUATION)
                 || cell.c == PLACEHOLDER
             {
+                None
+            } else if shapes.cols[x].is_some() {
+                // Drawn with the rest of the row's shaped glyphs, below.
                 None
             } else if extra.cluster != 0 {
                 cluster_text.clear();
@@ -785,6 +962,7 @@ pub fn build(
                 front.rect(px, py + mid, cw * span, stroke, fg);
             }
         }
+        shapes.draw(front, glyphs, ox, py, cw);
     }
 
     if cursor_visible && !block_cursor {
@@ -1039,13 +1217,17 @@ mod tests {
     /// Records requested glyphs and underlines; every glyph is a 1×1 bitmap
     /// at the cell origin.
     #[derive(Default)]
-    /// Records the glyphs drawn, the underlines, and the glyphs drawn in a
-    /// two-cell slot.
+    /// Records the glyphs drawn, the underlines, the glyphs drawn in a
+    /// two-cell slot, the clusters, the words shaped with their cells'
+    /// starts and the ids of the shaped glyphs drawn. Shaping changes only
+    /// `x->y`, whose arrow is glyph 7 drawn from the `-`, 12 pixels wide.
     struct FakeGlyphs(
         Vec<(char, Style)>,
         Vec<(Underline, u32)>,
         Vec<char>,
         Vec<String>,
+        Vec<(String, Vec<usize>, Style)>,
+        Vec<u16>,
     );
 
     impl GlyphCache for FakeGlyphs {
@@ -1064,6 +1246,33 @@ mod tests {
         fn cluster(&mut self, text: &str, style: Style, wide: bool) -> Option<GlyphInfo> {
             self.3.push(text.to_string());
             self.glyph(text.chars().next()?, style, wide)
+        }
+
+        fn shape(&mut self, text: &str, starts: &[usize], style: Style) -> Option<Rc<Shaped>> {
+            self.4.push((text.to_string(), starts.to_vec(), style));
+            (text == "x->y").then(|| {
+                Rc::new(Shaped {
+                    cells: vec![None, Some(0..1), Some(1..1), None],
+                    glyphs: vec![ShapedGlyph {
+                        face: 0,
+                        id: 7,
+                        x: 3,
+                        y: -2,
+                    }],
+                })
+            })
+        }
+
+        fn shaped(&mut self, glyph: &ShapedGlyph) -> Option<GlyphInfo> {
+            self.5.push(glyph.id);
+            Some(GlyphInfo {
+                uv: [0.0, 0.0, 1.0, 1.0],
+                width: 12,
+                height: 1,
+                left: 1,
+                top: 4,
+                color: false,
+            })
         }
 
         fn glyph(&mut self, c: char, style: Style, wide: bool) -> Option<GlyphInfo> {
@@ -1125,6 +1334,57 @@ mod tests {
         build_batch(&frame(t.screen()), &theme(), METRICS, &mut glyphs);
         let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
         assert_eq!(drawn, ['e', '🇻', 'x']);
+    }
+
+    #[test]
+    fn words_are_shaped_between_blanks_and_style_changes() {
+        let mut t = Terminal::new(20, 2, 0);
+        t.feed("ab cd\x1b[1mef\x1b[22mg\x1b[8mh\x1b[28mi\r\n".as_bytes());
+        t.feed("e\u{301}x 世界".as_bytes());
+        let mut glyphs = FakeGlyphs::default();
+        build_batch(&frame(t.screen()), &theme(), METRICS, &mut glyphs);
+        let words: Vec<(&str, &[usize], Style)> = glyphs
+            .4
+            .iter()
+            .map(|(text, starts, style)| (text.as_str(), starts.as_slice(), *style))
+            .collect();
+        assert_eq!(
+            words,
+            [
+                ("ab", &[0, 1][..], Style::Regular),
+                ("cd", &[0, 1], Style::Regular),
+                ("ef", &[0, 1], Style::Bold),
+                ("g", &[0], Style::Regular),
+                ("i", &[0], Style::Regular),
+                ("e\u{301}x", &[0, 3], Style::Regular),
+                ("世界", &[0, 3], Style::Regular),
+            ]
+        );
+    }
+
+    #[test]
+    fn shaped_glyphs_are_drawn_from_their_cell_in_its_color() {
+        let mut t = Terminal::new(10, 1, 0);
+        t.feed(b"x\x1b[31m-\x1b[32m>\x1b[39my\x1b[?25l");
+        let theme = theme();
+        let mut glyphs = FakeGlyphs::default();
+        let batch = build_batch(&frame(t.screen()), &theme, METRICS, &mut glyphs);
+        let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
+        assert_eq!(drawn, ['x', 'y']);
+        assert_eq!(glyphs.5, [7]);
+        // After x and y, the arrow: from the second cell, moved by the
+        // shaping offset and the bitmap's own, in two parts that take the
+        // colors of the cells they cover.
+        assert_eq!(batch.quads(), 4);
+        let ((x, y), color, _) = quad_at(&batch, 2);
+        assert_eq!((x, y), (10.0 + 3.0 + 1.0, -2.0 + 4.0));
+        assert_eq!(color, theme.indexed(1).to_f32());
+        let ((x, _), color, _) = quad_at(&batch, 3);
+        assert_eq!(x, 20.0);
+        assert_eq!(color, theme.indexed(2).to_f32());
+        // Its right half of the bitmap: u from 0.5 to 1.
+        let v = &batch.vertices[3 * 6 * VERTEX_FLOATS..];
+        assert_eq!((v[2], v[4 * VERTEX_FLOATS + 2]), (0.5, 1.0));
     }
 
     #[test]

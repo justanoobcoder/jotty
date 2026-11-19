@@ -176,10 +176,11 @@ The tests don't need a compositor, GPU or display:
 | `pty.rs` | Spawning `/bin/sh`, environment, window size, resize, input, line editing of UTF-8 characters, controlling terminal, exit status |
 | `input.rs` | Key encoding in all modes, shortcuts, paste encoding |
 | `ime.rs` | Surrounding text from rows (including wide and multibyte characters), byte limits, delete-to-keys, event ordering |
-| `renderer/mod.rs` | Color resolution and program color overrides, cursor styles, decorations, selection and preedit drawing, clusters, through a fake glyph cache |
+| `renderer/mod.rs` | Color resolution and program color overrides, cursor styles, decorations, selection and preedit drawing, clusters, splitting rows into words and drawing their shaped glyphs, through a fake glyph cache |
 | `renderer/atlas.rs` | Packing without overlap |
 | `renderer/software.rs` | Pixel output of the CPU renderer: fills, translucency, glyph coverage, color glyphs, clipping, partial repaints and damage bands |
-| `font.rs` | Cell metrics, box drawing, mark overlays, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox) |
+| `font.rs` | Cell metrics, box drawing, mark overlays, and loading the system monospace font (skipped when no fonts are installed, as in the Nix sandbox); ligatures, Arabic joining and mark positioning with JetBrains Mono and Noto Sans Arabic (each skipped without the font) |
+| `shape.rs` | Placing shaped glyphs in cells: unchanged glyphs, contextual alternates, ligatures over several cells, marks, missing glyphs |
 | `emoji.rs` | Which text is drawn in color, scaling, and flag ligatures in the system emoji font (skipped without one) |
 | `notify.rs` | D-Bus marshalling of `Notify`, parsing replies and signals in both byte orders, which clicks focus the window, bus addresses |
 | `watch.rs` | Noticing a config file replaced by rename, ignoring other files, parsing inotify events |

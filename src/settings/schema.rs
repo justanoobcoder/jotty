@@ -135,6 +135,12 @@ const STATIC: &[(&str, &str, Kind, &str)] = {
             "Families tried, in order, for characters the main font lacks.",
         ),
         (
+            "font",
+            "ligatures",
+            Bool,
+            "Draw the font's ligatures, such as -> or != as one symbol.",
+        ),
+        (
             "window",
             "title",
             Str,

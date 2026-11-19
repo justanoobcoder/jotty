@@ -3,9 +3,11 @@
 //! texture or plain memory) is up to the renderer.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::{GlyphCache, GlyphInfo};
 use crate::font::{self, Fonts, Glyph, Style};
+use crate::shape::{Shaped, ShapedGlyph};
 use crate::terminal::Underline;
 
 /// Packs rectangles left to right into rows ("shelves") as tall as their
@@ -73,6 +75,8 @@ enum GlyphKey {
     Cluster(u64, Style, bool),
     /// An underline spanning a number of cells.
     Underline(Underline, u32),
+    /// A glyph that shaping chose, by face and glyph id.
+    Shaped(usize, u16),
 }
 
 /// Placement of glyphs in the atlas images, and which glyphs they hold.
@@ -265,6 +269,16 @@ impl<S: FnMut(u32, u32, u32, &Glyph)> GlyphCache for Cache<'_, S> {
     fn underline(&mut self, style: Underline, cells: u32) -> Option<GlyphInfo> {
         self.cached(GlyphKey::Underline(style, cells), |fonts| {
             font::underline_glyph(style, fonts.metrics, cells)
+        })
+    }
+
+    fn shape(&mut self, text: &str, starts: &[usize], style: Style) -> Option<Rc<Shaped>> {
+        self.fonts.shape(text, starts, style)
+    }
+
+    fn shaped(&mut self, glyph: &ShapedGlyph) -> Option<GlyphInfo> {
+        self.cached(GlyphKey::Shaped(glyph.face, glyph.id), |fonts| {
+            fonts.rasterize_shaped(glyph.face, glyph.id)
         })
     }
 }

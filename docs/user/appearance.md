@@ -10,6 +10,7 @@ family = "JetBrains Mono"
 size = 10.5
 size_step = 1.0
 fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
+ligatures = true
 ```
 
 | Key | Default | Description |
@@ -18,11 +19,18 @@ fallback = ["Noto Sans CJK JP", "Symbols Nerd Font Mono"]
 | `size` | `11.0` | Size in points. |
 | `size_step` | `1.0` | Points that Ctrl+= and Ctrl+- add or remove. |
 | `fallback` | `[]` | Fonts tried, in order, for characters the main font lacks. |
+| `ligatures` | `false` | Draw the font's ligatures, such as `->` or `!=` as one symbol. |
 
 When no font has a character, jotty takes it from any installed font that
 has it. Box-drawing characters, block elements and braille are drawn by
 jotty itself, so they line up whatever the font. Emoji are drawn in color
 from your emoji font.
+
+Text is shaped with the font's own rules, so Arabic letters join, Indic
+syllables take their combined forms, and accents sit where the font puts
+them. Ligatures are off by default: with a font that has them (Fira Code,
+JetBrains Mono, Cascadia Code), `ligatures = true` draws `->`, `!=`, `>=` and
+the like as single symbols, in output and prose as well as in code.
 
 Ctrl+= and Ctrl+- change the size of a window's font, and Ctrl+0 goes back
 to `size`.

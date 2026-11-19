@@ -22,12 +22,19 @@ nothing surprises you.
   shells and editors expect it. The exception is VS16 (`❤️`), which
   widens a narrow character to two cells, as starship and most terminals
   assume.
-- **Combining marks without a precomposed form** are drawn over the base
-  character, centered, without the font's mark positioning; stacked or
-  unusual marks may not sit exactly right.
-- **No shaping or ligatures** for text. Each character is drawn on its own,
-  so Arabic, Indic scripts and programming ligatures don't render properly.
-  (Emoji fonts' own ligatures, for emoji sequences, are applied.)
+- **Combining marks the letter's font lacks** come from another font and
+  are drawn over the letter, centered, without the font's mark
+  positioning; they may not sit exactly right.
+- **No bidirectional text.** Right-to-left text (Arabic, Hebrew) is shown
+  in the order it was written, left to right. Its letters still take their
+  joining forms.
+- **Shaped text keeps to the cell grid.** Each cluster's glyphs start at its
+  first cell, so a script whose font draws syllables wider or narrower than
+  the cells programs count for them overlaps its neighbors or leaves gaps.
+- **Ligatures** (`font.ligatures`) are only made within a word: a blank or a
+  change of bold or italic ends one. A cursor or selection over part of a
+  ligature doesn't split it: each cell shows its part of the ligature in its
+  own colors.
 - **Color emoji need a bitmap font** (CBDT or sbix, such as Noto Color
   Emoji). Vector color fonts (COLR, SVG) aren't supported; with only those
   installed, emoji are monochrome. Which characters are emoji by default is
