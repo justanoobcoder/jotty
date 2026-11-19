@@ -9,8 +9,12 @@ stream into printable characters and control functions, and calls the
 jotty uses its own fork of vte (`justanoobcoder/vte`),
 which adds `Perform::print_ascii`: vte passes each run of printable ASCII in
 one call instead of calling `print` per character. `Screen` writes such a run
-to the grid a row at a time, which is most of what output is. Everything else
-still comes through `print`, one character at a time. The fork also drops
+to the grid a row at a time, which is most of what output is. Likewise
+`Perform::print_text` passes runs of other printable characters (accented
+letters, CJK, symbols, box drawing); `Screen` writes the ones that can't
+join a cluster straight into the blank rest of a row, and hands the others
+to the per-character path. Characters completed across reads still come
+through `print`. The fork also drops
 upstream's `ansi` module (jotty has its own terminal), skips invalid UTF-8
 in place rather than rescanning the buffer, executes C1 controls split
 across reads, and lets CAN and SUB abandon an OSC string instead of
@@ -72,7 +76,8 @@ second flag letter) still take their `wcwidth` cells, as `CONTINUATION`
 cells that only reserve room, so the cursor stays where programs expect.
 Most characters (letters, CJK, symbols) can't join a lone one of their
 kind, nor ASCII: a table of them, worked out a block of characters at a
-time on first use, saves running the segmentation rules for them.
+time on first use, saves running the segmentation rules for them. It also
+holds their width, so printing them takes one lookup.
 
 **Reflow.** When the width changes, `Grid::reflow` joins soft-wrapped rows
 of the primary screen and its history into lines, re-wraps them to the new

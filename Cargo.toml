@@ -29,8 +29,8 @@ ttf-parser = "0.25"
 unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
-# Fork with `Perform::print_ascii`; see docs/design/terminal.md.
-vte = { git = "https://github.com/justanoobcoder/vte", rev = "11953ef985c5d3d803d00a8802e8c3b993baca9f", default-features = false }
+# Fork with `Perform::print_ascii` and `print_text`; see docs/design/terminal.md.
+vte = { git = "https://github.com/justanoobcoder/vte", rev = "b95b102502629abb549c96b3f53f3f1ca197318e", default-features = false }
 wayland-client = "0.31.15"
 wayland-egl = "0.32.11"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }

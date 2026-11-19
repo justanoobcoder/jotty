@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use super::{
     Cell, ClipboardWrite, Color, CursorShape, CursorStyle, DefaultColors, Extra, Fed,
     FinishedCommand, Flags, MAX_CLIPBOARD_BYTES, MAX_CLUSTER_CHARS, MAX_TITLE_CHARS, MouseMode,
-    Notification, Row, Terminal, Underline, never_joins,
+    Notification, Row, Terminal, Underline, alone_width, never_joins,
 };
 use crate::color::Rgb;
 use crate::search::Direction;
@@ -148,7 +148,10 @@ fn output_split_anywhere_gives_the_same_screen() {
         "\x1b[6n",
         "\x1b]0;t\x07",
         "日本",
+        "日本語の文字",
         "é",
+        "éü€─│",
+        "\x1b[2G",
         "e\u{301}",
         "\u{200d}",
         "❄\u{fe0f}",
@@ -1017,6 +1020,55 @@ fn never_joins_agrees_with_grapheme_segmentation() {
                 assert_eq!(text.graphemes(true).count(), 2, "{pair:?} form one cluster");
             }
         }
+    }
+}
+
+/// Runs of non-ASCII text are written a row at a time; the result must
+/// be what printing them one character at a time gives (feeding a byte at
+/// a time does that), at the edges too.
+#[test]
+fn text_runs_print_like_single_characters() {
+    let cases: &[(usize, &str)] = &[
+        // A wide character that doesn't fit wraps, leaving a gap.
+        (5, "日本語éü"),
+        // One column: wide characters don't fit at all.
+        (1, "é日ü"),
+        // Over existing text and the halves of wide characters.
+        (6, "abcdef\r日本\x1b[2G語é"),
+        // Without autowrap, the last column is overwritten.
+        (4, "\x1b[?7léüàô日本"),
+        // A pending wrap, then REP of the last character of a run.
+        (3, "éüà\x1b[2b"),
+        // Characters that join the cluster before them, inside a run.
+        (8, "é\u{301}日\u{200d}🇻🇳€"),
+    ];
+    for &(cols, input) in cases {
+        let mut whole = term(cols, 3);
+        whole.feed(input.as_bytes());
+        let mut bytewise = term(cols, 3);
+        for byte in input.bytes() {
+            bytewise.feed(&[byte]);
+        }
+        // What follows shows the pending wrap and where the cluster ends.
+        for t in [&mut whole, &mut bytewise] {
+            t.feed("x\u{301}".as_bytes());
+        }
+        let (a, b) = (whole.screen(), bytewise.screen());
+        assert_eq!(a.grid().rows, b.grid().rows, "{cols} {input:?}");
+        assert_eq!(a.grid().history, b.grid().history, "{cols} {input:?}");
+        assert_eq!(a.cursor(), b.cursor(), "{cols} {input:?}");
+    }
+}
+
+#[test]
+fn characters_that_never_join_know_their_printed_width() {
+    use unicode_width::UnicodeWidthChar;
+
+    // Which characters never join is checked against segmentation above;
+    // this checks the widths kept with them.
+    for c in (0..=char::MAX as u32).filter_map(char::from_u32) {
+        let expected = never_joins(c).then(|| c.width().unwrap_or(0).min(2));
+        assert_eq!(alone_width(c), expected, "{c:?}");
     }
 }
 

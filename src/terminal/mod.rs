@@ -658,14 +658,22 @@ const EMOJI_PRESENTATION: char = '\u{FE0F}';
 /// conjoining Hangul jamo. Most characters are like that: letters, CJK,
 /// symbols, box drawing. No rule of UAX #29 keeps two of them together
 /// (CR LF aside, which are never printed), so a lone one ends its cluster
-/// when one follows. Looked up per block of characters, worked out on
-/// first use.
+/// when one follows.
 fn never_joins(c: char) -> bool {
+    alone_width(c).is_some()
+}
+
+/// The width `c` is printed with, if it [never joins](never_joins) other
+/// characters. Looked up per block of characters, worked out on first use.
+#[inline]
+fn alone_width(c: char) -> Option<usize> {
     use std::sync::atomic::{AtomicU64, Ordering};
-    /// Set in a block's entry once worked out; the low 32 bits hold its
-    /// characters' answers.
+    use unicode_width::UnicodeWidthChar;
+    /// Set in a block's entry once worked out; the low 32 bits hold two
+    /// bits for each of its characters: the width, or `JOINS`.
     const KNOWN: u64 = 1 << 32;
-    const BLOCK: u32 = 32;
+    const JOINS: u64 = 3;
+    const BLOCK: u32 = 16;
     // Pages of it that are never touched take no memory.
     static BLOCKS: [AtomicU64; (char::MAX as usize + 1) / BLOCK as usize] =
         [const { AtomicU64::new(0) }; (char::MAX as usize + 1) / BLOCK as usize];
@@ -674,13 +682,20 @@ fn never_joins(c: char) -> bool {
     let mut bits = entry.load(Ordering::Relaxed);
     if bits == 0 {
         let first = c as u32 / BLOCK * BLOCK;
-        bits = (0..BLOCK)
-            .filter(|&i| char::from_u32(first + i).is_some_and(stands_alone))
-            .fold(KNOWN, |bits, i| bits | 1 << i);
+        bits = (0..BLOCK).fold(KNOWN, |bits, i| {
+            let info = match char::from_u32(first + i) {
+                Some(c) if stands_alone(c) => c.width().unwrap_or(0).min(2) as u64,
+                _ => JOINS,
+            };
+            bits | info << (2 * i)
+        });
         // Racing threads store the same answer.
         entry.store(bits, Ordering::Relaxed);
     }
-    bits >> (c as u32 % BLOCK) & 1 != 0
+    match bits >> (2 * (c as u32 % BLOCK)) & 3 {
+        JOINS => None,
+        width => Some(width as usize),
+    }
 }
 
 /// Whether grapheme segmentation puts a boundary before and after `c`
@@ -2106,6 +2121,108 @@ impl Screen {
         }
     }
 
+    /// Prints text that holds no ASCII and no control characters. The
+    /// characters that [never join](never_joins) others go to the row
+    /// directly, along with the ones after them that fit on a blank stretch
+    /// of it; anything else goes through `print_char`. The charsets only
+    /// map ASCII, so they don't apply.
+    fn write_text(&mut self, text: &str) {
+        if self.modes.insert {
+            for c in text.chars() {
+                self.print_char(c);
+            }
+            return;
+        }
+        let mut closed = self.cluster_is_closed();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            match alone_width(c) {
+                Some(width) if width > 0 && closed => {
+                    self.cluster_start = self.print_cell(c, width, Flags::empty());
+                    if self.cluster_start.is_some() {
+                        self.write_alone(&mut chars);
+                    }
+                }
+                _ => {
+                    self.print_char(c);
+                    closed = self.cluster_is_closed();
+                }
+            }
+        }
+    }
+
+    /// Writes the characters `chars` starts with that never join others
+    /// and fit on the cursor's row, when the row is blank from the cursor
+    /// on, and takes them from `chars`. As `print_cell` would, one by one,
+    /// but without its checks for each.
+    fn write_alone(&mut self, chars: &mut std::str::Chars<'_>) {
+        if self.cursor.pending_wrap {
+            return;
+        }
+        let (row, start) = (self.cursor.row, self.cursor.col);
+        // Cells nothing wrote since the row was made blank hold no wide
+        // character to split.
+        if self.grid().rows[row].written() > start {
+            return;
+        }
+        let cols = self.cols;
+        let template = self.cursor.template;
+        let target = &mut self.grid_mut().rows[row];
+        let mut col = start;
+        let mut last = None;
+        loop {
+            let mut next = chars.clone();
+            let Some(c) = next.next() else {
+                break;
+            };
+            // A wide character at the last column wraps: `print_cell` does it.
+            let Some(width) = alone_width(c).filter(|&w| w > 0 && col + w <= cols) else {
+                break;
+            };
+            *chars = next;
+            let mut cell = template;
+            cell.c = c;
+            if width == 2 {
+                cell.flags.insert(Flags::WIDE);
+                let mut spacer = Cell { c: ' ', ..cell };
+                spacer.flags.remove(Flags::WIDE);
+                spacer.flags.insert(Flags::WIDE_SPACER);
+                *target.cell_mut(col + 1) = spacer;
+            }
+            *target.cell_mut(col) = cell;
+            last = Some((c, col));
+            col += width;
+        }
+        let Some((c, last_col)) = last else {
+            return;
+        };
+        self.erase_sixels(row, start, col);
+        if col >= cols {
+            self.cursor.col = cols - 1;
+            self.cursor.pending_wrap = true;
+        } else {
+            self.cursor.col = col;
+        }
+        self.last_char = Some(c);
+        self.last_printed = Some((row, last_col));
+        self.cluster_start = Some((row, last_col));
+        self.dirty = true;
+    }
+
+    /// Whether the grapheme cluster being printed takes no character that
+    /// [never joins](never_joins) others: there is none, or it is one such
+    /// character or an ASCII one, alone (see `join_cluster`).
+    fn cluster_is_closed(&self) -> bool {
+        let Some((row, col)) = self.cluster_start else {
+            return true;
+        };
+        let Some(start) = self.grid().rows.get(row).and_then(|r| r.cells().get(col)) else {
+            return true;
+        };
+        start.flags.contains(Flags::CONTINUATION)
+            || ((start.c.is_ascii() || never_joins(start.c)) && self.is_lone(start))
+    }
+
     /// Writes `c` at the cursor with the current attributes and advances.
     /// Returns where it went, if it fit.
     // Inlined: returned through memory, the position is stored in parts and
@@ -2710,6 +2827,11 @@ impl Perform for Screen {
     #[inline]
     fn print_ascii(&mut self, text: &str) {
         self.write_ascii(text.as_bytes());
+    }
+
+    #[inline]
+    fn print_text(&mut self, text: &str) {
+        self.write_text(text);
     }
 
     fn execute(&mut self, byte: u8) {
