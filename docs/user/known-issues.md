@@ -32,9 +32,9 @@ nothing surprises you.
   first cell, so a script whose font draws syllables wider or narrower than
   the cells programs count for them overlaps its neighbors or leaves gaps.
 - **Ligatures** (`font.ligatures`) are only made within a word: a blank or a
-  change of bold or italic ends one. A ligature takes the color of the cell
-  its glyph is drawn from (the last one, in most fonts), and a cursor or
-  selection over part of it doesn't split it.
+  change of bold or italic ends one. A cursor or selection over part of a
+  ligature doesn't split it: each cell shows its part of the ligature in its
+  own colors.
 - **Color emoji need a bitmap font** (CBDT or sbix, such as Noto Color
   Emoji). Vector color fonts (COLR, SVG) aren't supported; with only those
   installed, emoji are monochrome. Which characters are emoji by default is

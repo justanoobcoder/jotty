@@ -82,8 +82,12 @@ that cell's left edge, with the advances of the glyphs before it in the
 cluster: the pen starts over at every cell, so the glyphs never drift off
 the grid. A cell whose only glyph is its character's own, unmoved, is drawn
 as before, by character; the others draw their glyphs by id
-(`GlyphKey::Shaped`), in the cell's colors, and a cell a ligature covers
-draws nothing. Words are cached by a hash of their text, cell offsets and
+(`GlyphKey::Shaped`), and a cell a ligature covers draws none of its own.
+Shaped glyphs are drawn after the row's cells, cut at the cell edges within
+their word: each piece takes the text color of the cell it covers, so a
+ligature under the cursor, partly selected or between two colors shows
+each cell's colors. What sticks out of the word goes with its first or last
+cell. Words are cached by a hash of their text, cell offsets and
 style (8192 of them, then the cache starts over), so a frame mostly looks
 them up. Without ligatures, ASCII words and words of one plain character
 skip shaping entirely, and only words with clusters or letters of a joining

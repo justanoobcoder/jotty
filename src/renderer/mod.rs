@@ -390,18 +390,30 @@ pub trait GlyphCache {
     fn shaped(&mut self, glyph: &ShapedGlyph) -> Option<GlyphInfo>;
 }
 
+/// The glyphs a shaped cell draws.
+#[derive(Debug, Clone)]
+struct Drawn {
+    /// A range of `RowShapes::glyphs`.
+    glyphs: Range<usize>,
+    /// The columns of the cell's word.
+    word: Range<usize>,
+}
+
 /// The glyphs shaping puts in the cells of a row.
 #[derive(Debug, Default)]
 struct RowShapes {
-    /// By column: `None` when the cell is drawn as it is without shaping,
-    /// or else the range of `glyphs` drawn from it.
-    cols: Vec<Option<Range<usize>>>,
+    /// By column: `None` when the cell is drawn as it is without shaping.
+    cols: Vec<Option<Drawn>>,
     glyphs: Vec<ShapedGlyph>,
+    /// By column, the color of the cell's text, as it is drawn; `None`
+    /// where it shows none (blinking text in its off phase).
+    colors: Vec<Option<Rgb>>,
     /// The word being collected: its text, the byte offset each of its
-    /// cells starts at, their columns and their style.
+    /// cells starts at, their columns, the column after it, and its style.
     text: String,
     starts: Vec<usize>,
     word_cols: Vec<usize>,
+    word_end: usize,
     style: Style,
 }
 
@@ -418,6 +430,8 @@ impl RowShapes {
         self.cols.clear();
         self.cols.resize(cols, None);
         self.glyphs.clear();
+        self.colors.clear();
+        self.colors.resize(cols, None);
         for (x, cell) in cells.iter().enumerate().take(cols) {
             // Part of the cell before them.
             if cell
@@ -438,6 +452,11 @@ impl RowShapes {
             }
             self.starts.push(self.text.len());
             self.word_cols.push(x);
+            self.word_end = x + if cell.flags.contains(Flags::WIDE) {
+                2
+            } else {
+                1
+            };
             screen.cell_text(cell, &mut self.text);
         }
         self.end_word(glyphs);
@@ -449,15 +468,61 @@ impl RowShapes {
         {
             let base = self.glyphs.len();
             self.glyphs.extend_from_slice(&shaped.glyphs);
+            let word = self.word_cols[0]..self.word_end.min(self.cols.len());
             for (cell, range) in shaped.cells.iter().enumerate() {
                 if let Some(range) = range {
-                    self.cols[self.word_cols[cell]] = Some(base + range.start..base + range.end);
+                    self.cols[self.word_cols[cell]] = Some(Drawn {
+                        glyphs: base + range.start..base + range.end,
+                        word: word.clone(),
+                    });
                 }
             }
         }
         self.text.clear();
         self.starts.clear();
         self.word_cols.clear();
+    }
+
+    /// Draws the shaped glyphs of the row whose top is at `y`, with the
+    /// grid's left edge at `left`. Each piece of a glyph over a cell of its
+    /// word takes that cell's text color, so a ligature partly under the
+    /// cursor or the selection, or between two colors, shows each cell's
+    /// colors. What sticks out of the word goes with its first or last cell.
+    fn draw(&self, batch: &mut Batch, glyphs: &mut impl GlyphCache, left: f32, y: f32, cw: f32) {
+        for (x, drawn) in self.cols.iter().enumerate() {
+            let Some(drawn) = drawn else {
+                continue;
+            };
+            let word = &drawn.word;
+            for shaped in &self.glyphs[drawn.glyphs.clone()] {
+                let Some(glyph) = glyphs.shaped(shaped) else {
+                    continue;
+                };
+                let gx = left + x as f32 * cw + shaped.x as f32;
+                let gy = y + shaped.y as f32;
+                let ink_left = gx + glyph.left as f32;
+                let ink_right = ink_left + glyph.width as f32;
+                let col = |px: f32| ((px - left) / cw).max(0.0) as usize;
+                let first = col(ink_left).clamp(word.start, word.end - 1);
+                let last = col(ink_right.ceil() - 1.0).clamp(first, word.end - 1);
+                for c in first..=last {
+                    let Some(color) = self.colors[c] else {
+                        continue;
+                    };
+                    let from = if c == word.start {
+                        f32::NEG_INFINITY
+                    } else {
+                        left + c as f32 * cw
+                    };
+                    let to = if c + 1 == word.end {
+                        f32::INFINITY
+                    } else {
+                        left + (c + 1) as f32 * cw
+                    };
+                    batch.glyph_part(gx, gy, &glyph, color, from..to);
+                }
+            }
+        }
     }
 }
 
@@ -513,6 +578,27 @@ impl Batch {
         self.quad(
             [x + glyph.left as f32, y + glyph.top as f32, w, h],
             glyph.uv,
+            color,
+            1.0,
+            mode,
+        );
+    }
+
+    /// The part of a glyph drawn as by [`Batch::glyph`] that lies between
+    /// `columns`, in pixels.
+    fn glyph_part(&mut self, x: f32, y: f32, glyph: &GlyphInfo, color: Rgb, columns: Range<f32>) {
+        let (w, h) = (glyph.width as f32, glyph.height as f32);
+        let x0 = x + glyph.left as f32;
+        let (from, to) = (x0.max(columns.start), (x0 + w).min(columns.end));
+        if from >= to {
+            return;
+        }
+        let [u0, v0, u1, v1] = glyph.uv;
+        let u = |px: f32| u0 + (px - x0) / w * (u1 - u0);
+        let mode = if glyph.color { 2.0 } else { 1.0 };
+        self.quad(
+            [from, y + glyph.top as f32, to - from, h],
+            [u(from), v0, u(to), v1],
             color,
             1.0,
             mode,
@@ -790,6 +876,11 @@ pub fn build(
                     || cell.flags.contains(Flags::STRIKE));
             *blinking_text |= blinks;
             let blinked_off = blinks && frame.text_blinked_off && !is_cursor;
+            let text_color = (!blinked_off).then_some(fg);
+            shapes.colors[x] = text_color;
+            if span > 1.0 && x + 1 < shapes.colors.len() {
+                shapes.colors[x + 1] = text_color;
+            }
 
             // Whether the program chose this background, as opposed to the
             // default one showing through. This depends on how the cell was
@@ -817,12 +908,8 @@ pub fn build(
                 || cell.c == PLACEHOLDER
             {
                 None
-            } else if let Some(range) = shapes.cols[x].clone() {
-                for shaped in &shapes.glyphs[range] {
-                    if let Some(glyph) = glyphs.shaped(shaped) {
-                        front.glyph(px + shaped.x as f32, py + shaped.y as f32, &glyph, fg);
-                    }
-                }
+            } else if shapes.cols[x].is_some() {
+                // Drawn with the rest of the row's shaped glyphs, below.
                 None
             } else if extra.cluster != 0 {
                 cluster_text.clear();
@@ -875,6 +962,7 @@ pub fn build(
                 front.rect(px, py + mid, cw * span, stroke, fg);
             }
         }
+        shapes.draw(front, glyphs, ox, py, cw);
     }
 
     if cursor_visible && !block_cursor {
@@ -1132,7 +1220,7 @@ mod tests {
     /// Records the glyphs drawn, the underlines, the glyphs drawn in a
     /// two-cell slot, the clusters, the words shaped with their cells'
     /// starts and the ids of the shaped glyphs drawn. Shaping changes only
-    /// `x->y`, whose arrow is glyph 7 drawn from the `-`.
+    /// `x->y`, whose arrow is glyph 7 drawn from the `-`, 12 pixels wide.
     struct FakeGlyphs(
         Vec<(char, Style)>,
         Vec<(Underline, u32)>,
@@ -1178,8 +1266,8 @@ mod tests {
         fn shaped(&mut self, glyph: &ShapedGlyph) -> Option<GlyphInfo> {
             self.5.push(glyph.id);
             Some(GlyphInfo {
-                uv: [0.0; 4],
-                width: 1,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                width: 12,
                 height: 1,
                 left: 1,
                 top: 4,
@@ -1284,11 +1372,19 @@ mod tests {
         let drawn: Vec<char> = glyphs.0.iter().map(|g| g.0).collect();
         assert_eq!(drawn, ['x', 'y']);
         assert_eq!(glyphs.5, [7]);
-        // x, then the arrow: from the second cell, moved by the shaping
-        // offset and the bitmap's own.
-        let ((x, y), color, _) = quad_at(&batch, 1);
+        // After x and y, the arrow: from the second cell, moved by the
+        // shaping offset and the bitmap's own, in two parts that take the
+        // colors of the cells they cover.
+        assert_eq!(batch.quads(), 4);
+        let ((x, y), color, _) = quad_at(&batch, 2);
         assert_eq!((x, y), (10.0 + 3.0 + 1.0, -2.0 + 4.0));
         assert_eq!(color, theme.indexed(1).to_f32());
+        let ((x, _), color, _) = quad_at(&batch, 3);
+        assert_eq!(x, 20.0);
+        assert_eq!(color, theme.indexed(2).to_f32());
+        // Its right half of the bitmap: u from 0.5 to 1.
+        let v = &batch.vertices[3 * 6 * VERTEX_FLOATS..];
+        assert_eq!((v[2], v[4 * VERTEX_FLOATS + 2]), (0.5, 1.0));
     }
 
     #[test]
