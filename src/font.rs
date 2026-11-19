@@ -1331,8 +1331,6 @@ fn draw_arc(canvas: &mut Canvas, stroke: u32, dx: f32, dy: f32) {
     });
 }
 
-/// Draws box-drawing and block characters to fill the cell exactly, so
-/// lines join across cells regardless of the font's metrics.
 /// Whether [`box_glyph`] may draw `c`, rather than a font.
 fn is_drawn(c: char) -> bool {
     matches!(c,
@@ -1345,6 +1343,8 @@ fn is_drawn(c: char) -> bool {
         | '\u{1fb00}'..='\u{1fbff}')
 }
 
+/// Draws box-drawing and block characters to fill the cell exactly, so
+/// lines join across cells regardless of the font's metrics.
 fn box_glyph(c: char, m: CellMetrics) -> Option<Glyph> {
     let (w, h) = (m.width, m.height);
     let s = m.stroke;
