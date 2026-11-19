@@ -1403,6 +1403,8 @@ impl Screen {
         if !self.continues_cluster(&start, c) {
             return false;
         }
+        // Before `make_room` below, which may renumber the start's extra.
+        let lone = self.is_lone(&start);
         let mut text = String::new();
         self.cell_text(&start, &mut text);
         let base = start.c.len_utf8();
@@ -1453,7 +1455,7 @@ impl Screen {
         if grapheme {
             if width > 0 {
                 self.widen(row, col);
-            } else if c == TEXT_PRESENTATION && self.is_lone(&start) {
+            } else if c == TEXT_PRESENTATION && lone {
                 self.apply_text_presentation(row, col);
             }
         } else if width > 0 {
@@ -2380,7 +2382,13 @@ impl Screen {
             }
             return;
         }
+        // The cursor is right after the character: what follows makes room
+        // for its second cell in insert mode, as for a wide character.
+        if self.modes.insert {
+            self.insert_blanks(1);
+        }
         self.split_wide(row, col + 1);
+        self.erase_sixels(row, col + 1, col + 2);
         let cells = self.grid_mut().rows[row].cells_in(col..col + 2);
         cells[0].flags.insert(Flags::WIDE);
         cells[1] = Cell {

@@ -36,6 +36,8 @@ CHANGELOG
     replacing the link
 - Backspace erases a whole non-ASCII character, not just its last byte, in
     programs that read a line at a time
+- An emoji made wide by VS16 no longer overwrites the character after it
+    in insert mode
 
 ### Performance
 

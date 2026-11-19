@@ -1317,6 +1317,41 @@ fn a_cluster_that_widens_in_the_last_column_wraps_in_grapheme_cluster_mode() {
 }
 
 #[test]
+fn a_cluster_that_widens_pushes_the_text_after_it_in_insert_mode() {
+    let mut t = term(10, 1);
+    t.feed("XYZ\r\x1b[4h\x1b[?2027h☝🏽".as_bytes());
+    assert!(is_wide(&t, 0));
+    assert_eq!((cell(&t, 0, 2).c, cell(&t, 0, 4).c), ('X', 'Z'));
+    // VS16 too, with or without the mode.
+    let mut t = term(10, 1);
+    t.feed("XYZ\r\x1b[4h\u{2744}\u{fe0f}".as_bytes());
+    assert!(is_wide(&t, 0));
+    assert_eq!((cell(&t, 0, 2).c, cell(&t, 0, 4).c), ('X', 'Z'));
+}
+
+#[test]
+fn a_wrapped_cluster_keeps_its_link_and_takes_later_characters() {
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027h\x1b]8;;file:///a\x1b\\abc\u{2744}\u{fe0f}\u{200d}🔥x".as_bytes());
+    assert_eq!(text_at(&t, 1, 0), "\u{2744}\u{fe0f}\u{200d}🔥");
+    assert!(cell(&t, 1, 0).flags.contains(Flags::WIDE));
+    assert_eq!(t.screen().link(extra(&t, 1, 0).link), Some("file:///a"));
+    assert_eq!(cell(&t, 1, 2).c, 'x');
+}
+
+#[test]
+fn text_presentation_at_the_second_to_last_column_ends_the_pending_wrap() {
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027hab\u{231a}\u{fe0e}x".as_bytes());
+    assert_eq!(lines(&t), ["ab\u{231a}x", ""]);
+    // A wide cluster there waits to wrap, as a wide character does.
+    let mut t = term(4, 2);
+    t.feed("\x1b[?2027hab👍🏽x".as_bytes());
+    assert!(cell(&t, 0, 2).flags.contains(Flags::WIDE));
+    assert_eq!(lines(&t), ["ab👍", "x"]);
+}
+
+#[test]
 fn clusters_keep_their_characters_widths_without_grapheme_cluster_mode() {
     let mut t = term(20, 1);
     t.feed("\x1b[?2027h\x1b[?2027l👍🏽!".as_bytes());
